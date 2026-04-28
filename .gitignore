@@ -1,0 +1,46 @@
+# cc-autopipe build repo .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+
+# Local development state — agent's own .cc-autopipe if they bootstrap meta-style
+.cc-autopipe/state.json
+.cc-autopipe/lock
+.cc-autopipe/checkpoint.md
+.cc-autopipe/HUMAN_NEEDED.md
+.cc-autopipe/memory/
+.claude/settings.json
+MEMORY.md
+
+# Secrets — never commit
+*.env
+secrets.env
+**/credentials.json
+
+# Logs
+*.log
+logs/
+
+# Temporary
+*.tmp
+*.bak
