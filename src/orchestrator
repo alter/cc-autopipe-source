@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """orchestrator — main loop for cc-autopipe.
 
-Stage B skeleton: reads ~/.cc-autopipe/projects.list, iterates FIFO,
-and logs a `cycle_attempt` event per project per pass. Does NOT spawn
-`claude -p` yet — that lands in Stage C alongside the hooks. Does NOT
-hold a singleton lock yet — that lands in Stage D.
+Per SPEC.md §6.1: read ~/.cc-autopipe/projects.list, walk FIFO,
+spawn `claude -p` per active project, monitor with wall-clock timeout,
+log every cycle event. Hooks (SPEC §10) update state.json from inside
+the claude subprocess.
 
-What this stage proves:
-- main loop runs without crashing
-- projects.list is honoured in order
-- per-project state transitions via state.read/write are observed
-- aggregate.jsonl receives one cycle_attempt per project per pass
-- SIGTERM/SIGINT exits cleanly between projects (no abort mid-write)
+Stage C wired up the actual `claude -p` subprocess.Popen — the cycle
+no longer just logs `cycle_attempt`. Singleton locking still arrives
+in Stage D.
+
+Test escape hatches (env vars):
+  CC_AUTOPIPE_USER_HOME            override ~/.cc-autopipe
+  CC_AUTOPIPE_COOLDOWN_SEC         seconds between projects (default 30)
+  CC_AUTOPIPE_IDLE_SLEEP_SEC       seconds when no project active (default 60)
+  CC_AUTOPIPE_MAX_LOOPS            exit after N outer passes (test-only)
+  CC_AUTOPIPE_CLAUDE_BIN           path to claude binary (default: "claude").
+                                   Tests point this at tools/mock-claude.sh.
+  CC_AUTOPIPE_CYCLE_TIMEOUT_SEC    wall-clock cap on a claude subprocess
+                                   (default 3600s)
 
 Refs: SPEC.md §6.1, §15.1
 """
@@ -20,6 +27,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,6 +39,8 @@ import state  # noqa: E402
 
 DEFAULT_COOLDOWN_SEC = 30
 DEFAULT_IDLE_SLEEP_SEC = 60
+DEFAULT_CYCLE_TIMEOUT_SEC = 3600
+DEFAULT_MAX_TURNS = 35
 
 
 _shutdown = False
@@ -82,12 +92,157 @@ def _resume_paused_if_due(s: state.State) -> bool:
     return False
 
 
-def process_project(project_path: Path) -> str:
-    """Run one cycle's work for a single project.
+def _read_truncated(path: Path, max_bytes: int) -> str:
+    try:
+        return path.read_text(encoding="utf-8")[:max_bytes]
+    except OSError:
+        return ""
 
-    Stage B: reads/writes state, logs cycle_attempt, but does NOT spawn
-    `claude -p`. Returns a short status string for the outer loop.
+
+def _read_top_open_tasks(backlog: Path, n: int) -> str:
+    if not backlog.exists():
+        return ""
+    out: list[str] = []
+    for line in backlog.read_text(encoding="utf-8").splitlines():
+        if line.startswith("- [ ]"):
+            out.append(line)
+            if len(out) >= n:
+                break
+    return "\n".join(out)
+
+
+def _build_prompt(project_path: Path, s: state.State) -> str:
+    """Construct the prompt sent to Claude. Per SPEC.md §6.1 build_prompt."""
+    cca = project_path / ".cc-autopipe"
+    parts: list[str] = []
+    parts.append(f"# Project: {s.name or project_path.name}\n")
+    parts.append(f"Iteration {s.iteration}. Phase: {s.phase}.\n\n")
+
+    if (cca / "checkpoint.md").exists():
+        parts.append(
+            "**RESUME FROM CHECKPOINT:** Read .cc-autopipe/checkpoint.md FIRST. "
+            "Continue from there.\n\n"
+        )
+
+    parts.append("## PRD (excerpt)\n")
+    parts.append(_read_truncated(cca / "prd.md", 2048))
+    parts.append("\n\n## Project context (excerpt)\n")
+    parts.append(_read_truncated(cca / "context.md", 1024))
+    parts.append("\n\n## Next backlog tasks\n")
+    parts.append(_read_top_open_tasks(project_path / "backlog.md", 5) or "(none)")
+    parts.append("\n")
+
+    if s.last_score is not None:
+        parts.append(f"\nLast verify: passed={s.last_passed}, score={s.last_score}\n")
+
+    parts.append("\n## Instructions\n")
+    parts.append(
+        "Pick the topmost open task. Implement. Run "
+        ".cc-autopipe/verify.sh before declaring done. If the task is "
+        "large, save progress with cc-autopipe-checkpoint near turn 25.\n"
+    )
+    return "".join(parts)
+
+
+def _read_config_model(project_path: Path, default: str) -> str:
+    cfg = project_path / ".cc-autopipe" / "config.yaml"
+    if not cfg.exists():
+        return default
+    in_models = False
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        stripped = line.rstrip()
+        if stripped == "models:":
+            in_models = True
+            continue
+        if in_models:
+            if not stripped.startswith(" "):
+                in_models = False
+                continue
+            text = stripped.strip()
+            if text.startswith("default:"):
+                value = text.split(":", 1)[1].strip().strip('"').strip("'")
+                if value:
+                    return value
+    return default
+
+
+def _agents_json_path(project_path: Path) -> Path | None:
+    candidate = project_path / ".cc-autopipe" / "agents.json"
+    return candidate if candidate.exists() else None
+
+
+def _build_claude_cmd(project_path: Path, s: state.State) -> list[str]:
+    """Per SPEC.md §6.1 build_claude_cmd."""
+    claude_bin = os.environ.get("CC_AUTOPIPE_CLAUDE_BIN", "claude")
+    cmd: list[str] = [claude_bin]
+
+    if s.session_id:
+        # SPEC §6.1 also gates on the session JSONL existing on disk;
+        # Stage D adds that disk check. For now, always try resume —
+        # claude itself errors cleanly if the JSONL is missing.
+        cmd += ["--resume", s.session_id]
+
+    cmd += [
+        "-p",
+        _build_prompt(project_path, s),
+        "--dangerously-skip-permissions",
+        "--max-turns",
+        str(DEFAULT_MAX_TURNS),
+        "--output-format",
+        "stream-json",
+    ]
+    agents = _agents_json_path(project_path)
+    if agents is not None:
+        cmd += ["--agents", str(agents)]
+    cmd += ["--model", _read_config_model(project_path, "claude-sonnet-4-6")]
+    return cmd
+
+
+def _run_claude(
+    project_path: Path, cmd: list[str], timeout_sec: float
+) -> tuple[int, str, str]:
+    """subprocess.Popen with wall-clock timeout. Returns (rc, stdout, stderr).
+
+    Stdout/stderr are captured but not echoed live in v0.5; aggregate.jsonl
+    is the operational log. The hooks update state from inside the
+    subprocess context.
     """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(project_path),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    started = time.time()
+    timed_out = False
+    while True:
+        if proc.poll() is not None:
+            break
+        if time.time() - started > timeout_sec:
+            _log(
+                f"{project_path.name}: claude timeout {timeout_sec:.0f}s, killing pid={proc.pid}"
+            )
+            proc.kill()
+            timed_out = True
+            break
+        if _shutdown:
+            _log(f"{project_path.name}: shutdown requested, terminating claude")
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        time.sleep(0.25)
+    stdout, stderr = proc.communicate()
+    rc = -1 if timed_out else (proc.returncode if proc.returncode is not None else -1)
+    return rc, stdout, stderr
+
+
+def process_project(project_path: Path) -> str:
+    """Run one cycle for a single project."""
     if not project_path.exists():
         _log(f"skip {project_path}: path missing")
         return "missing"
@@ -115,15 +270,94 @@ def process_project(project_path: Path) -> str:
     s.last_progress_at = s.last_cycle_started_at
     state.write(project_path, s)
 
+    cmd = _build_claude_cmd(project_path, s)
+    timeout = float(
+        os.environ.get("CC_AUTOPIPE_CYCLE_TIMEOUT_SEC", DEFAULT_CYCLE_TIMEOUT_SEC)
+    )
     state.log_event(
         project_path,
-        "cycle_attempt",
+        "cycle_start",
         iteration=s.iteration,
-        stage="B",
-        note="orchestrator skeleton — claude spawn arrives in Stage C",
+        claude_bin=cmd[0],
+        resumed=bool(s.session_id),
     )
-    _log(f"{project_path.name}: cycle_attempt iteration={s.iteration}")
-    return "active"
+    _log(
+        f"{project_path.name}: cycle_start iteration={s.iteration} claude_bin={cmd[0]}"
+    )
+
+    rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
+
+    # Re-read state.json — hooks may have updated it from inside the claude
+    # subprocess (e.g. stop.sh's update-verify, stop-failure.sh's set-paused).
+    s = state.read(project_path)
+
+    # Decide post-cycle phase transitions per SPEC §6.1.
+    if (
+        s.last_score is not None
+        and s.last_score >= s.threshold
+        and s.prd_complete
+        and s.phase == "active"
+    ):
+        s.phase = "done"
+        state.write(project_path, s)
+        state.log_event(project_path, "done", score=s.last_score, iteration=s.iteration)
+    elif s.consecutive_failures >= 3 and s.phase == "active":
+        s.phase = "failed"
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "failed",
+            iteration=s.iteration,
+            consecutive_failures=s.consecutive_failures,
+        )
+        _write_human_needed(project_path, stderr)
+
+    state.log_event(
+        project_path,
+        "cycle_end",
+        iteration=s.iteration,
+        phase=s.phase,
+        rc=rc,
+        score=s.last_score,
+    )
+    _log(
+        f"{project_path.name}: cycle_end iteration={s.iteration} "
+        f"phase={s.phase} rc={rc}"
+    )
+    # Stash last stdout/stderr if non-trivial — useful when debugging Stage G.
+    _stash_stream(project_path, "stdout.last", stdout)
+    _stash_stream(project_path, "stderr.last", stderr)
+    return s.phase
+
+
+def _stash_stream(project_path: Path, name: str, content: str) -> None:
+    if not content:
+        return
+    target = project_path / ".cc-autopipe" / "memory" / name
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Cap at 64KB so we don't fill the disk with stream-json.
+        target.write_text(content[-65536:], encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _write_human_needed(project_path: Path, last_stderr: str) -> None:
+    target = project_path / ".cc-autopipe" / "HUMAN_NEEDED.md"
+    try:
+        target.write_text(
+            "# Human attention required\n\n"
+            "This project hit `consecutive_failures >= 3` and was marked "
+            "FAILED. See `.cc-autopipe/memory/failures.jsonl` for the "
+            "trail and the most recent claude stderr below.\n\n"
+            "After fixing the underlying issue, run "
+            "`cc-autopipe resume <project>` to restart.\n\n"
+            "## Last claude stderr (truncated)\n\n"
+            "```\n" + (last_stderr or "(empty)")[-2000:] + "\n```\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _install_signal_handlers() -> None:
