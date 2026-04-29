@@ -280,8 +280,8 @@ def test_cache_hit_skips_endpoint(mock_server: tuple[int, str], tmp_path: Path) 
     user_home.mkdir(parents=True, exist_ok=True)
     cache = user_home / "quota-cache.json"
     payload = {
-        "five_hour": {"utilization": 0.42, "resets_at": "2026-04-29T20:00:00Z"},
-        "seven_day": {"utilization": 0.13, "resets_at": "2026-05-06T20:00:00Z"},
+        "five_hour": {"utilization": 42, "resets_at": "2026-04-29T20:00:00Z"},
+        "seven_day": {"utilization": 13, "resets_at": "2026-05-06T20:00:00Z"},
     }
     cache.write_text(json.dumps(payload))
 
@@ -289,7 +289,7 @@ def test_cache_hit_skips_endpoint(mock_server: tuple[int, str], tmp_path: Path) 
     cp = _run_quota("read", env, expect_rc=0)
     raw = json.loads(cp.stdout)
     # Must match what we put in the cache, not what the mock returns.
-    assert raw["five_hour"]["utilization"] == pytest.approx(0.42)
+    assert raw["five_hour"]["utilization"] == 42
 
 
 def test_cache_expired_triggers_refetch(
@@ -300,17 +300,17 @@ def test_cache_expired_triggers_refetch(
     user_home = tmp_path / "uhome"
     user_home.mkdir(parents=True, exist_ok=True)
     cache = user_home / "quota-cache.json"
-    cache.write_text(json.dumps({"five_hour": {"utilization": 0.99}}))
+    cache.write_text(json.dumps({"five_hour": {"utilization": 99}}))
     # Backdate mtime by 90s.
     old = time.time() - 90
     os.utime(cache, (old, old))
 
-    _set_admin(port, five_hour=0.05, seven_day=0.10)
+    _set_admin(port, five_hour=5, seven_day=10)
     env = _quota_env(user_home, endpoint)
     cp = _run_quota("read", env, expect_rc=0)
     raw = json.loads(cp.stdout)
-    # Now reflects the live mock value, not the stale cached 0.99.
-    assert raw["five_hour"]["utilization"] == pytest.approx(0.05)
+    # Now reflects the live mock value (integer percent), not the stale 99.
+    assert raw["five_hour"]["utilization"] == 5
 
 
 def test_endpoint_unreachable_returns_rc1(tmp_path: Path) -> None:
@@ -367,6 +367,78 @@ def test_quota_dataclass_from_dict_handles_missing_keys(quota_module) -> None:
     assert q2.seven_day_resets_at is not None
 
 
+def test_quota_dataclass_normalizes_integer_endpoint_shape(quota_module) -> None:
+    """Real oauth/usage emits integer percent (Q12, 2026-04-29). Quota
+    must normalize to float 0..1 internally so orchestrator pre-flight
+    comparisons against 0.95 / 0.90 stay correct."""
+    q = quota_module.Quota.from_dict(
+        {
+            "five_hour": {
+                "utilization": 38,
+                "resets_at": "2026-04-29T20:00:00Z",
+            },
+            "seven_day": {
+                "utilization": 86,
+                "resets_at": "2026-05-06T20:00:00Z",
+            },
+        }
+    )
+    assert q.five_hour_pct == pytest.approx(0.38)
+    assert q.seven_day_pct == pytest.approx(0.86)
+    assert q.five_hour_resets_at is not None
+
+
+def test_normalize_utilization_edge_cases(quota_module) -> None:
+    """normalize_utilization disambiguates int (real endpoint) from
+    float fraction (test fixture) at the parser boundary."""
+    n = quota_module.normalize_utilization
+    # Real-endpoint integer percent.
+    assert n(0) == 0.0
+    assert n(38) == pytest.approx(0.38)
+    assert n(95) == pytest.approx(0.95)
+    assert n(99) == pytest.approx(0.99)
+    assert n(100) == 1.0
+    # Legacy/test float fraction.
+    assert n(0.0) == 0.0
+    assert n(0.5) == 0.5
+    assert n(0.95) == pytest.approx(0.95)
+    assert n(1.0) == 1.0
+    # Defensive: float written as percent (e.g. 99.9) is also normalized.
+    assert n(99.9) == pytest.approx(0.999)
+    # Garbage / missing → 0.0 (degraded but not crashing).
+    assert n(None) == 0.0
+    assert n("oops") == 0.0
+    assert n(True) == 0.0
+    assert n([]) == 0.0
+
+
+def test_quota_pre_flight_thresholds_correct_for_integer_endpoint(
+    quota_module,
+) -> None:
+    """End-to-end check that the bug from 2026-04-29 cannot recur:
+    integer 86 must NOT compare > 0.90 directly. After Quota.from_dict
+    normalization, the comparison the orchestrator makes (>= 0.90)
+    should yield False at 86% and True at 92%."""
+    q_safe = quota_module.Quota.from_dict(
+        {
+            "five_hour": {"utilization": 38},
+            "seven_day": {"utilization": 86},
+        }
+    )
+    # Both below thresholds — orchestrator would proceed.
+    assert q_safe.five_hour_pct < 0.95
+    assert q_safe.seven_day_pct < 0.90
+
+    q_paused = quota_module.Quota.from_dict(
+        {
+            "five_hour": {"utilization": 96},
+            "seven_day": {"utilization": 92},
+        }
+    )
+    assert q_paused.five_hour_pct >= 0.95
+    assert q_paused.seven_day_pct >= 0.90
+
+
 def test_refresh_subcommand_overrides_cache(
     mock_server: tuple[int, str], tmp_path: Path
 ) -> None:
@@ -374,15 +446,16 @@ def test_refresh_subcommand_overrides_cache(
     user_home = tmp_path / "uhome"
     user_home.mkdir(parents=True, exist_ok=True)
     cache = user_home / "quota-cache.json"
-    cache.write_text(json.dumps({"five_hour": {"utilization": 0.99}}))
+    cache.write_text(json.dumps({"five_hour": {"utilization": 99}}))
 
-    _set_admin(port, five_hour=0.20, seven_day=0.10)
+    _set_admin(port, five_hour=20, seven_day=10)
     env = _quota_env(user_home, endpoint)
     cp = _run_quota("refresh", env)
     if sys.platform == "darwin" and cp.returncode == 1:
         pytest.skip("macOS host without Keychain creds")
     assert cp.returncode == 0
     raw = json.loads(cp.stdout)
-    assert raw["five_hour"]["utilization"] == pytest.approx(0.20)
+    # mock-quota-server now emits integer percent, matching the real endpoint.
+    assert raw["five_hour"]["utilization"] == 20
     cached_after = json.loads(cache.read_text())
-    assert cached_after["five_hour"]["utilization"] == pytest.approx(0.20)
+    assert cached_after["five_hour"]["utilization"] == 20
