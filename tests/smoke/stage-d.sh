@@ -137,6 +137,20 @@ echo '{"passed":true,"score":0.9,"prd_complete":false,"details":{}}'
 EOF
 chmod +x "$PROJECT/.cc-autopipe/verify.sh"
 
+# Pre-populate quota cache so this cycle never hits the real endpoint
+# on hosts with live Keychain creds (Q12 fix).
+"$PY" -c "
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+five = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
+seven = (datetime.now(timezone.utc) + timedelta(days=6)).strftime('%Y-%m-%dT%H:%M:%SZ')
+Path('$USER_HOME/quota-cache.json').write_text(json.dumps({
+    'five_hour': {'utilization': 5, 'resets_at': five},
+    'seven_day': {'utilization': 10, 'resets_at': seven},
+}))
+"
+
 CC_AUTOPIPE_HOME="$REPO_ROOT/src" \
 CC_AUTOPIPE_USER_HOME="$USER_HOME" \
 CC_AUTOPIPE_COOLDOWN_SEC=0 \

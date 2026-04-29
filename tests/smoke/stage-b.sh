@@ -97,11 +97,25 @@ assert p['iteration'] == 0, p
 ok "status (human + JSON) renders projects from state.json"
 
 # 3e. orchestrator one loop, no claude spawn.
+# Pre-populate quota-cache.json with safe values so read_raw consults
+# cache and never hits the real api.anthropic.com endpoint on hosts
+# with live Keychain creds. (Was previously CC_AUTOPIPE_QUOTA_DISABLED=1;
+# Q12 fix made the cache path safe at any utilization.)
+"$PY" -c "
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+five = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
+seven = (datetime.now(timezone.utc) + timedelta(days=6)).strftime('%Y-%m-%dT%H:%M:%SZ')
+Path('$USER_HOME/quota-cache.json').write_text(json.dumps({
+    'five_hour': {'utilization': 5, 'resets_at': five},
+    'seven_day': {'utilization': 10, 'resets_at': seven},
+}))
+"
 CC_AUTOPIPE_COOLDOWN_SEC=0 \
 CC_AUTOPIPE_IDLE_SLEEP_SEC=0 \
 CC_AUTOPIPE_MAX_LOOPS=2 \
 CC_AUTOPIPE_CLAUDE_BIN=/usr/bin/true \
-CC_AUTOPIPE_QUOTA_DISABLED=1 \
     "$DISPATCHER" start 2>"$SCRATCH/orch.stderr" >/dev/null \
     || die "orchestrator failed: $(cat "$SCRATCH/orch.stderr")"
 
@@ -126,7 +140,6 @@ unset CC_AUTOPIPE_MAX_LOOPS
 CC_AUTOPIPE_COOLDOWN_SEC=10 \
 CC_AUTOPIPE_IDLE_SLEEP_SEC=10 \
 CC_AUTOPIPE_CLAUDE_BIN=/usr/bin/true \
-CC_AUTOPIPE_QUOTA_DISABLED=1 \
     "$DISPATCHER" start &
 ORCH_PID=$!
 sleep 1.0

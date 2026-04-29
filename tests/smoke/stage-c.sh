@@ -68,13 +68,26 @@ echo '{"passed":true,"score":0.95,"prd_complete":true,"details":{}}'
 EOF
 chmod +x "$PROJECT/.cc-autopipe/verify.sh"
 
+# Pre-populate quota-cache.json with safe values so read_raw consults
+# cache and never hits api.anthropic.com on hosts with live Keychain
+# creds. (Was previously CC_AUTOPIPE_QUOTA_DISABLED=1.)
+"$PY" -c "
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+five = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
+seven = (datetime.now(timezone.utc) + timedelta(days=6)).strftime('%Y-%m-%dT%H:%M:%SZ')
+Path('$USER_HOME/quota-cache.json').write_text(json.dumps({
+    'five_hour': {'utilization': 5, 'resets_at': five},
+    'seven_day': {'utilization': 10, 'resets_at': seven},
+}))
+"
 CC_AUTOPIPE_COOLDOWN_SEC=0 \
 CC_AUTOPIPE_IDLE_SLEEP_SEC=0 \
 CC_AUTOPIPE_MAX_LOOPS=1 \
 CC_AUTOPIPE_CLAUDE_BIN="$REPO_ROOT/tools/mock-claude.sh" \
 CC_AUTOPIPE_HOOKS_DIR="$REPO_ROOT/src/hooks" \
 CC_AUTOPIPE_CYCLE_TIMEOUT_SEC=30 \
-CC_AUTOPIPE_QUOTA_DISABLED=1 \
     "$DISPATCHER" start 2>"$SCRATCH/orch.stderr" >/dev/null \
     || die "orchestrator failed: $(cat "$SCRATCH/orch.stderr")"
 
