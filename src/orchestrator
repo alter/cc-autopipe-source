@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""orchestrator — main loop for cc-autopipe.
+
+Stage B skeleton: reads ~/.cc-autopipe/projects.list, iterates FIFO,
+and logs a `cycle_attempt` event per project per pass. Does NOT spawn
+`claude -p` yet — that lands in Stage C alongside the hooks. Does NOT
+hold a singleton lock yet — that lands in Stage D.
+
+What this stage proves:
+- main loop runs without crashing
+- projects.list is honoured in order
+- per-project state transitions via state.read/write are observed
+- aggregate.jsonl receives one cycle_attempt per project per pass
+- SIGTERM/SIGINT exits cleanly between projects (no abort mid-write)
+
+Refs: SPEC.md §6.1, §15.1
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "lib"
+sys.path.insert(0, str(_LIB))
+import state  # noqa: E402
+
+DEFAULT_COOLDOWN_SEC = 30
+DEFAULT_IDLE_SLEEP_SEC = 60
+
+
+_shutdown = False
+
+
+def _log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"[orchestrator {ts}] {msg}", file=sys.stderr, flush=True)
+
+
+def _user_home() -> Path:
+    return Path(
+        os.environ.get("CC_AUTOPIPE_USER_HOME", str(Path.home() / ".cc-autopipe"))
+    )
+
+
+def _read_projects_list(user_home: Path) -> list[Path]:
+    list_path = user_home / "projects.list"
+    if not list_path.exists():
+        return []
+    return [
+        Path(ln.strip())
+        for ln in list_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _resume_paused_if_due(s: state.State) -> bool:
+    """If state is PAUSED with resume_at in the past, transition to ACTIVE.
+
+    Returns True if a transition happened.
+    """
+    if s.phase != "paused" or s.paused is None:
+        return False
+    try:
+        resume_at = datetime.strptime(s.paused.resume_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) >= resume_at:
+        s.phase = "active"
+        s.paused = None
+        return True
+    return False
+
+
+def process_project(project_path: Path) -> str:
+    """Run one cycle's work for a single project.
+
+    Stage B: reads/writes state, logs cycle_attempt, but does NOT spawn
+    `claude -p`. Returns a short status string for the outer loop.
+    """
+    if not project_path.exists():
+        _log(f"skip {project_path}: path missing")
+        return "missing"
+
+    cca = project_path / ".cc-autopipe"
+    if not cca.exists():
+        _log(f"skip {project_path}: not initialized (run `cc-autopipe init`)")
+        return "uninit"
+
+    s = state.read(project_path)
+
+    if s.phase in ("done", "failed"):
+        return s.phase
+
+    if s.phase == "paused":
+        if _resume_paused_if_due(s):
+            state.write(project_path, s)
+            state.log_event(project_path, "resumed_from_pause")
+            _log(f"{project_path.name}: resumed from pause")
+        else:
+            return "paused"
+
+    s.iteration += 1
+    s.last_cycle_started_at = _now_iso()
+    s.last_progress_at = s.last_cycle_started_at
+    state.write(project_path, s)
+
+    state.log_event(
+        project_path,
+        "cycle_attempt",
+        iteration=s.iteration,
+        stage="B",
+        note="orchestrator skeleton — claude spawn arrives in Stage C",
+    )
+    _log(f"{project_path.name}: cycle_attempt iteration={s.iteration}")
+    return "active"
+
+
+def _install_signal_handlers() -> None:
+    def handler(signum: int, _frame: object) -> None:
+        global _shutdown
+        _shutdown = True
+        _log(f"received signal {signum}, shutting down at next safe point")
+
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
+
+
+def _interruptible_sleep(seconds: float) -> None:
+    """Sleep in 0.25s slices so SIGTERM/SIGINT is observed promptly."""
+    if seconds <= 0:
+        return
+    end = time.time() + seconds
+    while time.time() < end and not _shutdown:
+        time.sleep(min(0.25, end - time.time()))
+
+
+def main(argv: list[str] | None = None) -> int:
+    _install_signal_handlers()
+    cooldown = float(os.environ.get("CC_AUTOPIPE_COOLDOWN_SEC", DEFAULT_COOLDOWN_SEC))
+    idle_sleep = float(
+        os.environ.get("CC_AUTOPIPE_IDLE_SLEEP_SEC", DEFAULT_IDLE_SLEEP_SEC)
+    )
+    # Test escape hatch: stop after N outer passes (a "pass" is one full
+    # walk over projects.list). 0 means run forever.
+    max_loops = int(os.environ.get("CC_AUTOPIPE_MAX_LOOPS", "0"))
+
+    user_home = _user_home()
+    _log(f"started; user_home={user_home}; cooldown={cooldown}s")
+
+    loops = 0
+    while not _shutdown:
+        projects = _read_projects_list(user_home)
+        active_count = 0
+        for project in projects:
+            if _shutdown:
+                break
+            try:
+                status_str = process_project(project)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{project}: cycle error: {exc!r}")
+                status_str = "error"
+            if status_str == "active":
+                active_count += 1
+            _interruptible_sleep(cooldown)
+
+        loops += 1
+        if max_loops and loops >= max_loops:
+            _log(f"reached CC_AUTOPIPE_MAX_LOOPS={max_loops}; exiting")
+            break
+
+        if active_count == 0 and not _shutdown:
+            _interruptible_sleep(idle_sleep)
+
+    _log("orchestrator shutdown gracefully")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -77,7 +77,7 @@ case "$CMD" in
         exec python3 "$CC_AUTOPIPE_HOME/cli/init.py" "$@"
         ;;
     start)
-        not_implemented start B
+        exec python3 "$CC_AUTOPIPE_HOME/orchestrator" "$@"
         ;;
     stop)
         not_implemented stop B
