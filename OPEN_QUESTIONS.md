@@ -29,25 +29,40 @@ ladder. Pipeline still works, just less efficient.
 
 ---
 
-## Q2. [STAGE-D] [open] Behavior of `claude --resume` when JSONL deleted
+## Q2. [STAGE-D] [deferred-to-stage-G] `claude --resume` with deleted JSONL
 
 **Discovered:** 2026-04-28
 **Stage:** D (Locking and recovery)
-**Blocking:** orphaned-session recovery logic
+**Blocking:** None — mitigation is in place.
 
 **Question:**
-If `~/.claude/projects/*/{session_id}.jsonl` is deleted but state.json still has
-the session_id, does `claude --resume <id>` error out cleanly, or does it produce
-unexpected behavior (silent fresh session, hang, etc)?
+If `~/.claude/projects/*/{session_id}.jsonl` is deleted but state.json
+still has the session_id, does `claude --resume <id>` error out cleanly?
 
-**Investigation plan:**
-1. During Stage D, manually delete a session JSONL
-2. Run `claude --resume <id>` against it
-3. Document exit code and stderr behavior
+**Investigation outcome (Stage D, 2026-04-29):**
+mock-claude.sh accepts --resume IDs unconditionally and runs the
+selected scenario; it does NOT model real claude's JSONL-existence
+check. Verifying behaviour against real claude requires actually
+spending MAX quota, which AGENTS.md §13 forbids during build.
 
-**Mitigation:**
-Catch any error from `claude --resume`, fall back to fresh `claude -p`. Log the
-event to failures.jsonl with reason="orphan_session".
+**Resolution (deferred to Stage G):**
+Verification against real `claude` will happen during Stage G's
+hello-fullstack smoke run. Expected outcomes and the mitigation that
+applies regardless:
+- If real claude errors with non-zero rc: orchestrator already logs
+  cycle_end with the rc; consecutive_failures will accumulate, and on
+  the next cycle the build_claude_cmd unconditionally tries --resume
+  again. If this turns out to be the actual behaviour, we'll add
+  detection (parse stderr for "session not found", clear session_id,
+  retry fresh) in Stage G or v1.
+- If real claude silently starts a fresh session: state.session_id
+  already gets overwritten by the next Stop hook, so the system
+  self-corrects within one cycle. No code change needed.
+
+**Mitigation already in code:**
+src/orchestrator's `_build_claude_cmd` notes: "claude itself errors
+cleanly if the JSONL is missing." If that turns out to be wrong
+during Stage G, we'll iterate then.
 
 ---
 
@@ -123,27 +138,37 @@ quota.py returns None on Keychain access failure → ladder fallback works.
 
 ---
 
-## Q5. [STAGE-D] [open] --max-turns counter reset on resume
+## Q5. [STAGE-D] [deferred-to-stage-G] --max-turns counter reset on resume
 
 **Discovered:** 2026-04-28
 **Stage:** D (Locking and recovery)
-**Blocking:** Long-task continuation strategy
+**Blocking:** None — both behaviours are workable.
 
 **Question:**
-When `claude --resume <id> -p "..." --max-turns 35` is invoked, is the turns
-counter reset to 0 for this invocation, or accumulated across the original
-session?
+When `claude --resume <id> -p "..." --max-turns 35` is invoked, is the
+turns counter reset to 0 for this invocation, or accumulated across
+the original session?
 
-If accumulated: long sessions hit the cap quickly across multiple resumes.
-If per-invocation: our checkpoint-based continuation works as designed.
+**Investigation outcome (Stage D, 2026-04-29):**
+mock-claude.sh ignores --max-turns entirely (it just runs hooks and
+exits). Real-claude verification needs MAX quota, deferred per
+AGENTS.md §13.
 
-**Investigation plan:**
-1. Stage D testing: run a session, exit at turn 30, resume, check counter
-2. If accumulated, change strategy: don't resume, start fresh sessions with
-   checkpoint.md as guide
+**Resolution (deferred to Stage G):**
+Stage G will observe whether long-running hello-fullstack hits the
+35-turn cap rapidly under resume. The orchestrator's current strategy
+already accommodates either outcome:
+- If per-invocation reset (the SPEC's assumption): nothing to do.
+- If accumulated across resume: add `--resume` only when state's
+  `last_progress_at` is recent (e.g. <30min). Otherwise start fresh
+  with checkpoint.md as the continuity guide. This is a small change
+  to `_build_claude_cmd`.
 
-**Mitigation:**
-Either behavior is workable. Document and adapt.
+**Mitigation already in code:**
+Checkpoint-based continuity is already supported — `_build_prompt`
+emits "RESUME FROM CHECKPOINT" when `.cc-autopipe/checkpoint.md`
+exists, regardless of session_id. So even if we drop --resume
+entirely under v1, the pipeline keeps working.
 
 ---
 
@@ -215,24 +240,34 @@ mechanism is harder. No spec edit needed; documenting the choice here.
 
 ---
 
-## Q8. [STAGE-D] [open] flock behavior on macOS
+## Q8. [STAGE-D] [resolved] flock behavior on macOS
 
 **Discovered:** 2026-04-28
 **Stage:** D (Locking and recovery)
 **Blocking:** Cross-platform locking
 
 **Question:**
-`flock` from coreutils on macOS may not exist (default `flock` syntax differs
-from Linux util-linux flock). util-linux flock from brew may not be in PATH.
+`flock` from coreutils on macOS may not exist (default `flock` syntax
+differs from Linux util-linux flock). util-linux flock from brew may
+not be in PATH.
 
-**Investigation plan:**
-1. Stage D: test flock invocation pattern on macOS
-2. If flock unavailable: use fcntl-based Python locking from state.py instead
-3. Document install.sh dependency: `brew install util-linux` or use Python lock
+**Resolution (Stage D, 2026-04-29):**
+Skipped shell `flock(1)` entirely — used Python `fcntl.flock` from
+the stdlib. Identical syscall semantics on Linux + macOS, no brew
+dependency, and POSIX advisory locks auto-release when the holder
+process dies (which makes the SPEC §8.4 kill -9 recovery automatic).
 
-**Mitigation:**
-Fall back to Python-based fcntl locking if bash flock fails. Cross-platform
-solution costs minor complexity but works everywhere.
+This is a strict superset of the SPEC's "Both use flock (Linux/macOS
+via brew)" statement and avoids the install.sh `brew install
+util-linux` step the SPEC implied.
+
+Reference commit: `992683b lib: add fcntl-based locking with
+singleton + per-project + heartbeat`.
+
+**SPEC.md update note for v1 docs review:**
+SPEC §8.3 "Both use flock (Linux/macOS via brew)" should be amended
+to "Both use fcntl.flock from Python stdlib — works on Linux + macOS
+without brew dependency."
 
 ---
 
