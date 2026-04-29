@@ -100,6 +100,7 @@ ok "status (human + JSON) renders projects from state.json"
 CC_AUTOPIPE_COOLDOWN_SEC=0 \
 CC_AUTOPIPE_IDLE_SLEEP_SEC=0 \
 CC_AUTOPIPE_MAX_LOOPS=2 \
+CC_AUTOPIPE_CLAUDE_BIN=/usr/bin/true \
     "$DISPATCHER" start 2>"$SCRATCH/orch.stderr" >/dev/null \
     || die "orchestrator failed: $(cat "$SCRATCH/orch.stderr")"
 
@@ -113,16 +114,17 @@ print(json.load(open('$PROJECT/.cc-autopipe/state.json'))['iteration'])
 ")
 [ "$ITER" = "2" ] || die "expected iteration=2 after 2 loops, got $ITER"
 
-# aggregate.jsonl should have 2 cycle_attempt events.
-COUNT=$(grep -c '"event":"cycle_attempt"' "$USER_HOME/log/aggregate.jsonl" || true)
-[ "$COUNT" = "2" ] || die "expected 2 cycle_attempt events in aggregate.jsonl, got $COUNT"
-ok "orchestrator ran 2 loops, logged cycle_attempt events, no claude spawn"
+# aggregate.jsonl should have 2 cycle_start events (Stage C event names).
+COUNT=$(grep -c '"event":"cycle_start"' "$USER_HOME/log/aggregate.jsonl" || true)
+[ "$COUNT" = "2" ] || die "expected 2 cycle_start events in aggregate.jsonl, got $COUNT"
+ok "orchestrator ran 2 loops, logged cycle_start events"
 
 # 3f. SIGTERM during a long sleep exits within 5s.
 log "SIGTERM smoke test"
 unset CC_AUTOPIPE_MAX_LOOPS
 CC_AUTOPIPE_COOLDOWN_SEC=10 \
 CC_AUTOPIPE_IDLE_SLEEP_SEC=10 \
+CC_AUTOPIPE_CLAUDE_BIN=/usr/bin/true \
     "$DISPATCHER" start &
 ORCH_PID=$!
 sleep 1.0
