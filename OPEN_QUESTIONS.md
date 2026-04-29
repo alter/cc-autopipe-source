@@ -207,6 +207,52 @@ solution costs minor complexity but works everywhere.
 
 ---
 
+## Q10. [STAGE-B] [resolved] src/cli/ subdirectory not in SPEC §5.1
+
+**Discovered:** 2026-04-29 during Stage B implementation.
+**Stage:** B (Orchestrator skeleton)
+**Blocking:** None. Behavioural deviation only.
+
+**Question:**
+SPEC.md §5.1 lists `helpers/cc-autopipe-checkpoint`, `helpers/cc-autopipe-block`
+under `helpers/`, plus `lib/{state,quota,ratelimit}.py` under `lib/`. There
+is no top-level slot for "command implementations". Stage B introduced
+`src/cli/init.py` and `src/cli/status.py` as Python modules invoked from
+the bash dispatcher.
+
+Why not bash:
+- `cc-autopipe init` does template substitution, JSON validation
+  (settings.json), and idempotent line-edits to projects.list and
+  .gitignore. Doing this in pure bash is error-prone (no atomic
+  multi-line edits, fragile JSON manipulation, gnarly heredoc escaping).
+- `cc-autopipe status` produces a human table AND `--json` output. JSON
+  serialization across nested project state, quota cache, and event
+  history is trivial in Python and ugly in bash.
+
+Why not in `lib/`:
+- `lib/` is shared library code (state, quota, ratelimit, tg). CLI
+  command implementations are distinct — they have argparse surfaces,
+  user-facing output, and side effects on the user environment. Putting
+  them in `lib/` would conflate two concerns.
+
+**Resolution:**
+Implementation accepted. The bash dispatcher (`src/helpers/cc-autopipe`)
+delegates `init` and `status` to `python3 $CC_AUTOPIPE_HOME/cli/init.py`
+and `.../cli/status.py` respectively. This pattern will likely also be
+used for `cc-autopipe doctor` and `cc-autopipe tail` in Stage F.
+
+Reference commits:
+- `8064a5f cli: implement cc-autopipe init`
+- `dc8d059 cli: implement cc-autopipe status`
+
+**SPEC.md update note for v1 docs review:**
+SPEC.md §5.1 should be amended to add `cli/` between `lib/` and
+`templates/`, with command-implementation modules listed there. Current
+v0.5 spec under-specifies the boundary between the bash dispatcher and
+its command implementations.
+
+---
+
 ## Resolved questions
 
 (None yet. As questions are resolved, move them here with resolution commit refs.)
