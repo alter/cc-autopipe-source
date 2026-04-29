@@ -35,6 +35,7 @@ from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
 sys.path.insert(0, str(_LIB))
+import locking  # noqa: E402
 import state  # noqa: E402
 
 DEFAULT_COOLDOWN_SEC = 30
@@ -413,34 +414,55 @@ def main(argv: list[str] | None = None) -> int:
     max_loops = int(os.environ.get("CC_AUTOPIPE_MAX_LOOPS", "0"))
 
     user_home = _user_home()
-    _log(f"started; user_home={user_home}; cooldown={cooldown}s")
 
-    loops = 0
-    while not _shutdown:
-        projects = _read_projects_list(user_home)
-        active_count = 0
-        for project in projects:
-            if _shutdown:
+    # Acquire the singleton orchestrator lock per SPEC §8.3. fcntl
+    # auto-releases on process death, so a previous orchestrator killed
+    # via kill -9 doesn't block us — this acquire just succeeds.
+    singleton = locking.acquire_singleton(user_home)
+    if singleton is None:
+        prior = locking.read_lock_payload(user_home / "orchestrator.pid") or {}
+        prior_pid = prior.get("pid", "?")
+        prior_started = prior.get("started_at", "?")
+        _log(
+            f"another orchestrator is already running "
+            f"(pid={prior_pid}, started_at={prior_started}). Exiting."
+        )
+        return 1
+
+    try:
+        _log(
+            f"started; user_home={user_home}; cooldown={cooldown}s; "
+            f"singleton_pid={singleton.pid}"
+        )
+
+        loops = 0
+        while not _shutdown:
+            projects = _read_projects_list(user_home)
+            active_count = 0
+            for project in projects:
+                if _shutdown:
+                    break
+                try:
+                    status_str = process_project(project)
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"{project}: cycle error: {exc!r}")
+                    status_str = "error"
+                if status_str == "active":
+                    active_count += 1
+                _interruptible_sleep(cooldown)
+
+            loops += 1
+            if max_loops and loops >= max_loops:
+                _log(f"reached CC_AUTOPIPE_MAX_LOOPS={max_loops}; exiting")
                 break
-            try:
-                status_str = process_project(project)
-            except Exception as exc:  # noqa: BLE001
-                _log(f"{project}: cycle error: {exc!r}")
-                status_str = "error"
-            if status_str == "active":
-                active_count += 1
-            _interruptible_sleep(cooldown)
 
-        loops += 1
-        if max_loops and loops >= max_loops:
-            _log(f"reached CC_AUTOPIPE_MAX_LOOPS={max_loops}; exiting")
-            break
+            if active_count == 0 and not _shutdown:
+                _interruptible_sleep(idle_sleep)
 
-        if active_count == 0 and not _shutdown:
-            _interruptible_sleep(idle_sleep)
-
-    _log("orchestrator shutdown gracefully")
-    return 0
+        _log("orchestrator shutdown gracefully")
+        return 0
+    finally:
+        singleton.release()
 
 
 if __name__ == "__main__":
