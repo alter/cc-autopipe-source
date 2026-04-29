@@ -1,0 +1,111 @@
+#!/bin/bash
+# cc-autopipe — top-level dispatcher.
+# Resolves CC_AUTOPIPE_HOME, then dispatches to subcommands.
+# Refs: SPEC.md §12, AGENTS.md §3.1
+
+set -euo pipefail
+
+# Resolve CC_AUTOPIPE_HOME if not set: assume this script lives in <home>/helpers/.
+if [ -z "${CC_AUTOPIPE_HOME:-}" ]; then
+    SELF="${BASH_SOURCE[0]}"
+    while [ -L "$SELF" ]; do
+        TARGET="$(readlink "$SELF")"
+        case "$TARGET" in
+            /*) SELF="$TARGET" ;;
+            *)  SELF="$(cd "$(dirname "$SELF")" && pwd)/$TARGET" ;;
+        esac
+    done
+    CC_AUTOPIPE_HOME="$(cd "$(dirname "$SELF")/.." && pwd)"
+    export CC_AUTOPIPE_HOME
+fi
+
+VERSION_FILE="$CC_AUTOPIPE_HOME/VERSION"
+VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")"
+
+usage() {
+    cat <<EOF
+cc-autopipe v${VERSION} — supervisor for Claude Code 2.1+ headless mode
+
+Usage: cc-autopipe <command> [args]
+
+Project lifecycle:
+  init [--force]               Initialise .cc-autopipe/ in cwd        [stage B]
+  start [--background]         Start the orchestrator                  [stage B]
+  stop                         Stop the running orchestrator           [stage B]
+  status [--json]              Show project phases and recent events   [stage B]
+  resume <project>             Clear PAUSED/FAILED, reset failures     [stage F]
+  run <project> [--once]       Run a single cycle for one project      [stage F]
+  tail                         Follow aggregate.jsonl                  [stage F]
+  doctor                       Verify prerequisites and config         [stage F]
+
+Helpers (called from inside Claude sessions):
+  checkpoint <text>            Save .cc-autopipe/checkpoint.md         [stage F]
+  block <reason>               Mark project blocked, alert human       [stage F]
+
+Meta:
+  --help, -h                   Show this help
+  --version, -V                Print engine version
+
+Engine home: $CC_AUTOPIPE_HOME
+Spec: SPEC.md  |  Workflow: AGENTS.md  |  Status: STATUS.md
+EOF
+}
+
+not_implemented() {
+    local cmd=$1
+    local stage=$2
+    echo "cc-autopipe: '$cmd' not implemented yet (planned for stage $stage)" >&2
+    exit 64
+}
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 0
+fi
+
+CMD=$1
+shift
+
+case "$CMD" in
+    -h|--help|help)
+        usage
+        ;;
+    -V|--version|version)
+        echo "cc-autopipe ${VERSION}"
+        ;;
+    init)
+        not_implemented init B
+        ;;
+    start)
+        not_implemented start B
+        ;;
+    stop)
+        not_implemented stop B
+        ;;
+    status)
+        not_implemented status B
+        ;;
+    resume)
+        not_implemented resume F
+        ;;
+    run)
+        not_implemented run F
+        ;;
+    tail)
+        not_implemented tail F
+        ;;
+    doctor)
+        not_implemented doctor F
+        ;;
+    checkpoint)
+        not_implemented checkpoint F
+        ;;
+    block)
+        not_implemented block F
+        ;;
+    *)
+        echo "cc-autopipe: unknown command '$CMD'" >&2
+        echo "Run 'cc-autopipe --help' for the list of commands." >&2
+        exit 64
+        ;;
+esac
