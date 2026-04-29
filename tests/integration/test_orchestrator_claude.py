@@ -80,6 +80,7 @@ def _run_orch(
     env["CC_AUTOPIPE_IDLE_SLEEP_SEC"] = "0"
     env["CC_AUTOPIPE_MAX_LOOPS"] = str(max_loops)
     env["CC_AUTOPIPE_CLAUDE_BIN"] = str(MOCK_CLAUDE)
+    env["CC_AUTOPIPE_QUOTA_DISABLED"] = "1"
     env["CC_AUTOPIPE_HOOKS_DIR"] = str(HOOKS_DIR)
     env["CC_AUTOPIPE_CYCLE_TIMEOUT_SEC"] = str(cycle_timeout)
     if mock_scenario:

@@ -35,6 +35,7 @@ def _orch_env(user_home: Path, **overrides: str) -> dict[str, str]:
     env["CC_AUTOPIPE_COOLDOWN_SEC"] = "0"
     env["CC_AUTOPIPE_IDLE_SLEEP_SEC"] = "0"
     env["CC_AUTOPIPE_CLAUDE_BIN"] = "/usr/bin/true"
+    env["CC_AUTOPIPE_QUOTA_DISABLED"] = "1"
     env.update(overrides)
     return env
 

@@ -90,6 +90,7 @@ def _run_orch(
     # treats each cycle as "claude returned cleanly". The dedicated
     # test_orchestrator_claude.py uses the real mock-claude.sh.
     env["CC_AUTOPIPE_CLAUDE_BIN"] = "/usr/bin/true"
+    env["CC_AUTOPIPE_QUOTA_DISABLED"] = "1"
     return subprocess.run(
         [sys.executable, str(ORCHESTRATOR)],
         capture_output=True,
@@ -267,6 +268,8 @@ def test_sigterm_exits_cleanly(env_paths: tuple[Path, Path]) -> None:
     env["CC_AUTOPIPE_COOLDOWN_SEC"] = "10"  # long enough to catch us mid-sleep
     env["CC_AUTOPIPE_IDLE_SLEEP_SEC"] = "10"
     env["CC_AUTOPIPE_MAX_LOOPS"] = "0"
+    env["CC_AUTOPIPE_CLAUDE_BIN"] = "/usr/bin/true"
+    env["CC_AUTOPIPE_QUOTA_DISABLED"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, str(ORCHESTRATOR)],
