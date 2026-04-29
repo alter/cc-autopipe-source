@@ -74,7 +74,7 @@ case "$CMD" in
         echo "cc-autopipe ${VERSION}"
         ;;
     init)
-        not_implemented init B
+        exec python3 "$CC_AUTOPIPE_HOME/cli/init.py" "$@"
         ;;
     start)
         not_implemented start B
