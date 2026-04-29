@@ -136,7 +136,7 @@ Default to "treat as normal open task". Document choice.
 
 ---
 
-## Q7. [STAGE-A] [open] Telegram multiline message rendering
+## Q7. [STAGE-A] [resolved] Telegram multiline message rendering
 
 **Discovered:** 2026-04-28
 **Stage:** A (Foundations)
@@ -153,6 +153,36 @@ If broken, add MarkdownV2 mode + escape sequences.
 **Mitigation:**
 For v0.5, restrict TG messages to single-line. Use semicolons instead of
 newlines.
+
+**Resolution (2026-04-29, Stage A):**
+Switched tg.sh from `-d "text=$MSG"` to `--data-urlencode "text=$MSG"`.
+curl handles encoding correctly including newlines, special chars, and
+unicode without further escaping. End-to-end TG round-trip verification
+deferred to a session where Roman supplies real `secrets.env` (DoD
+validates the no-secrets/exit-0 contract, not the wire format).
+
+---
+
+## Q9. [STAGE-A] [resolved] compat.sh: GNU coreutils on macOS host
+
+**Discovered:** 2026-04-29 during Stage A smoke testing.
+**Stage:** A (Foundations)
+**Blocking:** Compat shim correctness on hybrid hosts.
+
+**Question:**
+SPEC.md §6.6 dispatches date/stat syntax on `uname -s` (Darwin → BSD,
+Linux → GNU). On Roman's macOS host, `/opt/homebrew/opt/coreutils/
+libexec/gnubin` is ahead of `/usr/bin` on PATH, so `date` and `stat`
+are GNU even though uname says Darwin. The spec's BSD branch fails.
+
+**Resolution:**
+compat.sh now feature-detects the flavour:
+  - `date --version` succeeds → GNU; fails → BSD
+  - `stat --version` succeeds → GNU; fails → BSD
+This is a strict superset of the spec's behaviour and is more robust.
+SPEC.md §6.6 sample code is illustrative — keeping the function
+contract (`date_from_epoch`, `file_mtime`) untouched; only the dispatch
+mechanism is harder. No spec edit needed; documenting the choice here.
 
 ---
 
