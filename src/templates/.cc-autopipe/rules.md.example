@@ -1,0 +1,27 @@
+# Project-specific rules
+
+This file is appended to Claude's context each session. Keep it
+short — 70%-adherence soft rules belong here; deterministic blocks
+belong in PreToolUse.
+
+## Workflow rules
+
+- Pick the topmost open task in `backlog.md` first.
+- Run `.cc-autopipe/verify.sh` before declaring a task done.
+- Save progress with `cc-autopipe-checkpoint` near turn 25.
+- If you hit something out of scope, write to `OPEN_QUESTIONS.md`,
+  don't silently work around it.
+
+## Subagent delegation (soft rule, ~70% adherence acceptable)
+
+Delegate to `io-worker` ONLY when:
+- File expected >500 lines
+- Bash command output expected >5KB
+- 3+ chained IO calls in sequence (read → grep → read)
+
+Otherwise: use Read/Bash directly.
+
+## Project-specific guidance
+
+(Add what's specific to this project. Stack idioms, files Claude
+should never edit, paths that need special handling, etc.)

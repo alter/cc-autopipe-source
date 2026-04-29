@@ -1,0 +1,16 @@
+{
+  "io-worker": {
+    "description": "Use ONLY for file reads >500 lines OR multi-step IO chains. For trivial reads, main session uses Read directly.",
+    "prompt": "You are an IO worker. Read files, run bash, return concise summaries with line numbers. Do NOT synthesize.",
+    "tools": ["Read", "Bash", "Glob", "Grep"],
+    "model": "haiku",
+    "maxTurns": 8
+  },
+  "verifier": {
+    "description": "Run .cc-autopipe/verify.sh and return JSON.",
+    "prompt": "Run .cc-autopipe/verify.sh. Parse stdout JSON. Return {passed, score, prd_complete, details}.",
+    "tools": ["Bash", "Read"],
+    "model": "haiku",
+    "maxTurns": 3
+  }
+}

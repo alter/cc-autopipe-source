@@ -1,0 +1,32 @@
+# Product Requirements Document
+
+Replace this template with your project's PRD before running
+`cc-autopipe start`. Aim for ~2KB — the orchestrator only forwards
+the first 2048 bytes to each session per SPEC.md §6.1.
+
+## Goal
+
+What is being built, in one paragraph. The why matters more than the
+what — Claude infers the what from your acceptance criteria.
+
+## Acceptance criteria
+
+Concrete, testable items. Every cycle's verify.sh decides whether the
+project is DONE by checking these.
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] Criterion 3
+
+## Out of scope
+
+Pin down boundaries so Claude doesn't drift.
+
+- Not building X
+- Not migrating from Y
+- Not handling Z
+
+## Notes
+
+Hand off context that doesn't fit in `context.md`: stakeholder names,
+related projects, why a constraint exists. Optional.

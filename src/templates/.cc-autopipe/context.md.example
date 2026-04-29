@@ -1,0 +1,29 @@
+# Project context
+
+Stack, constraints, conventions Claude should know before touching code.
+Only the first ~1KB is forwarded each cycle (SPEC.md §6.1) — keep it
+tight.
+
+## Stack
+
+- Language(s):
+- Frameworks:
+- Build tooling:
+- Test runner:
+
+## Constraints
+
+- Runtime targets:
+- Performance budgets:
+- Compatibility requirements:
+
+## Conventions
+
+- File layout:
+- Naming:
+- Commit/branch rules:
+
+## Pre-existing decisions
+
+Anything Claude should not relitigate. (Choice of database, why we use X
+instead of Y, etc.)

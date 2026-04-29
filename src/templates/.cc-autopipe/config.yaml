@@ -1,0 +1,26 @@
+schema_version: 1
+name: CHANGEME
+type: app
+language: unknown
+runtime:
+  python: "3.11"
+  node: "20"
+
+limits:
+  max_iterations: 200
+  max_hours: 72
+  watchdog_timeout_min: 10
+
+termination:
+  threshold: 0.85
+  on_iterations: 200
+  on_hours: 72
+
+models:
+  default: "claude-sonnet-4-6"
+  io_worker: "claude-haiku-4-5"
+  verifier: "claude-haiku-4-5"
+
+paths:
+  src: "."
+  tests: "."

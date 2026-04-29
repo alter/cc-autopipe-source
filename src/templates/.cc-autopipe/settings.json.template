@@ -1,0 +1,49 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CC_AUTOPIPE_HOME}/hooks/session-start.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CC_AUTOPIPE_HOME}/hooks/pre-tool-use.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CC_AUTOPIPE_HOME}/hooks/stop.sh",
+            "timeout": 90
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CC_AUTOPIPE_HOME}/hooks/stop-failure.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

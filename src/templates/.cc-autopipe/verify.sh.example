@@ -1,0 +1,30 @@
+#!/bin/bash
+# verify.sh — emits one JSON line on stdout per SPEC.md §7.7.
+# Required keys: passed (bool), score (0..1), prd_complete (bool), details (object).
+# Engine times out after 60s.
+#
+# Replace the body of this file with the real checks for your project
+# (pytest, npm test, docker compose ps, integration script, etc).
+
+set -u  # NOT -e: we want to capture failures, not abort on them.
+
+# Run your real checks here.
+# Examples:
+#   pytest --tb=line -q                              || ALL_PASS=0
+#   npm --prefix frontend run build                  || ALL_PASS=0
+#   docker compose -f compose.yml config >/dev/null  || ALL_PASS=0
+
+ALL_PASS=0
+SCORE=0.0
+PRD_COMPLETE="false"
+
+cat <<JSON
+{
+  "passed": $( [ "$ALL_PASS" -eq 1 ] && echo true || echo false ),
+  "score": $SCORE,
+  "prd_complete": $PRD_COMPLETE,
+  "details": {
+    "note": "stub verify.sh — replace before running cc-autopipe start"
+  }
+}
+JSON
