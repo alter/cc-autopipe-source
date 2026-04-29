@@ -31,13 +31,18 @@ SCENARIO="success"
 PROJECT_DIR="$(pwd)"
 RESUME_ID=""
 
-if [ $# -gt 0 ] && [ "$1" = "-p" ]; then
+# Popen detection: any arg list that starts with `-` (e.g. `-p`,
+# `--resume`, `--max-turns`) is the orchestrator invoking us as if
+# we were `claude`. Walk the args to find -p/--resume; ignore the rest.
+if [ $# -gt 0 ] && [ "${1:0:1}" = "-" ]; then
     STYLE="popen"
     SCENARIO="${CC_AUTOPIPE_MOCK_SCENARIO:-success}"
-    shift  # drop -p
-    # Walk remaining args to find --resume <id> (we ignore everything else).
     while [ $# -gt 0 ]; do
         case "$1" in
+            -p)
+                shift
+                shift || true  # drop the prompt
+                ;;
             --resume)
                 shift
                 RESUME_ID="${1:-}"
