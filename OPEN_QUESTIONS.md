@@ -282,6 +282,49 @@ its command implementations.
 
 ---
 
+## Q11. [STAGE-D] [resolved] Factor locking out of src/orchestrator
+
+**Discovered:** 2026-04-29 at start of Stage D.
+**Stage:** D (Locking and recovery)
+**Blocking:** None. Pre-implementation architectural choice.
+
+**Question:**
+After Stage C, src/orchestrator is 447 lines. SPEC.md §6.1 budgets it
+at ~400 lines for the FINAL form. Stage D adds singleton lock,
+per-project lock, heartbeat thread, stale detection, and crash
+recovery — naive estimate ~150-200 lines, pushing the file to 600+.
+
+Two options:
+1. Keep the orchestrator monolithic and accept the budget overrun.
+2. Factor locking into `src/lib/locking.py`, keep orchestrator as
+   "main loop only".
+
+**Resolution:**
+Option 2. Factor into `src/lib/locking.py`.
+
+Reasoning:
+- Locking has a clean library API (acquire / release / heartbeat) with
+  no need for orchestrator state. Easy to extract.
+- Q10 already established the same pattern for command implementations
+  (`src/cli/init.py`, `src/cli/status.py`). This is consistent precedent.
+- `lib/locking.py` is testable in isolation. A monolithic orchestrator
+  forces locking tests to spin up the whole main loop.
+- SPEC §5.1 listed `lib/state.py`, `lib/quota.py`, `lib/ratelimit.py`
+  under `lib/`. Adding `lib/locking.py` is a natural extension with the
+  same character (atomic file operations, no main-loop coupling). The
+  spec under-specifies but doesn't contradict.
+
+**SPEC.md update note for v1 docs review:**
+SPEC.md §5.1 should add `lib/locking.py` to the lib/ inventory (just
+like Q10's note about adding `cli/`). Also §6.1's "~400 lines"
+orchestrator budget should be split between orchestrator (main loop +
+prompt + claude spawn) and locking.
+
+Reference commit (forward, will be filled in by the lib/locking.py
+commit when it lands).
+
+---
+
 ## Resolved questions
 
 (None yet. As questions are resolved, move them here with resolution commit refs.)
