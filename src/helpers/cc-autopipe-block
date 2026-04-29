@@ -1,0 +1,140 @@
+#!/bin/bash
+# cc-autopipe-block — mark project FAILED, write HUMAN_NEEDED.md, alert TG.
+# Refs: SPEC.md §6 (helpers), §12.8 (cc-autopipe block), §15.1 (TG alert)
+#
+# Usage:
+#   cc-autopipe-block "<reason>"
+#   cc-autopipe-block --project /path/to/proj "<reason>"
+#
+# Called from inside a Claude session when the agent decides it cannot
+# proceed without human intervention (ambiguous PRD, missing creds,
+# impossible verifier, etc). The orchestrator's main loop will skip
+# FAILED projects on subsequent iterations until `cc-autopipe resume`
+# clears the state.
+
+set -euo pipefail
+
+PROG=$(basename "$0")
+PROJECT=""
+REASON=""
+
+usage() {
+    cat <<EOF
+$PROG — mark a project FAILED and request human attention
+
+Usage:
+  $PROG [--project PATH] "<reason>"
+
+Options:
+  --project PATH   Target project directory (default: cwd).
+  -h, --help       Show this help.
+
+Effects:
+  1. state.json: phase = "failed"
+  2. .cc-autopipe/HUMAN_NEEDED.md created with timestamp + reason
+  3. Telegram alert (best-effort; silent if secrets.env missing)
+
+Use 'cc-autopipe resume <project>' to clear and retry.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --project)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --project needs a path" >&2; exit 64; }
+            PROJECT="$1"
+            shift
+            ;;
+        --)
+            shift
+            REASON="$*"
+            break
+            ;;
+        -*)
+            echo "$PROG: unknown option '$1'" >&2
+            exit 64
+            ;;
+        *)
+            REASON="$*"
+            break
+            ;;
+    esac
+done
+
+if [ -z "$PROJECT" ]; then
+    PROJECT="$(pwd)"
+fi
+
+if [ ! -d "$PROJECT/.cc-autopipe" ]; then
+    echo "$PROG: $PROJECT is not initialised (no .cc-autopipe/)" >&2
+    exit 1
+fi
+
+if [ -z "${REASON// /}" ]; then
+    echo "$PROG: a non-empty reason is required" >&2
+    exit 64
+fi
+
+CC_AUTOPIPE_HOME="${CC_AUTOPIPE_HOME:-$HOME/cc-autopipe}"
+STATE_PY="$CC_AUTOPIPE_HOME/lib/state.py"
+TG_SH="$CC_AUTOPIPE_HOME/lib/tg.sh"
+
+PROJECT_NAME=$(basename "$PROJECT")
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# 1. Set phase=failed by writing state.json directly via Python (state.py
+#    has no set-phase mutator; the helper does this in-place).
+python3 - "$PROJECT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+project = Path(sys.argv[1])
+sf = project / ".cc-autopipe" / "state.json"
+try:
+    s = json.loads(sf.read_text(encoding="utf-8"))
+except (FileNotFoundError, json.JSONDecodeError):
+    s = {"schema_version": 1, "name": project.name, "phase": "active",
+         "iteration": 0, "session_id": None, "last_score": None,
+         "last_passed": None, "prd_complete": False,
+         "consecutive_failures": 0, "last_cycle_started_at": None,
+         "last_progress_at": None, "threshold": 0.85, "paused": None}
+s["phase"] = "failed"
+tmp = sf.with_suffix(".tmp.block")
+tmp.write_text(json.dumps(s, indent=2), encoding="utf-8")
+tmp.replace(sf)
+PY
+
+# 2. HUMAN_NEEDED.md (existence is the signal; content for human eyes).
+HUMAN_FILE="$PROJECT/.cc-autopipe/HUMAN_NEEDED.md"
+cat > "$HUMAN_FILE" <<EOF
+# Human needed: $PROJECT_NAME
+
+**Blocked at:** $NOW
+
+**Reason:**
+$REASON
+
+---
+
+To clear this block:
+1. Resolve the underlying issue (edit prd.md / context.md / fixtures / creds).
+2. Run: \`cc-autopipe resume $PROJECT\`
+3. Optionally inspect failures.jsonl: \`cat $PROJECT/.cc-autopipe/memory/failures.jsonl\`
+EOF
+
+# 3. log-event so status / tail surface it.
+python3 "$STATE_PY" log-event "$PROJECT" blocked "reason=$REASON" >/dev/null 2>&1 || true
+
+# 4. TG alert (best-effort).
+bash "$TG_SH" "[$PROJECT_NAME] BLOCKED: $REASON. See HUMAN_NEEDED.md, then 'cc-autopipe resume'." || true
+
+echo "✓ blocked: $PROJECT_NAME"
+echo "  state.json phase = failed"
+echo "  HUMAN_NEEDED.md  = $HUMAN_FILE"
+echo "  Run 'cc-autopipe resume $PROJECT' once the issue is resolved."
