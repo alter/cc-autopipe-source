@@ -74,7 +74,7 @@ case "$SCENARIO" in
         run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
         # This SHOULD be blocked by pre-tool-use hook
         run_hook pre-tool-use "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat ~/.cc-autopipe/secrets.env\"}}"
-        local rc=$?
+        rc=$?
         if [ $rc -eq 2 ]; then
             echo "[mock-claude] PreToolUse correctly blocked secret access (exit 2)" >&2
             exit 0
@@ -83,11 +83,11 @@ case "$SCENARIO" in
             exit 1
         fi
         ;;
-    
+
     long-bash)
         run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
         run_hook pre-tool-use "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pip install some-large-package\"}}"
-        local rc=$?
+        rc=$?
         if [ $rc -eq 2 ]; then
             echo "[mock-claude] PreToolUse correctly blocked long-op (exit 2)" >&2
             exit 0
