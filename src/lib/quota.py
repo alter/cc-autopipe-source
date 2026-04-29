@@ -10,10 +10,17 @@ Two layers of degradation:
   malformed response. Caller treats this as "unknown, proceed with
   caution".
 
-The endpoint is undocumented (Q1). If Anthropic changes the response
-shape, fetch_quota's parser keys (.five_hour.utilization, .resets_at,
-.seven_day.…) will read missing keys as None / 0.0 — read_cached then
-returns a Quota with degraded values rather than crashing.
+The endpoint is undocumented (Q1, Q12). If Anthropic changes the
+response shape, fetch_quota's parser keys (.five_hour.utilization,
+.resets_at, .seven_day.…) will read missing keys as None / 0.0 —
+read_cached then returns a Quota with degraded values rather than
+crashing.
+
+Format note (Q12, 2026-04-29): real oauth/usage emits integer
+percents (0..100). SPEC.md §6.3 originally documented floats (0..1).
+normalize_utilization handles both shapes so the cache file may carry
+either form (real endpoint integer or test-fixture float) and Quota
+internals are always float 0.0-1.0.
 
 Test override: CC_AUTOPIPE_QUOTA_ENDPOINT replaces the api.anthropic.com
 URL so tools/mock-quota-server.py can be hit instead. CC_AUTOPIPE_USER_HOME
@@ -202,6 +209,35 @@ def fetch_quota() -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def normalize_utilization(v: Any) -> float:
+    """Coerce an oauth/usage `utilization` field to internal float 0.0-1.0.
+
+    Internal convention: a Quota's *_pct fields are floats in [0.0, 1.0],
+    so the orchestrator pre-flight comparison reads `>= 0.95` / `>= 0.90`.
+    The real oauth/usage endpoint emits integers in [0, 100] (verified
+    against the live endpoint on 2026-04-29; SPEC.md §6.3 documented
+    floats — wrong, see Q12). Older/test fixtures use float fractions
+    in [0.0, 1.0].
+
+    Disambiguation rule:
+      - int 0..100        → divide by 100  (real endpoint shape)
+      - float >  1.0      → divide by 100  (defensive: float percent)
+      - float in [0, 1.0] → use as-is      (legacy / test fixture shape)
+      - bool / None / non-numeric → 0.0
+    """
+    if v is None or isinstance(v, bool):
+        return 0.0
+    if isinstance(v, int):
+        return v / 100.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if f > 1.0:
+        return f / 100.0
+    return f
+
+
 @dataclass
 class Quota:
     five_hour_pct: float  # 0.0 to 1.0
@@ -214,9 +250,9 @@ class Quota:
         five = d.get("five_hour") or {}
         seven = d.get("seven_day") or {}
         return cls(
-            five_hour_pct=float(five.get("utilization") or 0.0),
+            five_hour_pct=normalize_utilization(five.get("utilization")),
             five_hour_resets_at=_parse_iso(five.get("resets_at")),
-            seven_day_pct=float(seven.get("utilization") or 0.0),
+            seven_day_pct=normalize_utilization(seven.get("utilization")),
             seven_day_resets_at=_parse_iso(seven.get("resets_at")),
         )
 
