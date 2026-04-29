@@ -1,11 +1,15 @@
-"""Integration tests for src/orchestrator (Stage B skeleton).
+"""Integration tests for src/orchestrator framework behaviour.
 
-Covers Stage B DoD items for the orchestrator:
-- main loop reads projects.list and iterates FIFO
-- does NOT spawn claude (logs cycle_attempt only)
+Covers Stage B DoD items that test the main loop / phase handling
+without depending on hook execution:
+- reads projects.list and iterates FIFO
 - exits cleanly on SIGTERM
 - skips done/failed projects
 - transitions paused→active when resume_at has passed
+
+Tests use CC_AUTOPIPE_CLAUDE_BIN=/usr/bin/true so each cycle exits
+zero immediately without firing hooks. The Stage C dedicated
+test_orchestrator_claude.py covers the actual claude+hooks integration.
 """
 
 from __future__ import annotations
@@ -80,6 +84,12 @@ def _run_orch(
     env["CC_AUTOPIPE_COOLDOWN_SEC"] = str(cooldown)
     env["CC_AUTOPIPE_IDLE_SLEEP_SEC"] = str(idle_sleep)
     env["CC_AUTOPIPE_MAX_LOOPS"] = str(max_loops)
+    # Existing Stage B framework tests don't care about hook execution —
+    # they verify FIFO/paused/skip/signal behavior. Use /bin/true as a
+    # zero-effect stand-in for the claude binary so the orchestrator
+    # treats each cycle as "claude returned cleanly". The dedicated
+    # test_orchestrator_claude.py uses the real mock-claude.sh.
+    env["CC_AUTOPIPE_CLAUDE_BIN"] = "/usr/bin/true"
     return subprocess.run(
         [sys.executable, str(ORCHESTRATOR)],
         capture_output=True,
@@ -111,7 +121,7 @@ def env_paths(tmp_path: Path) -> tuple[Path, Path]:
 # --- main loop -----------------------------------------------------------
 
 
-def test_one_loop_active_project_logs_cycle_attempt(
+def test_one_loop_active_project_logs_cycle_events(
     env_paths: tuple[Path, Path],
 ) -> None:
     user_home, root = env_paths
@@ -126,53 +136,12 @@ def test_one_loop_active_project_logs_cycle_attempt(
     assert s["last_cycle_started_at"] is not None
 
     events = _read_aggregate(user_home)
-    cycle_events = [e for e in events if e.get("event") == "cycle_attempt"]
-    assert len(cycle_events) == 1
-    assert cycle_events[0]["project"] == "alpha"
-    assert cycle_events[0]["iteration"] == 1
-    assert cycle_events[0]["stage"] == "B"
-
-
-def test_does_not_spawn_claude(tmp_path: Path) -> None:
-    """The Stage B orchestrator must not invoke `claude`. We prove this
-    by stripping PATH so any accidental subprocess.run(['claude', ...])
-    would raise FileNotFoundError and fail the cycle. The orchestrator
-    should still complete the cycle cleanly because it never tries to
-    exec claude."""
-    user_home = tmp_path / "uhome"
-    root = tmp_path / "p"
-    root.mkdir()
-    p = _seed_project(root, "alpha", phase="active")
-    _write_projects_list(user_home, [p])
-
-    env = os.environ.copy()
-    env["CC_AUTOPIPE_HOME"] = str(SRC)
-    env["CC_AUTOPIPE_USER_HOME"] = str(user_home)
-    env["CC_AUTOPIPE_COOLDOWN_SEC"] = "0"
-    env["CC_AUTOPIPE_IDLE_SLEEP_SEC"] = "0"
-    env["CC_AUTOPIPE_MAX_LOOPS"] = "1"
-    env["PATH"] = "/usr/bin:/bin"  # `claude` not findable here
-
-    cp = subprocess.run(
-        [sys.executable, str(ORCHESTRATOR)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-    assert cp.returncode == 0, cp.stderr
-    # The cycle ran (state advanced to iteration=1) without any claude
-    # spawn — confirmed by the cycle_attempt event being the ONLY
-    # cycle-related event in aggregate.jsonl for this project.
-    assert _read_state(p)["iteration"] == 1
-    cycle_events = [
-        e
-        for e in _read_aggregate(user_home)
-        if e.get("project") == "alpha"
-        and e.get("event") in ("cycle_start", "cycle_end", "cycle_attempt")
-    ]
-    assert len(cycle_events) == 1
-    assert cycle_events[0]["event"] == "cycle_attempt"
+    starts = [e for e in events if e.get("event") == "cycle_start"]
+    ends = [e for e in events if e.get("event") == "cycle_end"]
+    assert len(starts) == 1 and len(ends) == 1
+    assert starts[0]["project"] == "alpha"
+    assert starts[0]["iteration"] == 1
+    assert ends[0]["rc"] == 0
 
 
 def test_fifo_ordering_across_multiple_projects(
@@ -185,10 +154,10 @@ def test_fifo_ordering_across_multiple_projects(
     _write_projects_list(user_home, [a, b, c])
 
     _run_orch(user_home, max_loops=1)
-    events = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_attempt"
+    starts = [
+        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
     ]
-    assert [e["project"] for e in events] == ["alpha", "bravo", "charlie"]
+    assert [e["project"] for e in starts] == ["alpha", "bravo", "charlie"]
 
 
 def test_skips_done_and_failed_projects(env_paths: tuple[Path, Path]) -> None:
@@ -205,7 +174,7 @@ def test_skips_done_and_failed_projects(env_paths: tuple[Path, Path]) -> None:
     assert _read_state(c)["iteration"] == 1  # incremented
 
     events = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_attempt"
+        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
     ]
     assert {e["project"] for e in events} == {"charlie"}
 
@@ -242,7 +211,7 @@ def test_paused_project_due_resumes_then_runs(env_paths: tuple[Path, Path]) -> N
 
     events = _read_aggregate(user_home)
     assert any(e.get("event") == "resumed_from_pause" for e in events)
-    assert any(e.get("event") == "cycle_attempt" for e in events)
+    assert any(e.get("event") == "cycle_start" for e in events)
 
 
 def test_uninit_project_is_skipped_not_crashed(
@@ -285,7 +254,7 @@ def test_multiple_loops_increment_iteration(env_paths: tuple[Path, Path]) -> Non
     assert _read_state(p)["iteration"] == 3
 
     events = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_attempt"
+        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
     ]
     assert len(events) == 3
 
