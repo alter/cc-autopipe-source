@@ -1,13 +1,28 @@
 # Build Status
 
-**Updated:** 2026-04-29T15:30:00Z
+**Updated:** 2026-04-29T18:30:00Z
 **Current branch:** main
-**Current stage:** E complete; F (Helpers and CLI) up next
+**Current stage:** E complete + Q12 hot-fix landed; F (Helpers and CLI) up next
 
 ## Currently working on
 
-Stage E is complete. All 11 DoD items in AGENTS.md §2 Stage E are
-green. Atomic commits this stage: 12.
+Stage E complete. Post-completion Q12 hot-fix landed: real
+oauth/usage endpoint emits integer percent (0..100), not float
+fraction (0.0..1.0) as SPEC.md §6.3 documented. Engine was
+non-functional in real environment (every project paused on
+five_hour_pct=38.0 ≥ 0.95) without CC_AUTOPIPE_QUOTA_DISABLED=1
+workaround.
+
+Six atomic commits land the fix:
+1. quota: normalize integer utilization to float 0..1
+2. cli: status normalizes quota cache utilization
+3. tools: mock-quota-server returns integer percent like real endpoint
+4. tests: update quota fixtures for integer→float normalization
+5. tests: stage-b/c/d smokes pre-populate quota cache, drop QUOTA_DISABLED
+6. docs: Q12 + Q13
+
+All 5 smokes pass naked (no CC_AUTOPIPE_QUOTA_DISABLED=1 in shell).
+121 pytest unit+integration tests pass (1 macOS-skip, expected).
 
 Stage F (Helpers and CLI) per AGENTS.md §2:
 - `cc-autopipe-checkpoint` (helpers/) — saves checkpoint.md from
@@ -25,9 +40,8 @@ Q6 (backlog.md tag handling) lands during Stage F or carries into G.
 
 ## Last commit
 
-`tests: status renders quota line when cache is present` (3dd3a5d)
-→ followed by Q1/Q4 docs (3207239) and Stage E smoke + STATUS update
-(this commit pending).
+`docs: Q12 (oauth/usage integer percent) + Q13 (extra fields)`
+(post-Stage-E hot-fix series, 6 commits 2026-04-29).
 
 ## Stages completion
 
@@ -70,16 +84,17 @@ validators (stage-a through stage-e) all green together.
 
 ## Process debt
 
-Two test-environment escape hatches added this stage (both safety,
-not features):
+Test-environment escape hatches:
 - `CC_AUTOPIPE_QUOTA_DISABLED=1` — short-circuits quota.read_raw
-  to None so framework tests don't accidentally hit
-  api.anthropic.com when Roman's macOS Keychain has live creds.
+  to None. Used intentionally now in stage-e ladder-fallback test
+  and in pytest tests that need a clean "quota unavailable" signal.
+  No longer used as a Q12-bug mask (smokes pre-populate cache
+  instead).
 - `CC_AUTOPIPE_CREDENTIALS_FILE` — overrides
   `~/.claude/credentials.json` for Linux-path tests on macOS.
 
-Stray `test.sh` in repo root (untracked, not engine code; Roman's
-manual exploration script). Left alone.
+Stray `test.sh` and `check.sh` in repo root (untracked, not engine
+code; Roman's manual exploration scripts). Left alone.
 
 ## Currently blocked
 
@@ -87,8 +102,8 @@ None.
 
 ## Recent open questions
 
-- Q1 (deferred-to-Stage-G): oauth/usage response format — verified
-  against the mock; real-endpoint check waits for Stage G smoke.
+- Q1 (resolved by Q12): oauth/usage response format — real-endpoint
+  hit revealed integer-vs-float discrepancy.
 - Q2 (deferred-to-Stage-G): claude --resume with deleted JSONL.
 - Q3 (resolved Stage C): Stop hook session_id reliability.
 - Q4 (resolved Stage E): macOS Keychain — no prompt observed,
@@ -100,6 +115,8 @@ None.
 - Q9 (resolved Stage A): compat.sh feature-detect.
 - Q10 (resolved Stage B): src/cli/ deviation.
 - Q11 (resolved Stage D): src/lib/locking.py split.
+- Q12 (resolved Stage E hot-fix): oauth/usage emits integer percent.
+- Q13 (resolved Stage E hot-fix): additional unused endpoint fields.
 
 ## Tooling notes
 
