@@ -86,22 +86,22 @@ case "$CMD" in
         exec python3 "$CC_AUTOPIPE_HOME/cli/status.py" "$@"
         ;;
     resume)
-        not_implemented resume F
+        exec python3 "$CC_AUTOPIPE_HOME/cli/resume.py" "$@"
         ;;
     run)
-        not_implemented run F
+        exec python3 "$CC_AUTOPIPE_HOME/cli/run.py" "$@"
         ;;
     tail)
-        not_implemented tail F
+        exec python3 "$CC_AUTOPIPE_HOME/cli/tail.py" "$@"
         ;;
     doctor)
-        not_implemented doctor F
+        exec python3 "$CC_AUTOPIPE_HOME/cli/doctor.py" "$@"
         ;;
     checkpoint)
-        not_implemented checkpoint F
+        exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-checkpoint" "$@"
         ;;
     block)
-        not_implemented block F
+        exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-block" "$@"
         ;;
     *)
         echo "cc-autopipe: unknown command '$CMD'" >&2
