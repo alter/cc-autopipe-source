@@ -4,11 +4,8 @@
 Per SPEC.md §6.1: read ~/.cc-autopipe/projects.list, walk FIFO,
 spawn `claude -p` per active project, monitor with wall-clock timeout,
 log every cycle event. Hooks (SPEC §10) update state.json from inside
-the claude subprocess.
-
-Stage C wired up the actual `claude -p` subprocess.Popen — the cycle
-no longer just logs `cycle_attempt`. Singleton locking still arrives
-in Stage D.
+the claude subprocess. Singleton + per-project locking via lib/locking
+(Stage D).
 
 Test escape hatches (env vars):
   CC_AUTOPIPE_USER_HOME            override ~/.cc-autopipe
@@ -20,7 +17,7 @@ Test escape hatches (env vars):
   CC_AUTOPIPE_CYCLE_TIMEOUT_SEC    wall-clock cap on a claude subprocess
                                    (default 3600s)
 
-Refs: SPEC.md §6.1, §15.1
+Refs: SPEC.md §6.1, §8.3, §8.4, §15.1
 """
 
 from __future__ import annotations
@@ -289,69 +286,85 @@ def process_project(project_path: Path) -> str:
         else:
             return "paused"
 
-    s.iteration += 1
-    s.last_cycle_started_at = _now_iso()
-    s.last_progress_at = s.last_cycle_started_at
-    state.write(project_path, s)
+    # Acquire per-project lock per SPEC §8.3 BEFORE bumping iteration
+    # or spawning claude. fcntl auto-releases on crash; a hung peer
+    # holding the lock is logged + skipped (no force-recovery in v0.5).
+    project_lock = locking.acquire_project(project_path)
+    if project_lock is None:
+        _log(f"skip {project_path.name}: per-project lock held by another process")
+        return "locked"
 
-    cmd = _build_claude_cmd(project_path, s)
-    timeout = float(
-        os.environ.get("CC_AUTOPIPE_CYCLE_TIMEOUT_SEC", DEFAULT_CYCLE_TIMEOUT_SEC)
-    )
-    state.log_event(
-        project_path,
-        "cycle_start",
-        iteration=s.iteration,
-        claude_bin=cmd[0],
-        resumed=bool(s.session_id),
-    )
-    _log(
-        f"{project_path.name}: cycle_start iteration={s.iteration} claude_bin={cmd[0]}"
-    )
-
-    rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
-
-    # Re-read state.json — hooks may have updated it from inside the claude
-    # subprocess (e.g. stop.sh's update-verify, stop-failure.sh's set-paused).
-    s = state.read(project_path)
-
-    # Decide post-cycle phase transitions per SPEC §6.1.
-    if (
-        s.last_score is not None
-        and s.last_score >= s.threshold
-        and s.prd_complete
-        and s.phase == "active"
-    ):
-        s.phase = "done"
+    heartbeat = locking.HeartbeatThread(project_lock)
+    heartbeat.start()
+    try:
+        s.iteration += 1
+        s.last_cycle_started_at = _now_iso()
+        s.last_progress_at = s.last_cycle_started_at
         state.write(project_path, s)
-        state.log_event(project_path, "done", score=s.last_score, iteration=s.iteration)
-    elif s.consecutive_failures >= 3 and s.phase == "active":
-        s.phase = "failed"
-        state.write(project_path, s)
+
+        cmd = _build_claude_cmd(project_path, s)
+        timeout = float(
+            os.environ.get("CC_AUTOPIPE_CYCLE_TIMEOUT_SEC", DEFAULT_CYCLE_TIMEOUT_SEC)
+        )
         state.log_event(
             project_path,
-            "failed",
+            "cycle_start",
             iteration=s.iteration,
-            consecutive_failures=s.consecutive_failures,
+            claude_bin=cmd[0],
+            resumed=bool(s.session_id),
         )
-        _write_human_needed(project_path, stderr)
+        _log(
+            f"{project_path.name}: cycle_start iteration={s.iteration} "
+            f"claude_bin={cmd[0]}"
+        )
 
-    state.log_event(
-        project_path,
-        "cycle_end",
-        iteration=s.iteration,
-        phase=s.phase,
-        rc=rc,
-        score=s.last_score,
-    )
-    _log(
-        f"{project_path.name}: cycle_end iteration={s.iteration} "
-        f"phase={s.phase} rc={rc}"
-    )
-    # Stash last stdout/stderr if non-trivial — useful when debugging Stage G.
-    _stash_stream(project_path, "stdout.last", stdout)
-    _stash_stream(project_path, "stderr.last", stderr)
-    return s.phase
+        rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
+
+        # Re-read state.json — hooks may have updated it from inside the claude
+        # subprocess (stop.sh's update-verify, stop-failure.sh's set-paused).
+        s = state.read(project_path)
+
+        # Post-cycle phase transitions per SPEC §6.1.
+        if (
+            s.last_score is not None
+            and s.last_score >= s.threshold
+            and s.prd_complete
+            and s.phase == "active"
+        ):
+            s.phase = "done"
+            state.write(project_path, s)
+            state.log_event(
+                project_path, "done", score=s.last_score, iteration=s.iteration
+            )
+        elif s.consecutive_failures >= 3 and s.phase == "active":
+            s.phase = "failed"
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "failed",
+                iteration=s.iteration,
+                consecutive_failures=s.consecutive_failures,
+            )
+            _write_human_needed(project_path, stderr)
+
+        state.log_event(
+            project_path,
+            "cycle_end",
+            iteration=s.iteration,
+            phase=s.phase,
+            rc=rc,
+            score=s.last_score,
+        )
+        _log(
+            f"{project_path.name}: cycle_end iteration={s.iteration} "
+            f"phase={s.phase} rc={rc}"
+        )
+        _stash_stream(project_path, "stdout.last", stdout)
+        _stash_stream(project_path, "stderr.last", stderr)
+        return s.phase
+    finally:
+        heartbeat.stop()
+        project_lock.release()
 
 
 def _stash_stream(project_path: Path, name: str, content: str) -> None:
