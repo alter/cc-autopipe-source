@@ -1,47 +1,40 @@
 # Build Status
 
-**Updated:** 2026-04-29T18:30:00Z
+**Updated:** 2026-04-29T20:00:00Z
 **Current branch:** main
-**Current stage:** E complete + Q12 hot-fix landed; F (Helpers and CLI) up next
+**Current stage:** F complete — Engine v0.5.0 functionally complete.
+Only Stage G (hello-fullstack smoke against real claude) remains.
 
 ## Currently working on
 
-Stage E complete. Post-completion Q12 hot-fix landed: real
-oauth/usage endpoint emits integer percent (0..100), not float
-fraction (0.0..1.0) as SPEC.md §6.3 documented. Engine was
-non-functional in real environment (every project paused on
-five_hour_pct=38.0 ≥ 0.95) without CC_AUTOPIPE_QUOTA_DISABLED=1
-workaround.
+Engine v0.5.0 is feature-complete. All 6 Stage F surfaces shipped:
 
-Six atomic commits land the fix:
-1. quota: normalize integer utilization to float 0..1
-2. cli: status normalizes quota cache utilization
-3. tools: mock-quota-server returns integer percent like real endpoint
-4. tests: update quota fixtures for integer→float normalization
-5. tests: stage-b/c/d smokes pre-populate quota cache, drop QUOTA_DISABLED
-6. docs: Q12 + Q13
+  - `helpers/cc-autopipe-checkpoint` — bash, saves
+    `.cc-autopipe/checkpoint.md` from arg or stdin (atomic write)
+  - `helpers/cc-autopipe-block` — bash, marks state.phase=failed,
+    writes HUMAN_NEEDED.md, fires log-event + TG alert
+  - `cli/resume.py` — clears PAUSED/FAILED, resets
+    consecutive_failures, removes HUMAN_NEEDED.md
+  - `cli/tail.py` — tail -f for aggregate.jsonl, ANSI colors,
+    --project / --event filters, --no-follow mode, stdlib only
+  - `cli/run.py` — single-cycle bypass-singleton wrapper around
+    orchestrator.process_project (used by Stage G smoke)
+  - `cli/doctor.py` — 10-check prerequisite suite, --offline +
+    --json flags, macOS Keychain notice up front
 
-All 5 smokes pass naked (no CC_AUTOPIPE_QUOTA_DISABLED=1 in shell).
-121 pytest unit+integration tests pass (1 macOS-skip, expected).
+Eight atomic commits land Stage F (helpers + 4 cli + dispatcher +
+tests + smoke). 26 new pytest cases in tests/integration/test_cli.py.
+tests/smoke/stage-f.sh validates the DoD checklist end-to-end.
 
-Stage F (Helpers and CLI) per AGENTS.md §2:
-- `cc-autopipe-checkpoint` (helpers/) — saves checkpoint.md from
-  inside a Claude session
-- `cc-autopipe-block` (helpers/) — marks project failed + creates
-  HUMAN_NEEDED.md
-- `cc-autopipe resume` — clears PAUSED/FAILED, resets failures
-- `cc-autopipe doctor` — verifies all prerequisites
-- `cc-autopipe tail` — follows aggregate.jsonl
-- `cc-autopipe run <project> --once` — single-cycle test mode
-- All commands `--help`-discoverable
-- tests/integration/test_cli.py covers each subcommand
+All 6 smokes (A–F) pass naked. 147 pytest unit+integration pass
+(1 macOS-skip, expected).
 
-Q6 (backlog.md tag handling) lands during Stage F or carries into G.
+Stage G is project-side (hello-fullstack), not engine code. Begins
+after May 2 quota reset per Roman's plan.
 
 ## Last commit
 
-`docs: Q12 (oauth/usage integer percent) + Q13 (extra fields)`
-(post-Stage-E hot-fix series, 6 commits 2026-04-29).
+`tests: stage-f smoke validator` (Stage F final, 8 commits 2026-04-29).
 
 ## Stages completion
 
@@ -49,9 +42,11 @@ Q6 (backlog.md tag handling) lands during Stage F or carries into G.
 - [x] Stage B: Orchestrator skeleton (completed 2026-04-29T03:00Z)
 - [x] Stage C: Hooks (completed 2026-04-29T07:05Z)
 - [x] Stage D: Locking and recovery (completed 2026-04-29T09:55Z)
-- [x] Stage E: Quota awareness (completed 2026-04-29T15:30Z)
-- [ ] Stage F: Helpers and CLI
-- [ ] Stage G: Hello-fullstack smoke test
+- [x] Stage E: Quota awareness (completed 2026-04-29T15:30Z) +
+      Q12 hot-fix (2026-04-29T18:30Z, real-endpoint format fix)
+- [x] Stage F: Helpers and CLI (completed 2026-04-29T20:00Z) —
+      **Engine v0.5.0 complete**
+- [ ] Stage G: Hello-fullstack smoke test (project-side, post-May-2)
 
 ## Stage E DoD verification
 
@@ -78,9 +73,24 @@ Bonus tests: tests/unit/test_ratelimit.py (14/14),
 tests/integration/test_orchestrator_quota.py (12/12, pre-flight +
 stop-failure+quota end-to-end).
 
-Test totals: 117 pytest unit+integration (62→117 across A→E) plus
-1 expected macOS-skip and 102+1=103 hook unit cases. Six smoke
-validators (stage-a through stage-e) all green together.
+Test totals: 147 pytest unit+integration across A→F (+30 vs Stage E
+post-Q12) plus 1 expected macOS-skip and 103 hook unit cases. Seven
+smoke validators (stage-a through stage-f) all green together.
+
+## Stage F DoD verification
+
+All items green, validated by `bash tests/smoke/stage-f.sh`:
+
+- [x] `cc-autopipe-checkpoint` saves checkpoint.md correctly (arg + stdin)
+- [x] `cc-autopipe-block` marks project failed and creates HUMAN_NEEDED.md
+- [x] `cc-autopipe resume` clears PAUSED/FAILED, resets failures
+- [x] `cc-autopipe doctor` checks all prerequisites and reports
+      (10 checks, --offline + --json flags)
+- [x] `cc-autopipe tail` follows aggregate.jsonl (filters + colors)
+- [x] `cc-autopipe run <project> --once` runs single cycle
+- [x] All commands have --help (dispatcher + 6 subcommands)
+- [x] tests/integration/test_cli.py passes (26/26)
+- [x] STATUS.md marked "Engine v0.5.0 complete"
 
 ## Process debt
 
@@ -118,6 +128,13 @@ None.
 - Q12 (resolved Stage E hot-fix): oauth/usage emits integer percent.
 - Q13 (resolved Stage E hot-fix): additional unused endpoint fields.
 
+Q6 (backlog.md tag handling) carried into Stage G — not exercised
+in v0.5 engine code yet (orchestrator's prompt builder reads top-N
+[ ] tasks from backlog.md without parsing tags). v0.5 default per
+the recommendation in OPEN_QUESTIONS.md Q6: "treat as normal open
+task". Stage G will validate against a tagged backlog if hello-
+fullstack uses any.
+
 ## Tooling notes
 
 - quota.py CLI surface: `read | read-cached | refresh`. Hooks call
@@ -128,30 +145,47 @@ None.
 
 ## Notes for next session
 
-- Stage F scope: 6 subcommands + 2 helpers, all per SPEC §12.
-  - `helpers/cc-autopipe-checkpoint`: short bash, writes
-    `.cc-autopipe/checkpoint.md` from stdin (the body) or arg.
-  - `helpers/cc-autopipe-block`: mark FAILED + HUMAN_NEEDED.md +
-    TG alert.
-  - `cc-autopipe resume <project>`: state.phase = active, reset
-    consecutive_failures, remove HUMAN_NEEDED.md.
-  - `cc-autopipe doctor`: SPEC §12.9 checklist — claude binary,
-    jq, flock (n/a since fcntl), Python 3.11+, secrets.env perms,
-    hooks executable, credentials/Keychain, TG send-test, oauth
-    endpoint reachable. Could add `--quick` to skip network checks
-    for offline runs.
-  - `cc-autopipe tail`: `tail -f` aggregate.jsonl with
-    human-readable formatting.
-  - `cc-autopipe run <project> --once`: single cycle, bypasses
-    singleton lock per SPEC §12.6.
-  - `cc-autopipe stop`: SIGTERM the singleton, wait up to 60s, then
-    SIGKILL. Already half-implemented via the Stage D singleton.
-- All commands need `--help`. Dispatcher already routes; just wire
-  the implementations.
-- After Stage F, the only remaining stage is G (hello-fullstack
-  smoke test) — that's project-side, not engine code.
-- Q6 (backlog.md tags): touch when implementing prompt building or
-  status; v0.5 should ignore unknown tags rather than crash.
-- Roman has Claude MAX 20x. NEVER use Anthropic API SDK. Stage G is
-  the ONLY place real claude runs.
+Stage G is project-side (hello-fullstack), not engine code.
+Engine v0.5.0 is functionally complete per AGENTS.md §12 except
+the items below.
+
+### Stage G prep (waits for May 2 quota reset)
+
+- `examples/hello-fullstack/` project skeleton (separate repo per
+  AGENTS.md §2 Stage G).
+- PRD covering pytest + npm build + docker-compose targets.
+- verify.sh wired against those targets.
+- Run `cc-autopipe init` in the project, then
+  `cc-autopipe run <path> --once` to validate one cycle with real
+  claude before kicking off `cc-autopipe start`.
+- Goal: full PRD reaches DONE under cc-autopipe in <4h.
+
+### Open items deferred to Stage G or v1
+
+- Q2: claude --resume with deleted JSONL — verify against real
+  claude, iterate on `_build_claude_cmd` if it errors.
+- Q5: --max-turns counter behaviour on resume — observe under
+  hello-fullstack; mitigation already in place via checkpoint-based
+  continuity.
+- Q6: backlog.md tag handling — defaults to "treat tagged tasks as
+  normal open"; revisit if hello-fullstack uses any.
+
+### Stage F things NOT shipped (intentional)
+
+- `cc-autopipe stop` (SPEC §12.3) — left as not_implemented in the
+  dispatcher. Stage D singleton lock + SIGTERM handler already
+  provide the underlying mechanism; the user-facing wrapper is
+  small (read PID file, kill -TERM, kill -KILL after 60s) but
+  wasn't in the user's Stage F scope. Add as a v0.5.1 patch or
+  early Stage G prep.
+
+### Operating reminders for Stage G
+
+- Roman has Claude MAX 20x. NEVER use Anthropic API SDK.
+- Stage G is the ONLY place real claude runs during the build.
 - Telegram credentials in ~/.cc-autopipe/secrets.env, not in repo.
+- doctor `--offline` keeps tests deterministic; default doctor run
+  hits the live oauth/usage + TG endpoints (one-shot, low cost).
+- run.py uses SourceFileLoader to import the extensionless
+  orchestrator script — keep that pattern if any other CLI needs
+  to call into orchestrator internals.
