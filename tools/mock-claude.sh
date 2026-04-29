@@ -1,40 +1,74 @@
 #!/bin/bash
-# tools/mock-claude.sh
-# Fake `claude` binary for testing hooks without burning real MAX quota.
+# tools/mock-claude.sh — fake `claude` binary for hook + orchestrator tests.
+# Refs: AGENTS.md §3.2, §13 (no real claude during build)
 #
-# Usage: simulates claude -p invocation by firing hooks with synthetic input.
+# Two invocation styles:
 #
-# Reads tools/mock-claude.config.json for canned scenarios.
-# Hooks are read from .claude/settings.json or CC_AUTOPIPE_HOOKS_DIR.
+# A. Scenario style (direct hook tests):
+#       mock-claude.sh <scenario> [<project_dir>]
+#    Scenarios: success | verify-fail | rate-limit | block-secret | long-bash
 #
-# Modes:
-#   --scenario success         Run SessionStart -> 1 PreToolUse(Bash) -> Stop
-#   --scenario verify-fail     Same but Stop hook receives verify-fail signal
-#   --scenario rate-limit      Run SessionStart -> StopFailure with rate_limit
-#   --scenario block-secret    Run SessionStart -> PreToolUse(Bash) blocking secrets path
+# B. Popen style (orchestrator spawns this as if it were claude):
+#       mock-claude.sh -p PROMPT --max-turns N --model M ... [--resume ID]
+#    Recognized by leading `-p`. Behaviour controlled by env vars:
+#       CC_AUTOPIPE_MOCK_SCENARIO   one of the scenarios above (default: success)
+#       CC_AUTOPIPE_MOCK_SLEEP_SEC  delay before exit (test wall-clock timeouts)
+#       CC_AUTOPIPE_MOCK_EXIT_RC    final exit code (default: 0)
+#       CC_AUTOPIPE_MOCK_DUMP_INPUT path to dump stdin JSON for Stop hook to
+#                                   $path so tests can audit session_id
 #
-# Exit codes: 0 = scenario success, non-zero = scenario asserted failure
+# Hooks dir is resolved from CC_AUTOPIPE_HOOKS_DIR (preferred) or by
+# parsing the project's .claude/settings.json.
 
 set -euo pipefail
 
-SCENARIO="${1:-success}"
-PROJECT_DIR="${2:-$(pwd)}"
-SESSION_ID="mock-session-$(date +%s)"
+# ---------------------------------------------------------------------------
+# Argument detection
+# ---------------------------------------------------------------------------
 
-HOOKS_DIR="${CC_AUTOPIPE_HOOKS_DIR:-$PROJECT_DIR/.claude/hooks}"
-if [ ! -d "$HOOKS_DIR" ]; then
-    # Look for hooks in settings.json
-    if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
-        # Extract one hook path to find HOOKS_DIR
-        FIRST_HOOK=$(jq -r '.hooks.SessionStart[0].hooks[0].command // empty' "$PROJECT_DIR/.claude/settings.json")
-        if [ -n "$FIRST_HOOK" ]; then
-            HOOKS_DIR=$(dirname "$FIRST_HOOK")
-        fi
-    fi
+STYLE="scenario"
+SCENARIO="success"
+PROJECT_DIR="$(pwd)"
+RESUME_ID=""
+
+if [ $# -gt 0 ] && [ "$1" = "-p" ]; then
+    STYLE="popen"
+    SCENARIO="${CC_AUTOPIPE_MOCK_SCENARIO:-success}"
+    shift  # drop -p
+    # Walk remaining args to find --resume <id> (we ignore everything else).
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --resume)
+                shift
+                RESUME_ID="${1:-}"
+                shift || true
+                ;;
+            --resume=*)
+                RESUME_ID="${1#--resume=}"
+                shift
+                ;;
+            *) shift ;;
+        esac
+    done
+elif [ $# -gt 0 ]; then
+    SCENARIO="$1"
+    PROJECT_DIR="${2:-$(pwd)}"
 fi
 
-if [ ! -d "$HOOKS_DIR" ]; then
-    echo "ERROR: cannot find hooks dir. Set CC_AUTOPIPE_HOOKS_DIR." >&2
+SESSION_ID="mock-session-$(date +%s)-$$"
+
+# ---------------------------------------------------------------------------
+# Hooks directory resolution
+# ---------------------------------------------------------------------------
+
+HOOKS_DIR="${CC_AUTOPIPE_HOOKS_DIR:-}"
+if [ -z "$HOOKS_DIR" ] && [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
+    FIRST_HOOK=$(jq -r '.hooks.SessionStart[0].hooks[0].command // empty' \
+        "$PROJECT_DIR/.claude/settings.json")
+    [ -n "$FIRST_HOOK" ] && HOOKS_DIR=$(dirname "$FIRST_HOOK")
+fi
+if [ -z "$HOOKS_DIR" ] || [ ! -d "$HOOKS_DIR" ]; then
+    echo "[mock-claude] cannot find hooks dir; set CC_AUTOPIPE_HOOKS_DIR" >&2
     exit 1
 fi
 
@@ -42,62 +76,119 @@ run_hook() {
     local hook_name=$1
     local input_json=$2
     local hook_script="$HOOKS_DIR/$hook_name.sh"
-    
     if [ ! -x "$hook_script" ]; then
-        echo "[mock-claude] hook not found or not executable: $hook_script" >&2
+        echo "[mock-claude] hook missing: $hook_script" >&2
         return 1
     fi
-    
     echo "[mock-claude] firing hook: $hook_name" >&2
-    echo "$input_json" | "$hook_script"
+    printf '%s' "$input_json" | "$hook_script"
 }
 
-case "$SCENARIO" in
-    success)
-        run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        run_hook pre-tool-use "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hello\"}}"
-        run_hook stop "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        ;;
-    
-    verify-fail)
-        run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        # Stop hook will run verify.sh which is expected to fail
-        run_hook stop "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        ;;
-    
-    rate-limit)
-        run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        run_hook stop-failure "{\"session_id\":\"$SESSION_ID\",\"error\":\"rate_limit\",\"error_details\":\"429 Too Many Requests\"}"
-        ;;
-    
-    block-secret)
-        run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        # This SHOULD be blocked by pre-tool-use hook
-        run_hook pre-tool-use "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat ~/.cc-autopipe/secrets.env\"}}"
-        rc=$?
-        if [ $rc -eq 2 ]; then
-            echo "[mock-claude] PreToolUse correctly blocked secret access (exit 2)" >&2
-            exit 0
-        else
-            echo "[mock-claude] EXPECTED block (exit 2), got $rc" >&2
-            exit 1
-        fi
-        ;;
+# ---------------------------------------------------------------------------
+# Scenarios
+# ---------------------------------------------------------------------------
 
-    long-bash)
-        run_hook session-start "{\"session_id\":\"$SESSION_ID\",\"cwd\":\"$PROJECT_DIR\"}"
-        run_hook pre-tool-use "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pip install some-large-package\"}}"
-        rc=$?
-        if [ $rc -eq 2 ]; then
-            echo "[mock-claude] PreToolUse correctly blocked long-op (exit 2)" >&2
-            exit 0
-        fi
-        exit 1
-        ;;
-    
+dump_stop_input() {
+    local input=$1
+    [ -n "${CC_AUTOPIPE_MOCK_DUMP_INPUT:-}" ] || return 0
+    printf '%s' "$input" > "$CC_AUTOPIPE_MOCK_DUMP_INPUT"
+}
+
+scenario_success() {
+    run_hook session-start "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')"
+    run_hook pre-tool-use "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd,tool_name:"Bash",tool_input:{command:"echo hello"}}')"
+    local stop_input
+    stop_input=$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')
+    dump_stop_input "$stop_input"
+    run_hook stop "$stop_input"
+}
+
+scenario_verify_fail() {
+    run_hook session-start "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')"
+    local stop_input
+    stop_input=$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')
+    dump_stop_input "$stop_input"
+    run_hook stop "$stop_input"
+}
+
+scenario_rate_limit() {
+    run_hook session-start "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')"
+    run_hook stop-failure "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd,error:"rate_limit",error_details:"429 Too Many Requests"}')"
+}
+
+scenario_block_secret() {
+    run_hook session-start "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')"
+    set +e
+    run_hook pre-tool-use "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd,tool_name:"Bash",tool_input:{command:"cat ~/.cc-autopipe/secrets.env"}}')"
+    rc=$?
+    set -e
+    if [ $rc -eq 2 ]; then
+        echo "[mock-claude] PreToolUse correctly blocked secret access (exit 2)" >&2
+        return 0
+    fi
+    echo "[mock-claude] EXPECTED block (exit 2), got $rc" >&2
+    return 1
+}
+
+scenario_long_bash() {
+    run_hook session-start "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd}')"
+    set +e
+    run_hook pre-tool-use "$(jq -nc \
+        --arg sid "$SESSION_ID" --arg cwd "$PROJECT_DIR" \
+        '{session_id:$sid,cwd:$cwd,tool_name:"Bash",tool_input:{command:"pip install some-large-package"}}')"
+    rc=$?
+    set -e
+    if [ $rc -eq 2 ]; then
+        echo "[mock-claude] PreToolUse correctly blocked long-op (exit 2)" >&2
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+if [ "$STYLE" = "popen" ]; then
+    if [ -n "$RESUME_ID" ]; then
+        echo "[mock-claude] resuming session $RESUME_ID" >&2
+    fi
+    if [ -n "${CC_AUTOPIPE_MOCK_SLEEP_SEC:-}" ]; then
+        sleep "$CC_AUTOPIPE_MOCK_SLEEP_SEC"
+    fi
+fi
+
+case "$SCENARIO" in
+    success)      scenario_success ;;
+    verify-fail)  scenario_verify_fail ;;
+    rate-limit)   scenario_rate_limit ;;
+    block-secret) scenario_block_secret ;;
+    long-bash)    scenario_long_bash ;;
     *)
-        echo "Unknown scenario: $SCENARIO" >&2
+        echo "[mock-claude] unknown scenario: $SCENARIO" >&2
         echo "Available: success, verify-fail, rate-limit, block-secret, long-bash" >&2
         exit 1
         ;;
 esac
+
+exit "${CC_AUTOPIPE_MOCK_EXIT_RC:-0}"
