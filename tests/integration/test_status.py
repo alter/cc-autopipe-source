@@ -235,6 +235,41 @@ def test_status_recent_events_from_aggregate(env_paths: tuple[Path, Path]) -> No
     assert doc["recent_events"][0]["event"] == "verify_failed"
 
 
+def test_status_renders_quota_when_cache_present(
+    env_paths: tuple[Path, Path],
+) -> None:
+    """Stage E quota cache populated by quota.py is consumed by status."""
+    user_home, root = env_paths
+    p = _seed_project(root, "alpha", phase="active")
+    _write_projects_list(user_home, [p])
+    cache = user_home / "quota-cache.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(
+        json.dumps(
+            {
+                "five_hour": {
+                    "utilization": 0.67,
+                    "resets_at": "2026-04-29T18:30:00Z",
+                },
+                "seven_day": {
+                    "utilization": 0.42,
+                    "resets_at": "2026-05-06T00:00:00Z",
+                },
+            }
+        )
+    )
+
+    cp = _run_status(user_home)
+    assert "5h quota: 67%" in cp.stdout
+    assert "7d quota: 42%" in cp.stdout
+
+    cp_json = _run_status(user_home, "--json")
+    doc = json.loads(cp_json.stdout)
+    assert doc["quota"]["available"] is True
+    assert doc["quota"]["five_hour_pct"] == pytest.approx(0.67)
+    assert doc["quota"]["seven_day_pct"] == pytest.approx(0.42)
+
+
 def test_status_skips_blank_and_comment_lines_in_projects_list(
     env_paths: tuple[Path, Path],
 ) -> None:
