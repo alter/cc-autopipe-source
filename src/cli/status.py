@@ -26,6 +26,7 @@ from typing import Any
 
 _LIB = Path(__file__).resolve().parent.parent / "lib"
 sys.path.insert(0, str(_LIB))
+import locking  # noqa: E402
 import state  # noqa: E402
 
 RECENT_EVENTS_DEFAULT = 5
@@ -64,30 +65,38 @@ def _read_projects_list(user_home: Path) -> list[Path]:
 
 
 def _orchestrator_status(user_home: Path) -> dict[str, Any]:
-    """Best-effort: report whether the orchestrator is running.
+    """Read the singleton lock and report whether an orchestrator is running.
 
-    Stage B has no singleton lock yet, so this is purely informational.
-    Stage D will populate ~/.cc-autopipe/orchestrator.pid with a live
-    PID and started_at timestamp.
+    Stage D writes ~/.cc-autopipe/orchestrator.pid as a one-line JSON
+    payload via lib/locking; lock_status uses fcntl to distinguish
+    "lock truly held" (live orchestrator) from "stale file content"
+    (process died, fcntl auto-released).
     """
-    pid_file = user_home / "orchestrator.pid"
-    if not pid_file.exists():
-        return {"running": False, "pid": None, "started_at": None}
-    try:
-        raw = pid_file.read_text(encoding="utf-8").strip().splitlines()
-        pid = int(raw[0]) if raw else None
-        started_at = raw[1] if len(raw) > 1 else None
-    except (ValueError, OSError):
-        return {"running": False, "pid": None, "started_at": None}
-
-    alive = False
-    if pid:
+    snap = locking.lock_status(user_home / "orchestrator.pid")
+    if not snap["held"]:
+        return {
+            "running": False,
+            "pid": None,
+            "started_at": None,
+            "uptime_sec": None,
+        }
+    started_at = snap.get("started_at")
+    uptime_sec: float | None = None
+    if started_at:
         try:
-            os.kill(pid, 0)
-            alive = True
-        except (OSError, ProcessLookupError):
-            alive = False
-    return {"running": alive, "pid": pid, "started_at": started_at}
+            started = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            uptime_sec = (datetime.now(timezone.utc) - started).total_seconds()
+        except ValueError:
+            uptime_sec = None
+    return {
+        "running": True,
+        "pid": snap.get("pid"),
+        "started_at": started_at,
+        "heartbeat": snap.get("heartbeat"),
+        "uptime_sec": uptime_sec,
+    }
 
 
 def _quota_summary(user_home: Path) -> dict[str, Any]:
@@ -259,7 +268,20 @@ def _format_orchestrator(o: dict[str, Any]) -> str:
     if not o.get("running"):
         return "Orchestrator: not running"
     pid = o.get("pid")
-    return f"Orchestrator: running (PID {pid})"
+    uptime = o.get("uptime_sec")
+    if uptime is None:
+        return f"Orchestrator: running (PID {pid})"
+    if uptime < 60:
+        upt = f"{int(uptime)}s"
+    elif uptime < 3600:
+        upt = f"{int(uptime / 60)}m"
+    elif uptime < 86400:
+        h = int(uptime / 3600)
+        m = int((uptime % 3600) / 60)
+        upt = f"{h}h {m}m" if m else f"{h}h"
+    else:
+        upt = f"{int(uptime / 86400)}d"
+    return f"Orchestrator: running (PID {pid}, uptime {upt})"
 
 
 def _format_human(report: dict[str, Any]) -> str:
