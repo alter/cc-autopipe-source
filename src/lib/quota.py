@@ -269,7 +269,15 @@ def read_raw(*, refresh: bool = False) -> dict[str, Any] | None:
         any failure.
     refresh=True: skip cache, force a fresh fetch + update cache. None
         on any failure.
+
+    Test escape hatch: CC_AUTOPIPE_QUOTA_DISABLED=1 short-circuits to
+    None without consulting the cache or fetching. Tests that don't
+    care about quota set this so the orchestrator's pre-flight check
+    doesn't accidentally hit api.anthropic.com.
     """
+    if os.environ.get("CC_AUTOPIPE_QUOTA_DISABLED") == "1":
+        return None
+
     if not refresh:
         cached = _read_cache_raw()
         if cached is not None:
