@@ -16,27 +16,31 @@ stop_failure_input() {
     '
 }
 
-# --- rate_limit → PAUSED with resume_at ~1h in the future ---
+# --- rate_limit (no quota cache, fresh ladder) → PAUSED ~5min ahead ---
 fresh_project
 run_hook stop-failure "$(stop_failure_input rate_limit "429 Too Many Requests")"
 assert_eq "rc=0 on rate_limit" 0 "$HOOK_RC"
 assert_jq "phase=paused" "$PROJECT/.cc-autopipe/state.json" .phase "paused"
 assert_jq "paused.reason=rate_limit" "$PROJECT/.cc-autopipe/state.json" .paused.reason "rate_limit"
 
-# resume_at must parse as ISO 8601 and be roughly 1h in the future
+# resume_at must parse as ISO 8601. With no quota cache and a fresh
+# ratelimit state, the ladder's first step is 5min (300s).
 RESUME_AT=$(jq -r .paused.resume_at "$PROJECT/.cc-autopipe/state.json")
 NOW_EPOCH=$(date -u +%s)
-# GNU date -d works regardless of OS (we depend on coreutils per Q9 anyway)
 RESUME_EPOCH=$(date -u -d "$RESUME_AT" +%s 2>/dev/null || \
     date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$RESUME_AT" +%s 2>/dev/null || echo 0)
 DELTA=$(( RESUME_EPOCH - NOW_EPOCH ))
-if [ "$DELTA" -gt 3500 ] && [ "$DELTA" -lt 3700 ]; then
-    echo "  PASS resume_at is ~1h in future ($DELTA seconds)"
+if [ "$DELTA" -gt 290 ] && [ "$DELTA" -lt 320 ]; then
+    echo "  PASS resume_at via ladder step 0 (5min): $DELTA seconds"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL resume_at delta out of range: $DELTA seconds"
+    echo "  FAIL resume_at ladder-step-0 delta out of range: $DELTA seconds"
     FAIL=$((FAIL + 1))
 fi
+assert_jq "resolved_via mentions ladder" \
+    "$USER_HOME/log/aggregate.jsonl" \
+    'select(.event == "paused") | .resolved_via // empty | startswith("ladder")' \
+    "true"
 
 # §15.2: paused goes to aggregate.jsonl
 assert_contains "aggregate.jsonl has paused event" '"event":"paused"' \

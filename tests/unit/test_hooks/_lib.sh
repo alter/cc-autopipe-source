@@ -33,6 +33,8 @@ cleanup_project() {
 
 # run_hook <hook_name> <input_json>
 # Sets these globals (read by callers): HOOK_OUT, HOOK_RC, HOOK_ERR.
+# QUOTA_DISABLED=1 keeps stop-failure's quota path from accidentally
+# hitting api.anthropic.com on a host whose Keychain has live creds.
 run_hook() {
     local hook=$1
     local input=$2
@@ -41,6 +43,7 @@ run_hook() {
     HOOK_OUT=$(printf '%s' "$input" | \
         CC_AUTOPIPE_HOME="$SRC" \
         CC_AUTOPIPE_USER_HOME="$USER_HOME" \
+        CC_AUTOPIPE_QUOTA_DISABLED=1 \
         bash "$HOOKS/$hook.sh" 2>"$SCRATCH/hook.stderr")
     # shellcheck disable=SC2034
     HOOK_RC=$?
