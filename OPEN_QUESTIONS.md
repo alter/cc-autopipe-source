@@ -7,25 +7,42 @@ commit reference. This builds an audit trail.
 
 ---
 
-## Q1. [STAGE-E] [open] Exact format of oauth/usage response in Apr 2026
+## Q1. [STAGE-E] [deferred-to-stage-G] oauth/usage response format
 
 **Discovered:** 2026-04-28 (during SPEC drafting)
 **Stage:** E (Quota awareness)
-**Blocking:** lib/quota.py implementation
+**Blocking:** None — mitigation in place.
 
 **Question:**
-The `oauth/usage` endpoint format documented in codelynx.dev (Oct 2025) may have
-changed. Need to verify actual response structure against current Claude Code 2.1+
-behavior.
+The `oauth/usage` endpoint format documented in codelynx.dev (Oct 2025)
+may have changed. Need to verify actual response structure against
+current Claude Code 2.1+ behavior.
 
-**Investigation plan:**
-1. Once OAuth token reading works (early Stage E), make one curl call manually
-2. Compare structure to assumed `{five_hour: {utilization, resets_at}, seven_day: {...}}`
-3. If different, update quota.py parser accordingly
+**Investigation outcome (Stage E, 2026-04-29):**
+Resolved against the mock (tools/mock-quota-server.py) which models
+the documented shape:
+    {
+      "five_hour":  {"utilization": 0..1, "resets_at": ISO8601},
+      "seven_day":  {"utilization": 0..1, "resets_at": ISO8601}
+    }
 
-**Mitigation if cannot resolve:**
-quota.py returns None on parse failure → orchestrator falls back to ratelimit.py
-ladder. Pipeline still works, just less efficient.
+quota.py's parser tolerates missing keys and handles both Z-suffix
+and +00:00 offset ISO 8601 forms, so a small format drift on the
+real endpoint will degrade gracefully (Quota.from_dict returns 0.0
+/ None for missing fields rather than raising).
+
+Real-endpoint verification (with Roman's actual MAX subscription)
+is deferred to Stage G's hello-fullstack smoke run. At that point:
+  - if the response shape matches: nothing to do
+  - if utilization/resets_at moved to different keys: update
+    Quota.from_dict's key paths in one focused commit
+  - if the endpoint disappeared entirely: quota.py returns None
+    everywhere, ratelimit.py ladder catches actual 429s — no
+    pipeline outage
+
+**Reference commits:**
+- `46ddd28 lib: add quota.py — oauth/usage with caching + token extraction`
+- `dae1dd8 tests: orchestrator pre-flight + stop-failure quota integration`
 
 ---
 
@@ -116,25 +133,42 @@ Reference commits:
 
 ---
 
-## Q4. [STAGE-E] [open] macOS Keychain permission prompt on first access
+## Q4. [STAGE-E] [resolved] macOS Keychain permission prompt
 
 **Discovered:** 2026-04-28
 **Stage:** E (Quota awareness)
-**Blocking:** Smooth install on macOS
+**Blocking:** Smooth install on macOS.
 
 **Question:**
 First call to `security find-generic-password -s "Claude Code-credentials" -w`
-may prompt user with Keychain dialog. Behavior on subsequent calls? Headless
-context (no GUI)?
+may prompt user with Keychain dialog. Behavior on subsequent calls?
+Headless context (no GUI)?
 
-**Investigation plan:**
-1. Test on macOS during Stage E
-2. If interactive prompt happens, document workaround in install.sh
-3. Possible workaround: instruct user to run a one-time `security` command
-   manually before first cc-autopipe start
+**Investigation outcome (Stage E, 2026-04-29):**
+Tested on Roman's macOS host during quota.py smoke. Result:
+  - `security find-generic-password -s "Claude Code-credentials" -w`
+    returned the secret silently with no Keychain prompt and rc=0.
+  - The secret is a JSON blob:
+        {"claudeAiOauth": {"accessToken": "sk-ant-oat01-..."}}
+    — nested, not the flat `{"accessToken": ...}` the SPEC pseudocode
+    assumed. quota.py's `_extract_access_token` now handles both
+    shapes (commit 46ddd28).
 
-**Mitigation:**
-quota.py returns None on Keychain access failure → ladder fallback works.
+**Why no prompt:**
+The `security` command's access prompt is gated by ACL rules attached
+to the keychain item at write time. Claude Code seems to install with
+its CLI bundle pre-authorized for Keychain reads, so first-and-
+subsequent reads from any process running as the same user succeed
+without dialog. A Keychain-locked session would still prompt — but
+that's an edge case Stage G can revisit if it bites.
+
+**Mitigation already in code:**
+quota.py `read_oauth_token` returns None on subprocess.timeout,
+FileNotFoundError, or non-zero rc — any prompt that the user dismisses
+or any locked Keychain just produces None and we fall back to the
+ladder. No install.sh workaround needed.
+
+**Reference commit:** `46ddd28 lib: add quota.py — …`
 
 ---
 
