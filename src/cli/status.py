@@ -27,6 +27,7 @@ from typing import Any
 _LIB = Path(__file__).resolve().parent.parent / "lib"
 sys.path.insert(0, str(_LIB))
 import locking  # noqa: E402
+import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
 
 RECENT_EVENTS_DEFAULT = 5
@@ -108,12 +109,14 @@ def _quota_summary(user_home: Path) -> dict[str, Any]:
         raw = json.loads(cache.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"available": False}
+    five = raw.get("five_hour", {}) or {}
+    seven = raw.get("seven_day", {}) or {}
     return {
         "available": True,
-        "five_hour_pct": (raw.get("five_hour", {}) or {}).get("utilization"),
-        "five_hour_resets_at": (raw.get("five_hour", {}) or {}).get("resets_at"),
-        "seven_day_pct": (raw.get("seven_day", {}) or {}).get("utilization"),
-        "seven_day_resets_at": (raw.get("seven_day", {}) or {}).get("resets_at"),
+        "five_hour_pct": quota_lib.normalize_utilization(five.get("utilization")),
+        "five_hour_resets_at": five.get("resets_at"),
+        "seven_day_pct": quota_lib.normalize_utilization(seven.get("utilization")),
+        "seven_day_resets_at": seven.get("resets_at"),
     }
 
 
