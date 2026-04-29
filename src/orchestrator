@@ -33,12 +33,21 @@ from pathlib import Path
 _LIB = Path(__file__).resolve().parent / "lib"
 sys.path.insert(0, str(_LIB))
 import locking  # noqa: E402
+import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
 
 DEFAULT_COOLDOWN_SEC = 30
 DEFAULT_IDLE_SLEEP_SEC = 60
 DEFAULT_CYCLE_TIMEOUT_SEC = 3600
 DEFAULT_MAX_TURNS = 35
+
+# Pre-flight thresholds per SPEC §9.2
+PREFLIGHT_5H_PAUSE = 0.95
+PREFLIGHT_5H_WARN = 0.80
+PREFLIGHT_7D_PAUSE = 0.90
+# TG dedup window for the 7d broadcast — within this many seconds we
+# only send one alert across all projects.
+SEVEN_DAY_TG_DEDUP_SEC = 300
 
 
 _shutdown = False
@@ -262,6 +271,119 @@ def _run_claude(
     return rc, stdout, stderr
 
 
+def _notify_tg(message: str) -> None:
+    """Fire-and-forget Telegram. Failures are swallowed by tg.sh itself."""
+    tg_sh = Path(__file__).resolve().parent / "lib" / "tg.sh"
+    try:
+        subprocess.run(
+            ["bash", str(tg_sh), message],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _should_send_7d_alert() -> bool:
+    """Returns True if we should broadcast the 7d-quota TG message.
+
+    Dedup window: SEVEN_DAY_TG_DEDUP_SEC (5min) — if multiple projects
+    trigger pre-flight pause within that window, only the first sends.
+    Backed by a sentinel file at $CC_AUTOPIPE_USER_HOME/7d-tg.last.
+    """
+    sentinel = _user_home() / "7d-tg.last"
+    try:
+        if sentinel.exists():
+            age = time.time() - sentinel.stat().st_mtime
+            if age < SEVEN_DAY_TG_DEDUP_SEC:
+                return False
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return True
+    except OSError:
+        return True  # if we can't write the sentinel, err on the side of alerting
+
+
+def _preflight_quota(project_path: Path, s: state.State) -> str:
+    """Pause the project (or all projects) if we're close to a quota limit.
+
+    Returns one of:
+      "ok"         — quota fine OR quota.py returned None (caller proceeds)
+      "warn_5h"    — between 80% and 95% on 5h, still proceeds
+      "paused_5h"  — >=95% 5h, project paused until 5h resets
+      "paused_7d"  — >=90% 7d, project paused until 7d resets, TG sent
+    """
+    q = quota_lib.read_cached()
+    if q is None:
+        return "ok"
+
+    if q.five_hour_pct >= PREFLIGHT_7D_PAUSE and q.seven_day_pct >= PREFLIGHT_7D_PAUSE:
+        # Both thresholds tripped — prefer 7d since it's the longer pause
+        # and the broader signal (account-wide quota).
+        pass
+
+    if q.seven_day_pct >= PREFLIGHT_7D_PAUSE:
+        resume_at = q.seven_day_resets_at
+        if resume_at is None:
+            # Without a precise resets_at we still pause, but use a 1h
+            # conservative fallback (same as stop-failure's pre-quota
+            # behaviour from Stage C).
+            from datetime import timedelta as _td
+
+            resume_at = datetime.now(timezone.utc) + _td(hours=1)
+        s.phase = "paused"
+        s.paused = state.Paused(
+            resume_at=resume_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            reason="7d_pre_check",
+        )
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "paused",
+            reason="7d_pre_check",
+            seven_day_pct=q.seven_day_pct,
+            resume_at=s.paused.resume_at,
+        )
+        if _should_send_7d_alert():
+            _notify_tg(
+                f"7d quota at {int(q.seven_day_pct * 100)}%, "
+                f"all projects pausing until {s.paused.resume_at}"
+            )
+        return "paused_7d"
+
+    if q.five_hour_pct >= PREFLIGHT_5H_PAUSE:
+        resume_at = q.five_hour_resets_at
+        if resume_at is None:
+            from datetime import timedelta as _td
+
+            resume_at = datetime.now(timezone.utc) + _td(hours=1)
+        s.phase = "paused"
+        s.paused = state.Paused(
+            resume_at=resume_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            reason="5h_pre_check",
+        )
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "paused",
+            reason="5h_pre_check",
+            five_hour_pct=q.five_hour_pct,
+            resume_at=s.paused.resume_at,
+        )
+        return "paused_5h"
+
+    if q.five_hour_pct >= PREFLIGHT_5H_WARN:
+        _log(
+            f"{project_path.name}: 5h quota at "
+            f"{int(q.five_hour_pct * 100)}% — warning, proceeding"
+        )
+        return "warn_5h"
+
+    return "ok"
+
+
 def process_project(project_path: Path) -> str:
     """Run one cycle for a single project."""
     if not project_path.exists():
@@ -297,6 +419,14 @@ def process_project(project_path: Path) -> str:
     heartbeat = locking.HeartbeatThread(project_lock)
     heartbeat.start()
     try:
+        # Pre-flight quota check per SPEC §9.2. Pauses the project (or
+        # all projects, on 7d threshold) BEFORE bumping iteration so
+        # we don't burn one on a paused decision. Cache TTL is 60s, so
+        # repeat cycles within a minute share the same quota read.
+        preflight = _preflight_quota(project_path, s)
+        if preflight in ("paused_5h", "paused_7d"):
+            return "paused"
+
         s.iteration += 1
         s.last_cycle_started_at = _now_iso()
         s.last_progress_at = s.last_cycle_started_at
