@@ -6,9 +6,12 @@
 # Output: state mutations, TG alert on rate_limit / failed
 # Exit:   0
 #
-# v0.5 Stage C: 429 / rate_limit → state.phase = "paused" with
-# resume_at = now + 1h (conservative fallback). Stage E will replace
-# the 1h fallback with quota.py + ratelimit.py ladder.
+# 429 resume_at resolution per SPEC §9.3:
+#   1. Try quota.py — if it gives us five_hour.resets_at, use that
+#      (with the §9.4 60s safety margin already applied by the engine
+#      when the orchestrator's pre-flight kicks in).
+#   2. Fall back to ratelimit.py register-429 ladder (5/15/60 min).
+#   3. As a last resort if both are unavailable, default to now+1h.
 
 set -u
 
@@ -30,20 +33,61 @@ PROJECT_NAME=$(basename "$PROJECT")
 
 case "$ERROR" in
     rate_limit|429|RATE_LIMIT)
-        # Conservative 1h pause. Stage E will read quota.py first and
-        # use the exact resets_at when available, falling back to the
-        # ladder otherwise. SPEC §9.4 mandates a 60s safety margin —
-        # 1h naturally includes that and avoids hammering the API.
-        # TODO(v0.5-stage-E): replace 1h fallback with quota+ladder per §9.3
-        RESUME_AT=$(python3 -c "
+        QUOTA_PY="$CC_AUTOPIPE_HOME/lib/quota.py"
+        RATELIMIT_PY="$CC_AUTOPIPE_HOME/lib/ratelimit.py"
+
+        # Try quota first per SPEC §9.3.
+        QUOTA_JSON=$(python3 "$QUOTA_PY" read 2>/dev/null || true)
+        RESUME_AT=""
+        QUOTA_RESETS_AT=""
+        if [ -n "$QUOTA_JSON" ]; then
+            QUOTA_RESETS_AT=$(printf '%s' "$QUOTA_JSON" | jq -r '.five_hour.resets_at // empty' 2>/dev/null || echo "")
+        fi
+
+        if [ -n "$QUOTA_RESETS_AT" ]; then
+            # Convert quota's resets_at to canonical "...Z" with 60s margin.
+            # Python parses both Z-suffix and +00:00 offset forms.
+            RESUME_AT=$(python3 -c "
+import sys
+from datetime import datetime, timedelta
+raw = '$QUOTA_RESETS_AT'.replace('Z', '+00:00')
+try:
+    dt = datetime.fromisoformat(raw) + timedelta(seconds=60)
+    print(dt.astimezone().strftime('%Y-%m-%dT%H:%M:%SZ'))
+except Exception as exc:
+    sys.exit(1)
+" 2>/dev/null || echo "")
+            RESOLVE_VIA="quota"
+        fi
+
+        if [ -z "$RESUME_AT" ]; then
+            # Fall back to ratelimit ladder.
+            WAIT_SEC=$(python3 "$RATELIMIT_PY" register-429 2>/dev/null || echo "")
+            if [ -n "$WAIT_SEC" ]; then
+                RESUME_AT=$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) + timedelta(seconds=$WAIT_SEC)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+" 2>/dev/null || echo "")
+                RESOLVE_VIA="ladder($WAIT_SEC s)"
+            fi
+        fi
+
+        if [ -z "$RESUME_AT" ]; then
+            # Last-resort 1h fallback (matches Stage C's behaviour when
+            # both quota and ratelimit are completely unavailable).
+            RESUME_AT=$(python3 -c "
 from datetime import datetime, timedelta, timezone
 print((datetime.now(timezone.utc) + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
+            RESOLVE_VIA="fallback(1h)"
+        fi
+
         python3 "$STATE_PY" set-paused "$PROJECT" "$RESUME_AT" "rate_limit" \
             >/dev/null 2>&1 || true
         python3 "$STATE_PY" log-event "$PROJECT" paused \
-            "reason=rate_limit" "resume_at=$RESUME_AT" >/dev/null 2>&1 || true
-        bash "$TG_SH" "[$PROJECT_NAME] 429, resume at $RESUME_AT" || true
+            "reason=rate_limit" "resume_at=$RESUME_AT" "resolved_via=$RESOLVE_VIA" \
+            >/dev/null 2>&1 || true
+        bash "$TG_SH" "[$PROJECT_NAME] 429, resume at $RESUME_AT (via $RESOLVE_VIA)" || true
         ;;
 
     "" )
