@@ -7,7 +7,7 @@ commit reference. This builds an audit trail.
 
 ---
 
-## Q1. [STAGE-E] [deferred-to-stage-G] oauth/usage response format
+## Q1. [STAGE-E] [resolved] oauth/usage response format
 
 **Discovered:** 2026-04-28 (during SPEC drafting)
 **Stage:** E (Quota awareness)
@@ -43,6 +43,7 @@ is deferred to Stage G's hello-fullstack smoke run. At that point:
 **Reference commits:**
 - `46ddd28 lib: add quota.py — oauth/usage with caching + token extraction`
 - `dae1dd8 tests: orchestrator pre-flight + stop-failure quota integration`
+- See Q12 for the post-Stage-E resolution against the real endpoint.
 
 ---
 
@@ -394,6 +395,106 @@ commit when it lands).
 
 ---
 
+## Q12. [STAGE-E] [resolved] oauth/usage emits integer percent, not float fraction
+
+**Discovered:** 2026-04-29 by Roman, post-Stage-E manual endpoint hit.
+**Stage:** E (Quota awareness)
+**Blocking:** Engine non-functional in real environment without
+`CC_AUTOPIPE_QUOTA_DISABLED=1` workaround.
+
+**Question:**
+Real endpoint hit revealed Q1's mock-based assumption was wrong.
+SPEC.md §6.3 documented `utilization` as float in [0.0, 1.0]. The
+real `oauth/usage` endpoint emits **integer** in [0, 100]. Mock-server
+echoed the spec's float convention, so all integration tests passed
+while production was broken: `Quota.from_dict` produced
+`five_hour_pct=38.0` (meant to read as 38%, but compared against
+threshold 0.95 — 38.0 ≥ 0.95 → True → project always paused).
+
+**Real endpoint payload (verified manually 2026-04-29):**
+```json
+{
+  "five_hour":           {"utilization": 38, "resets_at": "..."},
+  "seven_day":           {"utilization": 86, "resets_at": "..."},
+  "seven_day_oauth_apps": null,
+  "seven_day_opus":       null,
+  "seven_day_sonnet":    {"utilization": 2,  "resets_at": "..."},
+  "seven_day_cowork":     null,
+  "seven_day_omelette":  {"utilization": 0,  "resets_at": null},
+  "iguana_necktie":       null,
+  "omelette_promotional": null,
+  "extra_usage":         {"is_enabled": false, ...}
+}
+```
+
+**Resolution:**
+1. Internal convention preserved: Quota stores float 0.0-1.0 so the
+   orchestrator's `>= 0.95 / 0.90` comparisons stay correct.
+2. New helper `quota.normalize_utilization(v)` disambiguates by type:
+   - int 0..100        → divide by 100  (real endpoint)
+   - float >  1.0      → divide by 100  (defensive)
+   - float in [0..1.0] → use as-is      (legacy / test fixtures)
+3. Applied at every parser boundary: `Quota.from_dict` (cache → dataclass)
+   and `cli/status.py:_quota_summary` (cache → JSON).
+4. `tools/mock-quota-server.py` updated to emit integer percent so
+   end-to-end tests exercise the real-endpoint shape; `/admin/set`
+   accepts both shapes for backward compat with older fixtures.
+5. Framework smokes (stage-b, stage-c, stage-d) drop
+   `CC_AUTOPIPE_QUOTA_DISABLED=1` — they pre-populate
+   `quota-cache.json` with safe values so `read_raw` never fetches.
+
+**Manual verification:**
+Spawned mock-quota-server with `{five_hour: 38, seven_day: 86}`,
+ran `quota.read_cached()` → returned
+`Quota(five_hour_pct=0.38, seven_day_pct=0.86, ...)`. Pre-flight
+comparison `0.38 < 0.95` and `0.86 < 0.90` → engine proceeds.
+
+**SPEC.md update note for v1 docs review:**
+SPEC.md §6.3 should state utilization is an integer percent (0..100)
+on the real endpoint, with engine internals converting to float
+0.0-1.0 at the parser boundary.
+
+**Reference commits:**
+- `quota: normalize integer utilization to float 0..1` (this stage)
+- `tools: mock-quota-server returns integer percent like real endpoint`
+- `tests: update quota fixtures for integer→float normalization`
+- `tests: stage-b/c/d smokes pre-populate quota-cache instead of disabling`
+
+---
+
+## Q13. [STAGE-E] [resolved] additional oauth/usage fields not in SPEC
+
+**Discovered:** 2026-04-29 with Q12.
+**Stage:** E (Quota awareness)
+**Blocking:** None — current engine ignores them.
+
+**Question:**
+Real endpoint exposes more keys than SPEC.md §6.3 documents:
+`seven_day_oauth_apps`, `seven_day_opus`, `seven_day_sonnet`,
+`seven_day_cowork`, `seven_day_omelette`, `iguana_necktie`,
+`omelette_promotional`, `extra_usage`. Most are `null` for Roman's
+account; `seven_day_sonnet` and `seven_day_omelette` carry data.
+
+**Resolution:**
+v0.5 ignores all of these. `Quota.from_dict` reads only `five_hour`
+and `seven_day`; unknown keys silently dropped (the `dict.get()`
+pattern degrades cleanly). The cache file preserves the full raw
+payload for forward compatibility — if a future engine version wants
+to consume per-model data, it's already on disk.
+
+**Forward note (v1 candidate):**
+`seven_day_sonnet` could power per-model quota awareness — pause
+projects that mostly use Sonnet when sonnet quota is high while
+projects on Opus continue. Out of scope for v0.5; revisit when v1
+prioritizes per-model routing.
+
+**Reference commits:**
+- `docs: Q13 (unused additional fields)` (this stage)
+
+---
+
 ## Resolved questions
 
-(None yet. As questions are resolved, move them here with resolution commit refs.)
+Q1 (resolved by Q12), Q3, Q4, Q7, Q8, Q9, Q10, Q11, Q12, Q13.
+
+Still open / deferred: Q2, Q5, Q6.
