@@ -83,7 +83,7 @@ case "$CMD" in
         not_implemented stop B
         ;;
     status)
-        not_implemented status B
+        exec python3 "$CC_AUTOPIPE_HOME/cli/status.py" "$@"
         ;;
     resume)
         not_implemented resume F
