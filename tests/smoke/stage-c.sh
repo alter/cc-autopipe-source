@@ -74,6 +74,7 @@ CC_AUTOPIPE_MAX_LOOPS=1 \
 CC_AUTOPIPE_CLAUDE_BIN="$REPO_ROOT/tools/mock-claude.sh" \
 CC_AUTOPIPE_HOOKS_DIR="$REPO_ROOT/src/hooks" \
 CC_AUTOPIPE_CYCLE_TIMEOUT_SEC=30 \
+CC_AUTOPIPE_QUOTA_DISABLED=1 \
     "$DISPATCHER" start 2>"$SCRATCH/orch.stderr" >/dev/null \
     || die "orchestrator failed: $(cat "$SCRATCH/orch.stderr")"
 
