@@ -45,16 +45,18 @@ case "$ERROR" in
         fi
 
         if [ -n "$QUOTA_RESETS_AT" ]; then
-            # Convert quota's resets_at to canonical "...Z" with 60s margin.
-            # Python parses both Z-suffix and +00:00 offset forms.
+            # Convert quota's resets_at to canonical "...Z" (UTC) with
+            # the SPEC §9.4 60s safety margin. Python parses both
+            # Z-suffix and +00:00 offset forms; keep timezone UTC the
+            # whole way so the printed Z suffix is honest.
             RESUME_AT=$(python3 -c "
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 raw = '$QUOTA_RESETS_AT'.replace('Z', '+00:00')
 try:
-    dt = datetime.fromisoformat(raw) + timedelta(seconds=60)
-    print(dt.astimezone().strftime('%Y-%m-%dT%H:%M:%SZ'))
-except Exception as exc:
+    dt = (datetime.fromisoformat(raw) + timedelta(seconds=60)).astimezone(timezone.utc)
+    print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+except Exception:
     sys.exit(1)
 " 2>/dev/null || echo "")
             RESOLVE_VIA="quota"
