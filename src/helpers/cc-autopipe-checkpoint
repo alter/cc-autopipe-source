@@ -1,0 +1,100 @@
+#!/bin/bash
+# cc-autopipe-checkpoint — save .cc-autopipe/checkpoint.md from inside Claude.
+# Refs: SPEC.md §6 (helpers), §6.1 (build_prompt → "RESUME FROM CHECKPOINT")
+#
+# Usage:
+#   cc-autopipe-checkpoint "free-text checkpoint body"
+#   cc-autopipe-checkpoint --project /path/to/proj "..."
+#   echo "body" | cc-autopipe-checkpoint
+#
+# Writes ./{.cc-autopipe/checkpoint.md} (or --project's) atomically via
+# tmp+mv. The orchestrator's prompt builder picks it up next cycle and
+# tells Claude to read it before continuing — that's the v0.5
+# continuity mechanism beyond claude --resume.
+
+set -euo pipefail
+
+PROG=$(basename "$0")
+PROJECT=""
+BODY=""
+
+usage() {
+    cat <<EOF
+$PROG — save .cc-autopipe/checkpoint.md mid-task
+
+Usage:
+  $PROG [--project PATH] "<body>"
+  echo "<body>" | $PROG [--project PATH]
+
+Options:
+  --project PATH   Target project directory (default: cwd).
+  -h, --help       Show this help.
+
+The checkpoint body is the markdown text the next cycle's Claude will
+read first. Keep it short (a few hundred words) and actionable.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --project)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --project needs a path" >&2; exit 64; }
+            PROJECT="$1"
+            shift
+            ;;
+        --)
+            shift
+            BODY="$*"
+            break
+            ;;
+        -*)
+            echo "$PROG: unknown option '$1'" >&2
+            exit 64
+            ;;
+        *)
+            BODY="$*"
+            break
+            ;;
+    esac
+done
+
+if [ -z "$PROJECT" ]; then
+    PROJECT="$(pwd)"
+fi
+
+if [ ! -d "$PROJECT/.cc-autopipe" ]; then
+    echo "$PROG: $PROJECT is not initialised (no .cc-autopipe/)" >&2
+    echo "Run 'cc-autopipe init' first." >&2
+    exit 1
+fi
+
+if [ -z "$BODY" ]; then
+    # Read from stdin — fine if it's a pipe; refuse to block on a TTY.
+    if [ -t 0 ]; then
+        echo "$PROG: no checkpoint body (pass arg or pipe stdin)" >&2
+        exit 64
+    fi
+    BODY="$(cat)"
+fi
+
+if [ -z "${BODY// /}" ]; then
+    echo "$PROG: refusing to write empty checkpoint" >&2
+    exit 1
+fi
+
+DEST="$PROJECT/.cc-autopipe/checkpoint.md"
+TMP="$DEST.tmp.$$.$(date +%s)"
+
+{
+    printf '<!-- cc-autopipe checkpoint, written %s -->\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "$BODY"
+} > "$TMP"
+
+mv -f "$TMP" "$DEST"
+
+echo "✓ checkpoint saved: $DEST"
