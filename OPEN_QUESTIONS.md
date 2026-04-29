@@ -51,7 +51,7 @@ event to failures.jsonl with reason="orphan_session".
 
 ---
 
-## Q3. [STAGE-C] [open] Hook Stop event session_id reliability
+## Q3. [STAGE-C] [resolved] Hook Stop event session_id reliability
 
 **Discovered:** 2026-04-28
 **Stage:** C (Hooks)
@@ -69,6 +69,35 @@ JSON. Need to verify in current Claude Code 2.1.115+.
 **Mitigation:**
 If session_id is unreliable, parse it from `~/.claude/projects/` directory by
 finding latest JSONL mtime instead.
+
+**Resolution (2026-04-29, Stage C):**
+Two-pronged verification:
+
+1. **Mock path (fully under test):** tools/mock-claude.sh gained a
+   `CC_AUTOPIPE_MOCK_DUMP_INPUT` facility that dumps the Stop hook's
+   exact stdin to a file. tests/integration/test_orchestrator_claude.py
+   `test_session_id_round_trip_from_mock_into_state` reads that file
+   and asserts `session_id` is present, non-empty, and matches what
+   landed in state.json after stop.sh ran.
+   tests/unit/test_hooks/test_stop.sh additionally exercises the
+   "no session_id" case (state.session_id remains null without
+   crashing).
+
+2. **Real-claude path:** deferred to Stage G smoke test. Mitigation
+   already in place: stop.sh's `[ -n "$SESSION" ]` guard means a
+   missing session_id is silently tolerated (state.session_id stays
+   null) — the Stage E session-JSONL fallback (find latest mtime under
+   ~/.claude/projects/) is therefore a v1 enhancement, not a v0.5
+   blocker. If real claude turns out NOT to populate session_id, the
+   pipeline still functions; cycles just don't `--resume` each other.
+
+Reference commits:
+- `21a0851 hooks: add stop.sh with verify.sh runner …`
+- `631b55e tests: add unit tests for stop hook` (Q3 round-trip case)
+- `deb8af4 tests: integration tests for orchestrator + claude + hooks
+   pipeline` (mock-dump verification)
+- `0812494 tools: extend mock-claude.sh with popen-style invocation`
+   (DUMP_INPUT facility)
 
 ---
 

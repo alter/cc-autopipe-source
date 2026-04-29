@@ -154,9 +154,7 @@ def test_fifo_ordering_across_multiple_projects(
     _write_projects_list(user_home, [a, b, c])
 
     _run_orch(user_home, max_loops=1)
-    starts = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
-    ]
+    starts = [e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"]
     assert [e["project"] for e in starts] == ["alpha", "bravo", "charlie"]
 
 
@@ -173,9 +171,7 @@ def test_skips_done_and_failed_projects(env_paths: tuple[Path, Path]) -> None:
     assert _read_state(b)["iteration"] == 0
     assert _read_state(c)["iteration"] == 1  # incremented
 
-    events = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
-    ]
+    events = [e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"]
     assert {e["project"] for e in events} == {"charlie"}
 
 
@@ -253,9 +249,7 @@ def test_multiple_loops_increment_iteration(env_paths: tuple[Path, Path]) -> Non
     _run_orch(user_home, max_loops=3)
     assert _read_state(p)["iteration"] == 3
 
-    events = [
-        e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"
-    ]
+    events = [e for e in _read_aggregate(user_home) if e.get("event") == "cycle_start"]
     assert len(events) == 3
 
 
