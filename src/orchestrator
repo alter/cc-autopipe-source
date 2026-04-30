@@ -196,6 +196,10 @@ def _build_claude_cmd(project_path: Path, s: state.State) -> list[str]:
         "-p",
         _build_prompt(project_path, s),
         "--dangerously-skip-permissions",
+        # claude 2.1.123+ rejects `-p --output-format stream-json` without
+        # --verbose: "When using --print, --output-format=stream-json
+        # requires --verbose". Discovered during first Stage G run.
+        "--verbose",
         "--max-turns",
         str(DEFAULT_MAX_TURNS),
         "--output-format",
