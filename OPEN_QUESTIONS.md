@@ -493,8 +493,59 @@ prioritizes per-model routing.
 
 ---
 
+## Q14. [STAGE-G-prep] [resolved-as-deviation] Pre-flight 7d threshold raised 0.90 → 0.95
+
+**Discovered:** 2026-04-30, Stage G prep.
+**Stage:** E (Quota awareness) — behavioural revision after live operation.
+**Blocking:** Stage G smoke run on hello-fullstack — engine paused the
+project at seven_day_pct=0.93 (real endpoint), refusing to proceed.
+
+**Question:**
+SPEC.md §9.2 hardcodes the 7d pre-flight pause at `> 0.90`. With Roman's
+real account at 93% with ~3 days remaining in the 7d window, the engine
+auto-paused hello-fullstack despite a healthy headroom. SPEC's 10% buffer
+is too conservative for a single-project workload — it triggers false-
+positive pauses that defeat the whole point of a supervisor.
+
+**Resolution (deviation from SPEC §9.2):**
+Raised pause thresholds to align safety margins with actual exhaustion
+risk, and added a 7d warning band to mirror the 5h ladder:
+
+| dimension | warn (was → now) | pause (was → now) |
+|-----------|------------------|-------------------|
+| 5h        | 0.80 → **0.85**  | 0.95 → 0.95       |
+| 7d        | (none) → **0.90**| 0.90 → **0.95**   |
+
+Engine now only pauses when quota is genuinely close to exhaustion (≤5%
+headroom). Warning logs at 0.85/0.90 give visibility without blocking.
+
+`_preflight_quota` returns "warn_7d" alongside "warn_5h" / "paused_7d" /
+"paused_5h" / "ok". The `seven_day_resets_at` derived resume time stays
+unchanged — when 95% is hit the engine still pauses precisely until the
+next reset.
+
+**Reasoning (advisor pushback registered):**
+Tighter margin (5% vs 10%) means less manual-override room if consumption
+spikes. Mitigation: `seven_day_resets_at` is precise, so auto-resume
+lands cleanly post-reset; the warn band at 0.90 gives early visibility.
+
+**SPEC.md update note for v1 docs review:**
+SPEC.md §9.2 should be updated:
+- `> 0.95` (5h pause) — unchanged
+- `> 0.85` (5h warn) — was `> 0.80`
+- `> 0.95` (7d pause) — was `> 0.90`
+- `> 0.90` (7d warn) — new band
+
+**Reference commits:**
+- `orchestrator: raise 7d quota threshold to 0.95` (this stage)
+- `tests: update threshold expectations for Q14` (this stage)
+- `docs: STATUS update + OPEN_QUESTIONS Q14 (threshold deviation)`
+
+---
+
 ## Resolved questions
 
-Q1 (resolved by Q12), Q3, Q4, Q7, Q8, Q9, Q10, Q11, Q12, Q13.
+Q1 (resolved by Q12), Q3, Q4, Q7, Q8, Q9, Q10, Q11, Q12, Q13,
+Q14 (resolved-as-deviation).
 
 Still open / deferred: Q2, Q5, Q6.

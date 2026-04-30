@@ -1,9 +1,10 @@
 # Build Status
 
-**Updated:** 2026-04-29T20:00:00Z
+**Updated:** 2026-04-30T12:00:00Z
 **Current branch:** main
 **Current stage:** F complete — Engine v0.5.0 functionally complete.
 Only Stage G (hello-fullstack smoke against real claude) remains.
+Q14 threshold revision applied during Stage G prep (see below).
 
 ## Currently working on
 
@@ -61,9 +62,11 @@ All items green, validated by `bash tests/smoke/stage-e.sh`:
 - [x] quota.py caches results for 60s (mtime-based TTL)
 - [x] ratelimit.py implements 5min/15min/1h ladder
 - [x] ratelimit.py resets counter after 6h with no 429
-- [x] orchestrator pre-flight check pauses project at >95% 5h
-- [x] orchestrator pre-flight check pauses ALL projects at >90% 7d
-      (with 5min TG dedup via `7d-tg.last` sentinel)
+- [x] orchestrator pre-flight check pauses project at >=95% 5h
+- [x] orchestrator pre-flight check pauses ALL projects at >=95% 7d
+      (Q14 deviation, was >=90%; with 5min TG dedup via
+      `7d-tg.last` sentinel). 5h warn raised 0.80→0.85; 7d warn band
+      added at 0.90.
 - [x] stop-failure.sh uses quota.py first, falls back to ratelimit.py
       (and last-resort 1h if both unavailable)
 - [x] tests/integration/test_quota.py passes (12/12, 1 macOS-skip)
@@ -127,6 +130,9 @@ None.
 - Q11 (resolved Stage D): src/lib/locking.py split.
 - Q12 (resolved Stage E hot-fix): oauth/usage emits integer percent.
 - Q13 (resolved Stage E hot-fix): additional unused endpoint fields.
+- Q14 (resolved-as-deviation, 2026-04-30): pre-flight 7d threshold
+  raised 0.90→0.95 + 5h warn raised 0.80→0.85 + 7d warn band added
+  at 0.90. SPEC §9.2 deviation, documented for v1 docs review.
 
 Q6 (backlog.md tag handling) carried into Stage G — not exercised
 in v0.5 engine code yet (orchestrator's prompt builder reads top-N
