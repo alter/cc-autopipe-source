@@ -1,10 +1,11 @@
 # Build Status
 
-**Updated:** 2026-04-30T12:00:00Z
+**Updated:** 2026-04-30T03:10:00Z
 **Current branch:** main
 **Current stage:** F complete — Engine v0.5.0 functionally complete.
 Only Stage G (hello-fullstack smoke against real claude) remains.
 Q14 threshold revision applied during Stage G prep (see below).
+Stage G Bug-1/2/3 fixes landed 2026-04-30 — see "Stage G shakedown".
 
 ## Currently working on
 
@@ -108,6 +109,46 @@ Test-environment escape hatches:
 
 Stray `test.sh` and `check.sh` in repo root (untracked, not engine
 code; Roman's manual exploration scripts). Left alone.
+
+## Stage G shakedown — 2026-04-30 fixes
+
+First real-claude run on hello-fullstack surfaced three engine bugs.
+All three landed as atomic commits today.
+
+- **Bug 1 (CRITICAL): `--verbose` missing.** claude 2.1.123 rejects
+  `-p` + `--output-format stream-json` without `--verbose`:
+      Error: When using --print, --output-format=stream-json requires --verbose
+  `_build_claude_cmd` now emits `--verbose` between
+  `--dangerously-skip-permissions` and `--max-turns`.
+- **Bug 2: subprocess streams not persisted.** Stage F's
+  `_stash_stream` early-returned on empty content, so a fast rc!=0
+  exit left a stale prior-cycle log. Renamed to
+  `claude-last-stdout.log` / `claude-last-stderr.log` and now writes
+  on every cycle (even when empty).
+- **Bug 2 follow-on: `claude_subprocess_failed` failures entry.** On
+  `rc != 0`, orchestrator now appends to `failures.jsonl` with
+  `exit_code` and `stderr_tail` (last 500 chars). Without this,
+  fast rc=1 exits had no audit trail (no Stop hook fires).
+- **Bug 3: lax mock-claude.** `tools/mock-claude.sh` accepted the
+  `-p` + stream-json + no-verbose combo — that's why the missing
+  `--verbose` shipped to Stage G undetected. Mock now rejects with
+  the same diagnostic message real claude emits.
+
+Regression test in `test_orchestrator_claude.py`:
+`test_orchestrator_passes_verbose_to_avoid_stream_json_rejection`
+asserts no `claude_subprocess_failed` entry under the strict mock.
+Verified by deletion: temporarily removed `--verbose` and confirmed
+test failed with the expected "requires --verbose" stderr_tail.
+
+All 6 stage smokes (A-F) pass after the fixes. 150 pytest cases
++ 1 macOS skip.
+
+Real-claude verification on hello-fullstack is **deferred**: the
+project is paused with `resume_at=2026-05-01T23:59:59Z` from
+yesterday's 7d=96% pre-flight pause. Current 7d=94% per Roman's
+report, but `_resume_paused_if_due` won't unpause until the
+recorded `resume_at` passes. Clearing via `cc-autopipe resume
+hello-fullstack` would burn a cycle at 94% 7d — Roman's call.
 
 ## Currently blocked
 
