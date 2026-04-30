@@ -34,12 +34,16 @@ RESUME_ID=""
 # Popen detection: any arg list that starts with `-` (e.g. `-p`,
 # `--resume`, `--max-turns`) is the orchestrator invoking us as if
 # we were `claude`. Walk the args to find -p/--resume; ignore the rest.
+HAS_PRINT=0
+HAS_VERBOSE=0
+HAS_STREAM_JSON=0
 if [ $# -gt 0 ] && [ "${1:0:1}" = "-" ]; then
     STYLE="popen"
     SCENARIO="${CC_AUTOPIPE_MOCK_SCENARIO:-success}"
     while [ $# -gt 0 ]; do
         case "$1" in
-            -p)
+            -p|--print)
+                HAS_PRINT=1
                 shift
                 shift || true  # drop the prompt
                 ;;
@@ -52,9 +56,33 @@ if [ $# -gt 0 ] && [ "${1:0:1}" = "-" ]; then
                 RESUME_ID="${1#--resume=}"
                 shift
                 ;;
+            --verbose)
+                HAS_VERBOSE=1
+                shift
+                ;;
+            --output-format)
+                shift
+                if [ "${1:-}" = "stream-json" ]; then
+                    HAS_STREAM_JSON=1
+                fi
+                shift || true
+                ;;
+            --output-format=stream-json)
+                HAS_STREAM_JSON=1
+                shift
+                ;;
             *) shift ;;
         esac
     done
+
+    # Mirror real claude 2.1.123+ validation: `-p` + stream-json without
+    # --verbose is rejected. Without this check the mock silently
+    # accepts a flag combination that fails in production.
+    if [ "$HAS_PRINT" = "1" ] && [ "$HAS_STREAM_JSON" = "1" ] \
+            && [ "$HAS_VERBOSE" = "0" ]; then
+        echo "Error: When using --print, --output-format=stream-json requires --verbose" >&2
+        exit 1
+    fi
 elif [ $# -gt 0 ]; then
     SCENARIO="$1"
     PROJECT_DIR="${2:-$(pwd)}"
