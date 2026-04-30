@@ -488,6 +488,21 @@ def process_project(project_path: Path) -> str:
             )
             _write_human_needed(project_path, stderr)
 
+        # Persist claude's stdout/stderr to disk on EVERY cycle (even on
+        # empty content) so a fast rc!=0 exit is debuggable. Names are
+        # explicit ("claude-last-*") so they're greppable in support
+        # tickets.
+        _stash_stream(project_path, "claude-last-stdout.log", stdout)
+        _stash_stream(project_path, "claude-last-stderr.log", stderr)
+
+        if rc != 0:
+            state.log_failure(
+                project_path,
+                "claude_subprocess_failed",
+                exit_code=rc,
+                stderr_tail=(stderr or "")[-500:],
+            )
+
         state.log_event(
             project_path,
             "cycle_end",
@@ -500,8 +515,6 @@ def process_project(project_path: Path) -> str:
             f"{project_path.name}: cycle_end iteration={s.iteration} "
             f"phase={s.phase} rc={rc}"
         )
-        _stash_stream(project_path, "stdout.last", stdout)
-        _stash_stream(project_path, "stderr.last", stderr)
         return s.phase
     finally:
         heartbeat.stop()
@@ -509,13 +522,16 @@ def process_project(project_path: Path) -> str:
 
 
 def _stash_stream(project_path: Path, name: str, content: str) -> None:
-    if not content:
-        return
+    """Overwrite memory/<name> with the cycle's stream content.
+
+    Always writes (even when empty) so a fast rc!=0 exit doesn't leave
+    a stale log from a previous cycle. Caps at 64KB so we don't fill
+    the disk with stream-json.
+    """
     target = project_path / ".cc-autopipe" / "memory" / name
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # Cap at 64KB so we don't fill the disk with stream-json.
-        target.write_text(content[-65536:], encoding="utf-8")
+        target.write_text((content or "")[-65536:], encoding="utf-8")
     except OSError:
         pass
 

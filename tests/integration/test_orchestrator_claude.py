@@ -283,9 +283,12 @@ def test_resume_flag_present_when_state_has_session_id(
     cp = _run_orch(user_home, max_loops=2)
     assert cp.returncode == 0, cp.stderr
 
-    # The mock's stderr lands in claude_stderr.last via the orchestrator's
-    # _stash_stream — read it and assert "resuming session" appeared.
-    stderr_last = (project / ".cc-autopipe" / "memory" / "stderr.last").read_text()
+    # The mock's stderr lands in claude-last-stderr.log via the
+    # orchestrator's _stash_stream — read it and assert "resuming
+    # session" appeared.
+    stderr_last = (
+        project / ".cc-autopipe" / "memory" / "claude-last-stderr.log"
+    ).read_text()
     assert "resuming session" in stderr_last
 
     # State should reflect a session_id (the second cycle's, since we
