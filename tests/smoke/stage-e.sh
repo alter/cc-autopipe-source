@@ -93,7 +93,7 @@ print(json.load(open('$PROJECT/.cc-autopipe/state.json'))['paused']['reason'])
 ok "pre-flight 5h pause verified"
 
 # 5. End-to-end: 7d threshold pauses + sentinel created.
-log "pre-flight pauses ALL projects at >90% 7d with TG dedup"
+log "pre-flight pauses ALL projects at >=95% 7d with TG dedup"
 "$PY" -c "
 import json
 from datetime import datetime, timedelta, timezone

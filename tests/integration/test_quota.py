@@ -370,7 +370,7 @@ def test_quota_dataclass_from_dict_handles_missing_keys(quota_module) -> None:
 def test_quota_dataclass_normalizes_integer_endpoint_shape(quota_module) -> None:
     """Real oauth/usage emits integer percent (Q12, 2026-04-29). Quota
     must normalize to float 0..1 internally so orchestrator pre-flight
-    comparisons against 0.95 / 0.90 stay correct."""
+    comparisons against 0.95 / 0.95 stay correct."""
     q = quota_module.Quota.from_dict(
         {
             "five_hour": {
@@ -416,9 +416,9 @@ def test_quota_pre_flight_thresholds_correct_for_integer_endpoint(
     quota_module,
 ) -> None:
     """End-to-end check that the bug from 2026-04-29 cannot recur:
-    integer 86 must NOT compare > 0.90 directly. After Quota.from_dict
-    normalization, the comparison the orchestrator makes (>= 0.90)
-    should yield False at 86% and True at 92%."""
+    integer 86 must NOT compare > 0.95 directly. After Quota.from_dict
+    normalization, the comparison the orchestrator makes (>= 0.95)
+    should yield False at 86% and True at 96%."""
     q_safe = quota_module.Quota.from_dict(
         {
             "five_hour": {"utilization": 38},
@@ -427,16 +427,16 @@ def test_quota_pre_flight_thresholds_correct_for_integer_endpoint(
     )
     # Both below thresholds — orchestrator would proceed.
     assert q_safe.five_hour_pct < 0.95
-    assert q_safe.seven_day_pct < 0.90
+    assert q_safe.seven_day_pct < 0.95
 
     q_paused = quota_module.Quota.from_dict(
         {
             "five_hour": {"utilization": 96},
-            "seven_day": {"utilization": 92},
+            "seven_day": {"utilization": 96},
         }
     )
     assert q_paused.five_hour_pct >= 0.95
-    assert q_paused.seven_day_pct >= 0.90
+    assert q_paused.seven_day_pct >= 0.95
 
 
 def test_refresh_subcommand_overrides_cache(

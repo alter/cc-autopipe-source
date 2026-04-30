@@ -1,8 +1,9 @@
 """Integration tests for orchestrator pre-flight + stop-failure + quota.
 
-Covers Stage E DoD items:
-- orchestrator pre-flight check pauses project at >95% 5h
-- orchestrator pre-flight check pauses ALL projects at >90% 7d
+Covers Stage E DoD items (post-Q14 threshold revision):
+- orchestrator pre-flight check pauses project at >=95% 5h
+- orchestrator pre-flight check pauses ALL projects at >=95% 7d
+- orchestrator pre-flight warns at 85% 5h / 90% 7d (no pause)
 - stop-failure.sh uses quota.py first, falls back to ratelimit.py
 
 Pre-populates quota-cache.json directly so the orchestrator's
@@ -144,11 +145,11 @@ def test_preflight_proceeds_at_70pct_5h_no_warn(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_pauses_at_90pct_7d_with_tg(tmp_path: Path) -> None:
+def test_preflight_pauses_at_95pct_7d_with_tg(tmp_path: Path) -> None:
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.92)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.96)
 
     env = _orch_env(user_home)
     cp = _run_orch_one_loop(env)
@@ -160,6 +161,22 @@ def test_preflight_pauses_at_90pct_7d_with_tg(tmp_path: Path) -> None:
 
     # The 7d-tg sentinel was created (proves _should_send_7d_alert ran).
     assert (user_home / "7d-tg.last").exists()
+
+
+def test_preflight_warns_at_90pct_7d_but_proceeds(tmp_path: Path) -> None:
+    user_home = tmp_path / "uhome"
+    project = tmp_path / "proj"
+    _init_project(project, user_home)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.92)
+
+    env = _orch_env(user_home)
+    cp = _run_orch_one_loop(env)
+    assert cp.returncode == 0, cp.stderr
+    assert "7d quota at 92%" in cp.stderr
+
+    s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
+    assert s["phase"] == "active"
+    assert s["iteration"] == 1  # cycle ran
 
 
 def test_preflight_7d_pauses_all_projects(tmp_path: Path) -> None:
