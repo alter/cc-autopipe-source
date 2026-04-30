@@ -296,6 +296,47 @@ def test_resume_flag_present_when_state_has_session_id(
     assert _read_state(project)["session_id"] is not None
 
 
+def test_subprocess_failure_writes_failures_jsonl_entry(
+    env_paths: tuple[Path, Path],
+) -> None:
+    """Mock claude returns rc=1 (CC_AUTOPIPE_MOCK_EXIT_RC=1). A real
+    rc!=0 subprocess exit must produce a failures.jsonl entry with
+    reason "claude_subprocess_failed", the exit_code, and a stderr_tail
+    — without this, fast rc=1 exits go unrecorded since no Stop hook
+    fires.
+    """
+    user_home, project = env_paths
+    _init_project(project, user_home)
+    _write_verify(
+        project,
+        'echo \'{"passed":true,"score":0.9,"prd_complete":false,"details":{}}\'',
+    )
+
+    cp = _run_orch(
+        user_home,
+        max_loops=1,
+        extra_env={"CC_AUTOPIPE_MOCK_EXIT_RC": "1"},
+    )
+    assert cp.returncode == 0, cp.stderr
+
+    failures_path = project / ".cc-autopipe" / "memory" / "failures.jsonl"
+    assert failures_path.exists(), "failures.jsonl was not written"
+    entries = [
+        json.loads(ln)
+        for ln in failures_path.read_text().splitlines()
+        if ln.strip()
+    ]
+    sub_fails = [e for e in entries if e.get("error") == "claude_subprocess_failed"]
+    assert sub_fails, f"no claude_subprocess_failed entry in {entries}"
+    assert sub_fails[-1]["exit_code"] == 1
+    assert "stderr_tail" in sub_fails[-1]
+
+    # And the streams stash must exist for both stdout and stderr,
+    # since we now write on every cycle even when content is empty.
+    assert (project / ".cc-autopipe" / "memory" / "claude-last-stdout.log").exists()
+    assert (project / ".cc-autopipe" / "memory" / "claude-last-stderr.log").exists()
+
+
 def test_uninit_project_skipped_does_not_spawn_claude(
     tmp_path: Path,
 ) -> None:
