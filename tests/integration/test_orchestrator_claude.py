@@ -296,6 +296,49 @@ def test_resume_flag_present_when_state_has_session_id(
     assert _read_state(project)["session_id"] is not None
 
 
+def test_orchestrator_passes_verbose_to_avoid_stream_json_rejection(
+    env_paths: tuple[Path, Path],
+) -> None:
+    """Regression test for the Stage G --verbose bug. mock-claude is
+    now strict — it rejects `-p` + `--output-format stream-json`
+    without `--verbose`, mirroring real claude 2.1.123+. So a healthy
+    full cycle here is the proof the orchestrator passes --verbose.
+
+    Failure mode if --verbose is dropped from _build_claude_cmd:
+    mock-claude exits 1, the cycle records claude_subprocess_failed
+    in failures.jsonl, and stderr contains the diagnostic message.
+    """
+    user_home, project = env_paths
+    _init_project(project, user_home)
+    _write_verify(
+        project,
+        'echo \'{"passed":true,"score":0.9,"prd_complete":false,"details":{}}\'',
+    )
+
+    cp = _run_orch(user_home, max_loops=1)
+    assert cp.returncode == 0, cp.stderr
+
+    failures_path = project / ".cc-autopipe" / "memory" / "failures.jsonl"
+    if failures_path.exists():
+        entries = [
+            json.loads(ln)
+            for ln in failures_path.read_text().splitlines()
+            if ln.strip()
+        ]
+        sub_fails = [
+            e for e in entries if e.get("error") == "claude_subprocess_failed"
+        ]
+        assert not sub_fails, (
+            "claude_subprocess_failed entries indicate the orchestrator "
+            f"is no longer passing --verbose: {sub_fails}"
+        )
+
+    stderr_log = (
+        project / ".cc-autopipe" / "memory" / "claude-last-stderr.log"
+    ).read_text()
+    assert "requires --verbose" not in stderr_log, stderr_log
+
+
 def test_subprocess_failure_writes_failures_jsonl_entry(
     env_paths: tuple[Path, Path],
 ) -> None:
