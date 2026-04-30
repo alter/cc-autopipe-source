@@ -325,9 +325,7 @@ def test_orchestrator_passes_verbose_to_avoid_stream_json_rejection(
             for ln in failures_path.read_text().splitlines()
             if ln.strip()
         ]
-        sub_fails = [
-            e for e in entries if e.get("error") == "claude_subprocess_failed"
-        ]
+        sub_fails = [e for e in entries if e.get("error") == "claude_subprocess_failed"]
         assert not sub_fails, (
             "claude_subprocess_failed entries indicate the orchestrator "
             f"is no longer passing --verbose: {sub_fails}"
@@ -365,9 +363,7 @@ def test_subprocess_failure_writes_failures_jsonl_entry(
     failures_path = project / ".cc-autopipe" / "memory" / "failures.jsonl"
     assert failures_path.exists(), "failures.jsonl was not written"
     entries = [
-        json.loads(ln)
-        for ln in failures_path.read_text().splitlines()
-        if ln.strip()
+        json.loads(ln) for ln in failures_path.read_text().splitlines() if ln.strip()
     ]
     sub_fails = [e for e in entries if e.get("error") == "claude_subprocess_failed"]
     assert sub_fails, f"no claude_subprocess_failed entry in {entries}"
