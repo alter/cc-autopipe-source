@@ -41,10 +41,13 @@ DEFAULT_IDLE_SLEEP_SEC = 60
 DEFAULT_CYCLE_TIMEOUT_SEC = 3600
 DEFAULT_MAX_TURNS = 35
 
-# Pre-flight thresholds per SPEC §9.2
+# Pre-flight thresholds. Deviates from SPEC §9.2 — see OPEN_QUESTIONS.md Q14.
+# Engine pauses only when quota is dangerously close to exhaustion; 90% 7d
+# was triggering false-positive pauses with 4 days of headroom remaining.
 PREFLIGHT_5H_PAUSE = 0.95
-PREFLIGHT_5H_WARN = 0.80
-PREFLIGHT_7D_PAUSE = 0.90
+PREFLIGHT_5H_WARN = 0.85
+PREFLIGHT_7D_PAUSE = 0.95
+PREFLIGHT_7D_WARN = 0.90
 # TG dedup window for the 7d broadcast — within this many seconds we
 # only send one alert across all projects.
 SEVEN_DAY_TG_DEDUP_SEC = 300
@@ -311,9 +314,10 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
 
     Returns one of:
       "ok"         — quota fine OR quota.py returned None (caller proceeds)
-      "warn_5h"    — between 80% and 95% on 5h, still proceeds
+      "warn_5h"    — between 85% and 95% on 5h, still proceeds
+      "warn_7d"    — between 90% and 95% on 7d, still proceeds
       "paused_5h"  — >=95% 5h, project paused until 5h resets
-      "paused_7d"  — >=90% 7d, project paused until 7d resets, TG sent
+      "paused_7d"  — >=95% 7d, project paused until 7d resets, TG sent
     """
     q = quota_lib.read_cached()
     if q is None:
@@ -373,6 +377,13 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
             resume_at=s.paused.resume_at,
         )
         return "paused_5h"
+
+    if q.seven_day_pct >= PREFLIGHT_7D_WARN:
+        _log(
+            f"{project_path.name}: 7d quota at "
+            f"{int(q.seven_day_pct * 100)}% — warning, proceeding"
+        )
+        return "warn_7d"
 
     if q.five_hour_pct >= PREFLIGHT_5H_WARN:
         _log(
