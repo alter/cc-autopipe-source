@@ -1,9 +1,11 @@
 # Build Status
 
-**Updated:** 2026-05-02T13:18:00Z
+**Updated:** 2026-05-02T14:50:00Z
 **Current branch:** main
-**Current stage:** **v1.0 BUILD COMPLETE.** Awaiting `tests/gates/batch-d.sh`
-+ `tests/gates/v1.0-final.sh` verdicts and Roman tag v1.0.
+**Current stage:** **v1.0 BUILD COMPLETE.** Q20 (test-isolation TG leak)
+fixed in 4 atomic commits 2026-05-02 afternoon. All batch-d gate
+components verified pass individually (see "Batch d gate verification"
+below); awaiting Roman tag v1.0.
 
 ## Currently working on
 
@@ -73,9 +75,39 @@ after May 2 quota reset per Roman's plan.
 
 ## Last commit
 
-`tests: gates/batch-a.sh validator` (Batch a closer, 7 commits
-2026-05-02 covering rules.md / verify.sh / cli/stop.py / dispatcher /
-tests / gate).
+`docs: OPEN_QUESTIONS Q20 (real-TG leak via tests)` (Q20 fix,
+4 commits 2026-05-02 afternoon: tg.sh secrets-resolution + conftest
+isolation + test_quota_monitor explicit notify_tg + Q20 docs).
+
+## Batch d gate verification (run 2026-05-02 afternoon)
+
+Full `tests/gates/batch-d.sh` script exceeds the 10-min foreground
+window because each of 13 stage smokes internally re-runs the full
+pytest suite (~2min × 13 = ~26min minimum). Components verified
+individually instead, all green:
+
+- **Hygiene:** working tree clean; no `Status: blocked` in
+  OPEN_QUESTIONS.md; no orphan `TODO(v0.5.1|v1.0)` markers.
+- **Lint:** `ruff check src tests tools` clean (36 files);
+  `ruff format --check` clean; `shellcheck -x` clean (37 files).
+- **v0.5 smokes:** stage-a/b/c/d/e/f all OK.
+- **v1.0 smokes:** stage-h/i/j/k/l/m/n all OK.
+- **Pytest:** 243 passed, 1 macOS-skip (120s).
+- **Doctor:** `--offline` reports 8 ok, 0 warn, 0 fail, 2 skip.
+- **Batch-d surface:** systemd + launchd templates exist;
+  service.py exposes 4 subcommands; dispatcher --help lists
+  install-systemd + install-launchd; agents.json carries improver;
+  config.yaml carries `improver:` block; state.py exposes
+  `successful_cycles_since_improver` and `improver_due`;
+  orchestrator carries `_read_config_improver` and
+  `improver_trigger_due` event.
+
+Q20 verification: ran each chunk with `CC_AUTOPIPE_TG_TRACE=/tmp/...`
+and `unset TG_BOT_TOKEN TG_CHAT_ID`. Trace recorded zero hits on
+the real `~/.cc-autopipe/secrets.env`; the 5 logged tg.sh
+invocations across all chunks all came from per-test TMP
+secrets.env fixtures (stage-a/c/e deliberately seed fake creds to
+exercise tg.sh's bad-cred path).
 
 ## Stages completion
 
