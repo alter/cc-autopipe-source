@@ -70,11 +70,13 @@ check_sh "working tree clean (no uncommitted changes outside untracked PROMPT-v1
 check_sh "OPEN_QUESTIONS.md has no Status: blocked entries" \
     '! grep -qE "^\*\*Status:\*\*[[:space:]]*blocked" OPEN_QUESTIONS.md'
 
-# Don't allow stray TODO(v0.5.1) / TODO(v1.0) markers without an
+# Don't allow stray version-targeted TODO markers without an
 # OPEN_QUESTIONS or issue reference per AGENTS.md §6.5.
-check_sh "no orphan TODO(v0.5.1) / TODO(v1.0) markers" \
-    "! grep -REn 'TODO\\((v0\\.5\\.1|v1\\.0)\\)[^.]*$' src/ tests/ tools/ \
-        | grep -vE 'OPEN_QUESTIONS|issue'"
+# Exclude tests/gates/ — that's where the rule itself is defined and
+# would self-match.
+check_sh "no orphan TODO version markers without OPEN_QUESTIONS reference" \
+    "! grep -REn --exclude-dir=gates 'TODO\\((v0\\.5\\.1|v1\\.0)\\)' src/ tests/ tools/ \
+        | grep -vE 'OPEN_QUESTIONS|issue#'"
 
 # ---------------------------------------------------------------------------
 # B) Lint
