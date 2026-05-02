@@ -102,7 +102,9 @@ Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
   (line-oriented `key: value`; multi-line notes via continuation;
   artifact: lines accumulate; CLI: `parse` / `write`). +27 unit
   tests in `tests/unit/test_current_task.py`. 275+1 pytest now.
-- ☐ `src/lib/stop_helper.py` — Stop hook wiring (CURRENT_TASK.md → state)
+- ✅ `src/lib/stop_helper.py` + `src/hooks/stop.sh` — Stop hook wires
+  CURRENT_TASK.md → state.json.current_task. Empty/missing file is a
+  no-op. Helper enforces always-exit-0 contract.
 - ☐ `src/lib/session_start_helper.py` — SessionStart hook wiring
   (state.current_task → injected prompt block)
 

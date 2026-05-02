@@ -53,6 +53,14 @@ if [ -n "$SESSION" ]; then
         >/dev/null 2>&1 || true
 fi
 
+# v1.2 Bug A: sync CURRENT_TASK.md → state.json.current_task. Claude
+# writes the file at the start of work and updates it as the task
+# progresses; this is its authoritative input channel for what task
+# the engine should track. Missing/empty file = nothing to do, not
+# an error. Always exits 0 (helper itself enforces this).
+python3 "$CC_AUTOPIPE_HOME/lib/stop_helper.py" sync "$PROJECT" \
+    >/dev/null 2>&1 || true
+
 VERIFY="$CCA/verify.sh"
 if [ ! -x "$VERIFY" ]; then
     log_failure "verify_missing"
