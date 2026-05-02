@@ -545,3 +545,145 @@ def test_cli_complete_phase(project: Path, tmp_path: Path) -> None:
     s = state.read(project)
     assert s.current_phase == 2
     assert s.phases_completed == [1]
+
+
+# ---------------------------------------------------------------------------
+# v1.2 schema additions (SPEC-v1.2.md Bug A + Bug B)
+# ---------------------------------------------------------------------------
+
+
+def test_v2_state_file_migrates_to_v3_on_read(project: Path) -> None:
+    """A v1.0 state.json (schema_version=2, no current_task /
+    in_progress fields) should read cleanly with v1.2 defaults, then
+    persist as schema_version=3 on the next write. This is the
+    primary backward-compat path for v1.0 → v1.2 upgrades."""
+    legacy_v2 = {
+        "schema_version": 2,
+        "name": project.name,
+        "phase": "active",
+        "iteration": 5,
+        "session_id": "v2-session",
+        "last_score": 0.5,
+        "last_passed": False,
+        "prd_complete": False,
+        "consecutive_failures": 1,
+        "last_cycle_started_at": "2026-05-01T10:00:00Z",
+        "last_progress_at": "2026-05-01T10:00:00Z",
+        "threshold": 0.85,
+        "paused": None,
+        "detached": None,
+        "current_phase": 2,
+        "phases_completed": [1],
+        "escalated_next_cycle": False,
+        "successful_cycles_since_improver": 3,
+        "improver_due": False,
+    }
+    (project / ".cc-autopipe" / "state.json").write_text(json.dumps(legacy_v2))
+
+    s = state.read(project)
+    # v2 fields preserved verbatim.
+    assert s.iteration == 5
+    assert s.session_id == "v2-session"
+    assert s.current_phase == 2
+    assert s.phases_completed == [1]
+    assert s.successful_cycles_since_improver == 3
+    # v1.2 fields filled with defaults.
+    assert s.current_task is None
+    assert s.last_in_progress is False
+    assert s.consecutive_in_progress == 0
+    # schema_version forced to current on read.
+    assert s.schema_version == 3
+
+    state.write(project, s)
+    raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
+    assert raw["schema_version"] == 3
+    assert "current_task" in raw
+    assert raw["current_task"] is None
+    assert "last_in_progress" in raw
+    assert "consecutive_in_progress" in raw
+
+
+def test_current_task_round_trip(project: Path) -> None:
+    """A populated CurrentTask survives to_dict/from_dict and disk."""
+    s = state.State.fresh(project.name)
+    s.current_task = state.CurrentTask(
+        id="cand_imbloss_v2",
+        started_at="2026-05-02T18:00:00Z",
+        stage="training",
+        stages_completed=["hypothesis"],
+        artifact_paths=["data/models/exp_cand_imbloss_v2/"],
+        claude_notes="SwingLoss with class_balance_beta=0.999",
+    )
+    state.write(project, s)
+
+    s2 = state.read(project)
+    assert s2.current_task is not None
+    assert s2.current_task.id == "cand_imbloss_v2"
+    assert s2.current_task.started_at == "2026-05-02T18:00:00Z"
+    assert s2.current_task.stage == "training"
+    assert s2.current_task.stages_completed == ["hypothesis"]
+    assert s2.current_task.artifact_paths == ["data/models/exp_cand_imbloss_v2/"]
+    assert s2.current_task.claude_notes.startswith("SwingLoss")
+
+
+def test_current_task_from_dict_tolerates_partial(project: Path) -> None:
+    """A CURRENT_TASK.md or external client may write a partial
+    current_task dict (no claude_notes, scalar artifact instead of list).
+    from_dict must coerce to safe defaults rather than raise."""
+    ct = state.CurrentTask.from_dict({"id": "x", "stage": "init"})
+    assert ct.id == "x"
+    assert ct.stage == "init"
+    assert ct.stages_completed == []
+    assert ct.artifact_paths == []
+    assert ct.claude_notes == ""
+
+    # Scalar coerced to single-element list.
+    ct2 = state.CurrentTask.from_dict(
+        {"id": "y", "artifact_paths": "data/foo/", "stages_completed": "a"}
+    )
+    assert ct2.artifact_paths == ["data/foo/"]
+    assert ct2.stages_completed == ["a"]
+
+
+def test_in_progress_counters_round_trip(project: Path) -> None:
+    s = state.State.fresh(project.name)
+    s.last_in_progress = True
+    s.consecutive_in_progress = 4
+    state.write(project, s)
+    s2 = state.read(project)
+    assert s2.last_in_progress is True
+    assert s2.consecutive_in_progress == 4
+
+
+def test_v3_preserves_extras_dict(project: Path) -> None:
+    """Unknown keys in state.json (e.g. from a future v1.3) flow into
+    extras and round-trip without loss. Ensures forward-compat."""
+    raw = {
+        "schema_version": 3,
+        "name": project.name,
+        "phase": "active",
+        "iteration": 1,
+        "session_id": None,
+        "last_score": None,
+        "last_passed": None,
+        "prd_complete": False,
+        "consecutive_failures": 0,
+        "threshold": 0.85,
+        "paused": None,
+        "detached": None,
+        "current_phase": 1,
+        "phases_completed": [],
+        "escalated_next_cycle": False,
+        "successful_cycles_since_improver": 0,
+        "improver_due": False,
+        "current_task": None,
+        "last_in_progress": False,
+        "consecutive_in_progress": 0,
+        "future_v13_field": {"hello": "world"},
+    }
+    (project / ".cc-autopipe" / "state.json").write_text(json.dumps(raw))
+    s = state.read(project)
+    assert s.extras["future_v13_field"] == {"hello": "world"}
+    state.write(project, s)
+    raw2 = json.loads((project / ".cc-autopipe" / "state.json").read_text())
+    assert raw2["future_v13_field"] == {"hello": "world"}

@@ -93,8 +93,11 @@ Pre-Batch 1 infrastructure:
 Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
 - ✅ state.py schema_v3 with `current_task` (CurrentTask dataclass) +
   `last_in_progress` + `consecutive_in_progress`. Pre-v3 state files
-  auto-migrate on read (defaults supply missing fields). 243+1 pytest
-  baseline holds. hello-fullstack-v12 regression now green.
+  auto-migrate on read (defaults supply missing fields). hello-fullstack-v12
+  regression now green.
+- ✅ test_state.py: +5 tests covering v2→v3 migration, current_task
+  round-trip, partial-dict tolerance, in_progress counters round-trip,
+  forward-compat extras pass-through. 248 + 1 skipped now.
 - ☐ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
 - ☐ `src/lib/stop_helper.py` — Stop hook wiring (CURRENT_TASK.md → state)
 - ☐ `src/lib/session_start_helper.py` — SessionStart hook wiring
