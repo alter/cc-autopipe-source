@@ -83,10 +83,15 @@ Pre-Batch 1 infrastructure:
 - ✅ `tests/regression/hello-fullstack-v1.sh` — mocked-claude regression base
   (131 lines, shellcheck clean, passes on current v1.0 engine; uses
   /usr/bin/true as claude_bin + pre-seeded quota cache)
-- ☐ `tests/regression/hello-fullstack-v12.sh` — extends v1 with schema_v3 + current_task assertions
+- ✅ `tests/regression/hello-fullstack-v12.sh` — extends v1 with
+  schema_v3 + current_task + in_progress assertions (126 lines,
+  shellcheck clean). EXPECTED to fail pre-Batch 1 at schema_v3
+  assertion (engine still writes schema_v2); confirmed exit 1
+  with clear "expected schema_version=3, got 2" message. Becomes
+  green after Batch 1 lands.
 
-After this infra lands, Batch 1 starts: state schema v3 + current_task
-end-to-end through hooks.
+Pre-Batch infra complete. Batch 1 starts next: state schema v3 +
+current_task end-to-end through hooks.
 
 ### Pre-flight (initial)
 
