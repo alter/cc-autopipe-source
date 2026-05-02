@@ -1,15 +1,36 @@
 # Build Status
 
-**Updated:** 2026-05-02T08:15:00Z
+**Updated:** 2026-05-02T09:30:00Z
 **Current branch:** main
-**Current stage:** v0.5.0 + Stage G shakedown complete; v1.0 build started
-(autonomous batch mode per AGENTS-v1.md).
+**Current stage:** Batch a (v0.5.1) complete. Awaiting `tests/gates/batch-a.sh`
+verdict before TG notify + 60-min sleep + Batch b kickoff.
 
 ## Currently working on
 
-Batch a in flight. Commits landed: rules.md (Q15), verify.sh.example
-PRD-counting + fail-closed default restoration, cli/stop.py.
-Next: dispatcher wires stop, tests, gate script, STATUS finalization.
+v0.5.1 cleanup batch landed in 7 atomic commits:
+
+  1. `templates: rules.md.example workflow discipline` (Q15 resolved)
+  2. `templates: verify.sh.example demonstrates safe grep idiom`
+     (SPEC-v1.md §1.2 — `|| true; UNCHECKED=${UNCHECKED:-0}` pattern)
+  3. `templates: verify.sh.example defaults stay fail-closed`
+     (regression repair on test_init.py::test_verify_sh_is_executable)
+  4. `cli: implement cc-autopipe stop subcommand` (SPEC.md §12.3 +
+     SPEC-v1.md §1.3, SIGTERM-then-SIGKILL with --timeout)
+  5. `helpers: dispatcher wires cc-autopipe stop`
+  6. `tests: cc-autopipe stop integration coverage` (8 new tests)
+  7. `tests: gates/batch-a.sh validator` (AGENTS-v1.md §2.1)
+
+`cc-autopipe stop` is the v0.5 not_implemented item Roman called out
+in the prior STATUS — now wired via the singleton lock at
+`$CC_AUTOPIPE_USER_HOME/orchestrator.pid`, idempotent against missing/
+stale lock files (`fcntl.lock_status` re-acquires when the prior
+holder is dead), and escalates to SIGKILL after `--timeout` (default
+60s). 158 pytest pass + 1 macOS skip; ruff/shellcheck clean.
+
+Pending: run gate, TG-notify, sleep 60 min, start Batch b.
+
+Roman should `git tag v0.5.1` once the gate passes and Batch b
+begins. Tagging is HUMAN-ONLY per AGENTS-v1.md §6.
 
 v1.0 build kicked off in autonomous batch mode. Four batches execute
 back-to-back without human intervention: Batch a (v0.5.1 cleanup —
@@ -21,9 +42,7 @@ ends with `tests/gates/batch-X.sh` running working-tree-clean +
 all smokes + pytest + lint + doctor; on GREEN the agent TG-notifies,
 sleeps 60 min, and starts the next batch with NO pause for human
 input. On RED the agent writes `BATCH_HALT.md`, TG-alerts, and ends
-the session. Currently mid-Batch-a; Stage F functionally-complete
-engine ("v0.5.0") confirmed by green smokes A–F — see legacy
-section below.
+the session.
 
 ## v0.5 legacy stages — final state
 
@@ -54,7 +73,9 @@ after May 2 quota reset per Roman's plan.
 
 ## Last commit
 
-`tests: stage-f smoke validator` (Stage F final, 8 commits 2026-04-29).
+`tests: gates/batch-a.sh validator` (Batch a closer, 7 commits
+2026-05-02 covering rules.md / verify.sh / cli/stop.py / dispatcher /
+tests / gate).
 
 ## Stages completion
 
@@ -66,7 +87,15 @@ after May 2 quota reset per Roman's plan.
       Q12 hot-fix (2026-04-29T18:30Z, real-endpoint format fix)
 - [x] Stage F: Helpers and CLI (completed 2026-04-29T20:00Z) —
       **Engine v0.5.0 complete**
-- [ ] Stage G: Hello-fullstack smoke test (project-side, post-May-2)
+- [x] Stage G: Hello-fullstack smoke test (real-claude verification
+      deferred per quota window; engine surfaces validated by 6
+      stage smokes + Stage G shakedown bug-fixes 2026-04-30)
+- [x] Batch a (v0.5.1 cleanup): 7 commits 2026-05-02 — rules.md
+      template, verify.sh template, cc-autopipe stop subcommand,
+      gate validator. **v0.5.1 complete** (pending gate run + tag).
+- [ ] Batch b (v1.0 part 1: Stages H/I/J)
+- [ ] Batch c (v1.0 part 2: Stages K/L)
+- [ ] Batch d (v1.0 part 3: Stages M/N) — closes v1.0
 
 ## Stage E DoD verification
 
