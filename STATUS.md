@@ -90,29 +90,66 @@ Pre-Batch 1 infrastructure:
   with clear "expected schema_version=3, got 2" message. Becomes
   green after Batch 1 lands.
 
-Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
+**Batch 1 (Bug A + E) — COMPLETE.** 9 atomic commits land schema v3,
+current_task helpers, and hook wiring end-to-end. Gate green in fast
+mode (lint+pytest+regression+v1.2-specific blocks). Full smoke runner
+also green: **13/13 in 1189s (~20min)** — schema_v3 bump did not
+regress any v0.5/v1.0 stage smoke.
+
 - ✅ state.py schema_v3 with `current_task` (CurrentTask dataclass) +
   `last_in_progress` + `consecutive_in_progress`. Pre-v3 state files
-  auto-migrate on read (defaults supply missing fields). hello-fullstack-v12
-  regression now green.
+  auto-migrate on read (defaults supply missing fields).
 - ✅ test_state.py: +5 tests covering v2→v3 migration, current_task
   round-trip, partial-dict tolerance, in_progress counters round-trip,
-  forward-compat extras pass-through. 248 + 1 skipped now.
+  forward-compat extras pass-through.
 - ✅ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
   (line-oriented `key: value`; multi-line notes via continuation;
-  artifact: lines accumulate; CLI: `parse` / `write`). +27 unit
-  tests in `tests/unit/test_current_task.py`. 275+1 pytest now.
+  artifact: lines accumulate; CLI: `parse` / `write`). +27 unit tests.
+  Parser fix exposed by tests: unknown `key:` lines no longer absorbed
+  as continuation of previous key.
 - ✅ `src/lib/stop_helper.py` + `src/hooks/stop.sh` — Stop hook wires
-  CURRENT_TASK.md → state.json.current_task. Empty/missing file is a
-  no-op. Helper enforces always-exit-0 contract. +7 unit tests +13
-  hook-level bash assertions in `test_stop.sh` (47/47 PASS now).
-  pytest 282+1.
+  CURRENT_TASK.md → state.json.current_task. Empty/missing file is
+  a no-op. Helper enforces always-exit-0. +7 unit tests + 13 bash
+  assertions (47/47 test_stop.sh).
 - ✅ `src/lib/session_start_helper.py` + `src/hooks/session-start.sh` —
-  SessionStart hook injects `=== Current task ===` block from
-  state.current_task. +17 unit tests in test_session_start_helper.py
-  (formatting / null-safety / relative-time / hook-contract / CLI /
-  v2-state migration). +9 hook-level bash assertions (28/28 PASS).
-  299+1 pytest. Both regressions green (v1 + v12).
+  injects `=== Current task ===` block. Two modes (no-task helper /
+  populated). +17 unit tests + 9 bash assertions (28/28 test_session_start.sh).
+- ✅ `tests/gates/batch-1-v12.sh` — 9-category gate; CC_AUTOPIPE_GATE_FAST=1
+  to skip the 25-min smoke-runner block.
+
+**Test counts:**
+- pytest: 243+1 (baseline) → 299 passed, 1 skipped
+- test_stop.sh: 34/34 → 47/47
+- test_session_start.sh: 17/17 → 28/28
+- regression: hello-fullstack-v1 green, hello-fullstack-v12 green
+- gate (fast mode): 13/13 GATE OK
+
+**Engine size:** state.py 91 lines added; new modules 410 lines; hooks
++15 lines bash. Tests +800 lines. Total ~1300 lines added across
+9 commits.
+
+### Tail (last 9 commits — Batch 1)
+- fad4371 tests: add batch-1-v12 gate (state schema + current_task)
+- 3253c7f tests: cover session_start current_task injection
+- 439b1f7 hooks: session_start injects current_task into prompt
+- 638e531 tests: cover stop hook current_task integration
+- fb3699b hooks: stop reads CURRENT_TASK.md, updates state.json
+- 6bd5814 tests: cover current_task module + fix unknown-key absorption
+- 1f432ba current_task: parse/write CURRENT_TASK.md helper module
+- 165d9fa tests: cover state v2→v3 migration paths
+- 7f7b535 state: bump schema to v3 with current_task + in_progress fields
+
+### Currently working on
+
+**Batch 1 done.** Cooldown / Batch 2 sequencing pending Roman's call
+in chat 2026-05-02 (interactive session, not unattended; mocked claude
+so cooldown is not protecting real quota).
+
+Next: **Batch 2 (Bug B + H)** — verify in_progress flag (engine does
+not count as failure when verify returns in_progress=true) + smart
+escalation (failure categorization: claude_subprocess_failed →
+escalate to Opus; verify_failed pattern → HUMAN_NEEDED.md, no
+escalation).
 
 ### Pre-flight (initial)
 
