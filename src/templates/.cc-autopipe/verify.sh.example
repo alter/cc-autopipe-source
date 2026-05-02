@@ -15,10 +15,15 @@ set -u  # NOT -e: we want to capture failures, not abort on them.
 # Each failed check should set ALL_PASS=0. Aim for SCORE to track "fraction
 # of checks passing" so the orchestrator's threshold (default 0.85) means
 # something concrete.
+#
+# Defaults below are intentionally fail-closed (passed=false, score=0.0):
+# the stub must NOT trick the orchestrator into thinking checks pass when
+# none are defined. Set ALL_PASS=1 / SCORE=1.0 only after wiring real
+# checks above.
 # ---------------------------------------------------------------------------
 
-ALL_PASS=1
-SCORE=1.0
+ALL_PASS=0
+SCORE=0.0
 
 # Examples (uncomment and adapt):
 #   pytest --tb=line -q                              || ALL_PASS=0
