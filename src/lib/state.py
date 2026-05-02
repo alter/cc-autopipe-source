@@ -30,10 +30,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
+
+# v0.5 → v1.0 schema bump (SPEC-v1.md §3.1). New fields:
+#   - detached:           Optional[dict]  per Stage H
+#   - current_phase:      int             per Stage J (default 1)
+#   - phases_completed:   list[int]       per Stage J (default [])
+# v1 state files migrate transparently — `read()` fills defaults via the
+# dataclass field defaults; `write()` then persists schema_version=2.
 
 
 def _user_home() -> Path:
@@ -63,10 +70,41 @@ class Paused:
 
 
 @dataclass
+class Detached:
+    """Long-running operation in flight per SPEC-v1.md §2.1.
+
+    Engine periodically (every check_every_sec) runs check_cmd. Success
+    transitions back to ACTIVE; max_wait_sec elapsed transitions to
+    FAILED. Operations launch via `cc-autopipe-detach` from inside a
+    claude session before nohup-ing the long task.
+    """
+
+    reason: str
+    started_at: str  # ISO 8601 UTC
+    check_cmd: str
+    check_every_sec: int
+    max_wait_sec: int
+    last_check_at: Optional[str] = None
+    checks_count: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Detached":
+        return cls(
+            reason=str(d.get("reason", "")),
+            started_at=str(d.get("started_at", "")),
+            check_cmd=str(d.get("check_cmd", "")),
+            check_every_sec=int(d.get("check_every_sec", 600)),
+            max_wait_sec=int(d.get("max_wait_sec", 14400)),
+            last_check_at=d.get("last_check_at"),
+            checks_count=int(d.get("checks_count", 0)),
+        )
+
+
+@dataclass
 class State:
     schema_version: int = SCHEMA_VERSION
     name: str = ""
-    phase: str = "active"  # active | paused | done | failed
+    phase: str = "active"  # active | paused | done | failed | detached
     iteration: int = 0
     session_id: Optional[str] = None
     last_score: Optional[float] = None
@@ -77,6 +115,9 @@ class State:
     last_progress_at: Optional[str] = None
     threshold: float = 0.85
     paused: Optional[Paused] = None
+    detached: Optional[Detached] = None
+    current_phase: int = 1
+    phases_completed: list[int] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -94,6 +135,9 @@ class State:
             "last_progress_at": self.last_progress_at,
             "threshold": self.threshold,
             "paused": asdict(self.paused) if self.paused else None,
+            "detached": asdict(self.detached) if self.detached else None,
+            "current_phase": self.current_phase,
+            "phases_completed": list(self.phases_completed),
         }
         d.update(self.extras)
         return d
@@ -109,6 +153,14 @@ class State:
             kwargs["paused"] = Paused.from_dict(kwargs["paused"])
         elif kwargs.get("paused") is None:
             kwargs["paused"] = None
+        if isinstance(kwargs.get("detached"), dict):
+            kwargs["detached"] = Detached.from_dict(kwargs["detached"])
+        elif kwargs.get("detached") is None:
+            kwargs["detached"] = None
+        # v1 → v2 migration: a v1 state file has no current_phase /
+        # phases_completed / detached. Dataclass defaults handle the
+        # missing fields; schema_version is bumped on next write().
+        kwargs["schema_version"] = SCHEMA_VERSION
         extras = {k: v for k, v in d.items() if k not in known}
         return cls(extras=extras, **kwargs)
 
@@ -261,6 +313,53 @@ def set_paused(
     write(project_path, s)
 
 
+def set_detached(
+    project_path: str | os.PathLike[str],
+    *,
+    reason: str,
+    check_cmd: str,
+    check_every_sec: int,
+    max_wait_sec: int,
+) -> None:
+    """Transition a project to phase=detached with the given check_cmd.
+
+    Called by `cc-autopipe-detach` from inside a claude session before
+    nohup-ing a long task. Engine releases the slot until check_cmd
+    succeeds (poll cadence: check_every_sec) or max_wait_sec elapses.
+    """
+    s = read(project_path)
+    s.phase = "detached"
+    s.detached = Detached(
+        reason=reason,
+        started_at=_now_iso(),
+        check_cmd=check_cmd,
+        check_every_sec=int(check_every_sec),
+        max_wait_sec=int(max_wait_sec),
+        last_check_at=None,
+        checks_count=0,
+    )
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+
+
+def complete_phase(project_path: str | os.PathLike[str]) -> int:
+    """Move current_phase to phases_completed and increment.
+
+    Returns the new current_phase. Used by orchestrator's phase-split
+    logic in Stage J. Engine calls this after a phase's items are all
+    checked AND verify passes.
+    """
+    s = read(project_path)
+    if s.current_phase not in s.phases_completed:
+        s.phases_completed.append(s.current_phase)
+    s.current_phase += 1
+    # Reset session id so next cycle starts fresh on the new phase.
+    s.session_id = None
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+    return s.current_phase
+
+
 # ---------------------------------------------------------------------------
 # CLI dispatch.
 # ---------------------------------------------------------------------------
@@ -307,6 +406,15 @@ def main(argv: list[str]) -> int:
     p_paused.add_argument("resume_at")
     p_paused.add_argument("reason")
 
+    p_detached = sub.add_parser("set-detached")
+    p_detached.add_argument("project")
+    p_detached.add_argument("--reason", required=True)
+    p_detached.add_argument("--check-cmd", required=True)
+    p_detached.add_argument("--check-every", type=int, default=600)
+    p_detached.add_argument("--max-wait", type=int, default=14400)
+
+    sub.add_parser("complete-phase").add_argument("project")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "read":
@@ -346,6 +454,21 @@ def main(argv: list[str]) -> int:
 
     if args.cmd == "set-paused":
         set_paused(args.project, args.resume_at, args.reason)
+        return 0
+
+    if args.cmd == "set-detached":
+        set_detached(
+            args.project,
+            reason=args.reason,
+            check_cmd=args.check_cmd,
+            check_every_sec=args.check_every,
+            max_wait_sec=args.max_wait,
+        )
+        return 0
+
+    if args.cmd == "complete-phase":
+        new = complete_phase(args.project)
+        print(new)
         return 0
 
     return 2

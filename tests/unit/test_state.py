@@ -352,3 +352,175 @@ def test_cli_set_paused(project: Path, tmp_path: Path) -> None:
     assert s.phase == "paused"
     assert s.paused is not None
     assert s.paused.reason == "rate_limit_5h"
+
+
+# ---------------------------------------------------------------------------
+# v1.0 schema additions (SPEC-v1.md §3.1)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_version_is_2_for_fresh_state(project: Path) -> None:
+    state.write(project, state.State.fresh(project.name))
+    raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
+    assert raw["schema_version"] == 2
+    assert raw["detached"] is None
+    assert raw["current_phase"] == 1
+    assert raw["phases_completed"] == []
+
+
+def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
+    """A pre-v1.0 state.json (schema_version=1, no new fields) should
+    read cleanly with v1.0 defaults for the missing fields, then
+    persist as schema_version=2 on the next write."""
+    legacy = {
+        "schema_version": 1,
+        "name": project.name,
+        "phase": "active",
+        "iteration": 4,
+        "session_id": "legacy-sid",
+        "last_score": 0.71,
+        "last_passed": False,
+        "prd_complete": False,
+        "consecutive_failures": 1,
+        "last_cycle_started_at": "2026-04-29T10:00:00Z",
+        "last_progress_at": "2026-04-29T10:00:00Z",
+        "threshold": 0.85,
+        "paused": None,
+    }
+    (project / ".cc-autopipe" / "state.json").write_text(json.dumps(legacy))
+
+    s = state.read(project)
+    # v1 fields preserved.
+    assert s.iteration == 4
+    assert s.session_id == "legacy-sid"
+    # v1.0 fields filled with defaults.
+    assert s.detached is None
+    assert s.current_phase == 1
+    assert s.phases_completed == []
+    # schema_version forced to current on read so write() persists v2.
+    assert s.schema_version == 2
+
+    state.write(project, s)
+    raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
+    assert raw["schema_version"] == 2
+    assert "detached" in raw
+    assert "current_phase" in raw
+    assert "phases_completed" in raw
+
+
+def test_set_detached_round_trip(project: Path) -> None:
+    state.write(project, state.State.fresh(project.name))
+    state.set_detached(
+        project,
+        reason="training model",
+        check_cmd="ls models/checkpoint_*.pt | wc -l | grep -q '^[1-9]'",
+        check_every_sec=600,
+        max_wait_sec=14400,
+    )
+    s = state.read(project)
+    assert s.phase == "detached"
+    assert s.detached is not None
+    assert s.detached.reason == "training model"
+    assert s.detached.check_every_sec == 600
+    assert s.detached.max_wait_sec == 14400
+    assert s.detached.checks_count == 0
+    assert s.detached.last_check_at is None
+    assert s.detached.started_at  # non-empty ISO timestamp
+
+
+def test_detached_round_trip_via_to_from_dict(project: Path) -> None:
+    s = state.State.fresh(project.name)
+    s.phase = "detached"
+    s.detached = state.Detached(
+        reason="r",
+        started_at="2026-05-15T10:00:00Z",
+        check_cmd="true",
+        check_every_sec=60,
+        max_wait_sec=3600,
+        last_check_at="2026-05-15T10:05:00Z",
+        checks_count=3,
+    )
+    state.write(project, s)
+    s2 = state.read(project)
+    assert s2.detached is not None
+    assert s2.detached.checks_count == 3
+    assert s2.detached.last_check_at == "2026-05-15T10:05:00Z"
+
+
+def test_complete_phase_advances_and_resets_session(project: Path) -> None:
+    s = state.State.fresh(project.name)
+    s.session_id = "phase-1-sid"
+    s.current_phase = 1
+    state.write(project, s)
+
+    new = state.complete_phase(project)
+    assert new == 2
+    s2 = state.read(project)
+    assert s2.current_phase == 2
+    assert s2.phases_completed == [1]
+    assert s2.session_id is None  # session reset for fresh phase context
+
+
+def test_complete_phase_idempotent_within_phase(project: Path) -> None:
+    """Calling complete_phase twice without entering a new phase
+    increments only once into phases_completed (no duplicates)."""
+    s = state.State.fresh(project.name)
+    s.current_phase = 2
+    s.phases_completed = [1, 2]  # already there from a prior idempotent call
+    state.write(project, s)
+    state.complete_phase(project)
+    s2 = state.read(project)
+    assert s2.phases_completed.count(2) == 1
+    assert s2.current_phase == 3
+
+
+def test_cli_set_detached(project: Path, tmp_path: Path) -> None:
+    state.write(project, state.State.fresh(project.name))
+    env = os.environ.copy()
+    env["CC_AUTOPIPE_USER_HOME"] = str(tmp_path / ".cc-autopipe-user")
+    subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "state.py"),
+            "set-detached",
+            str(project),
+            "--reason",
+            "training run",
+            "--check-cmd",
+            "test -f /tmp/done",
+            "--check-every",
+            "120",
+            "--max-wait",
+            "7200",
+        ],
+        check=True,
+        env=env,
+    )
+    s = state.read(project)
+    assert s.phase == "detached"
+    assert s.detached is not None
+    assert s.detached.reason == "training run"
+    assert s.detached.check_every_sec == 120
+    assert s.detached.max_wait_sec == 7200
+
+
+def test_cli_complete_phase(project: Path, tmp_path: Path) -> None:
+    state.write(project, state.State.fresh(project.name))
+    env = os.environ.copy()
+    env["CC_AUTOPIPE_USER_HOME"] = str(tmp_path / ".cc-autopipe-user")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "state.py"),
+            "complete-phase",
+            str(project),
+        ],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert cp.stdout.strip() == "2"
+    s = state.read(project)
+    assert s.current_phase == 2
+    assert s.phases_completed == [1]
