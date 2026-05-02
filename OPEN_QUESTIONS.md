@@ -658,3 +658,21 @@ either `CC_AUTOPIPE_USER_HOME` (preferred — also isolates state) or
 - `tests: test_quota_monitor.py explicit notify_tg overrides (Q20)`
 - `docs: OPEN_QUESTIONS Q20 (real-TG leak via tests)`
 
+
+## Q21. [v1.0.1] [open] Gate scripts redundantly re-run pytest
+
+**Discovered:** 2026-05-02 during v1.0 build
+**Stage:** v1.0 retrospective
+**Blocking:** None — gate components verified manually
+
+**Question:**
+tests/gates/batch-d.sh and v1.0-final.sh run all 13 smokes sequentially.
+Each smoke internally re-runs full pytest (~115s). Total: ~25min,
+exceeds 10min foreground bash watchdog and burns CPU.
+
+**Fix plan (v1.0.1):**
+- Run pytest ONCE at start of gate
+- Smoke validators check only stage-specific surfaces (functional flow)
+- Skip pytest in smoke if QUOTA_DISABLED or BATCH_GATE_RUN env set
+
+**Status:** open, not blocking v1.0 production use
