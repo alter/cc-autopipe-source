@@ -287,6 +287,7 @@ def test_quota_monitor_daemon_attribute(tmp_path: Path) -> None:
     mon = quota_monitor.QuotaMonitor(
         check_interval_sec=10.0,
         user_home=tmp_path,
+        notify_tg=lambda _m: None,
     )
     assert mon._thread.daemon is True
     # Don't start — just verify the construction.
@@ -309,6 +310,7 @@ def test_quota_monitor_run_does_not_crash_on_check_exception(
         mon = quota_monitor.QuotaMonitor(
             check_interval_sec=0.05,
             user_home=tmp_path,
+            notify_tg=lambda _m: None,
         )
         mon.start()
         assert bad_event.wait(timeout=2.0), "bad reader was never called"
