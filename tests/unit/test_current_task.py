@@ -67,11 +67,7 @@ def test_parse_stages_completed_empty() -> None:
 
 
 def test_parse_multiple_artifact_lines_accumulate() -> None:
-    src = (
-        "task: x\n"
-        "artifact: data/models/foo/\n"
-        "artifact: data/reports/bar.md\n"
-    )
+    src = "task: x\nartifact: data/models/foo/\nartifact: data/reports/bar.md\n"
     out = current_task.parse_text(src)
     assert out["artifact_paths"] == ["data/models/foo/", "data/reports/bar.md"]
 
@@ -106,13 +102,7 @@ def test_parse_unknown_keys_ignored() -> None:
 def test_parse_leading_freeform_text_ignored() -> None:
     """Lines before the first recognized key (e.g. a markdown title)
     are dropped so users can prepend a heading if they want."""
-    src = (
-        "# Current task\n"
-        "Some preamble.\n"
-        "\n"
-        "task: x\n"
-        "stage: y\n"
-    )
+    src = "# Current task\nSome preamble.\n\ntask: x\nstage: y\n"
     out = current_task.parse_text(src)
     assert out == {"id": "x", "stage": "y"}
 
