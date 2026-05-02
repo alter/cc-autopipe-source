@@ -25,4 +25,4 @@ echo "[inject-429] Firing StopFailure in $PROJECT_DIR"
 echo "$INPUT" | "$HOOKS_DIR/stop-failure.sh"
 
 echo "[inject-429] state.json after injection:"
-cat "$PROJECT_DIR/.cc-autopipe/state.json" | jq .
+jq . < "$PROJECT_DIR/.cc-autopipe/state.json"
