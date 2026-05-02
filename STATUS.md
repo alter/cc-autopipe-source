@@ -100,7 +100,8 @@ Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
   forward-compat extras pass-through. 248 + 1 skipped now.
 - ✅ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
   (line-oriented `key: value`; multi-line notes via continuation;
-  artifact: lines accumulate; CLI: `parse` / `write`).
+  artifact: lines accumulate; CLI: `parse` / `write`). +27 unit
+  tests in `tests/unit/test_current_task.py`. 275+1 pytest now.
 - ☐ `src/lib/stop_helper.py` — Stop hook wiring (CURRENT_TASK.md → state)
 - ☐ `src/lib/session_start_helper.py` — SessionStart hook wiring
   (state.current_task → injected prompt block)

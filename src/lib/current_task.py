@@ -109,14 +109,20 @@ def parse_text(text: str) -> dict[str, Any]:
 
     for raw_line in text.splitlines():
         m = KEY_PATTERN.match(raw_line)
-        if m and m.group(1) in _RECOGNIZED:
+        if m:
+            # Line looks like `key: value`. Always terminates any open
+            # continuation, even if the key is unrecognized — that way a
+            # stray `weird_key: y` line doesn't get absorbed into the
+            # previous notes block.
             flush()
-            current_key = m.group(1)
-            current_value_parts = [m.group(2)]
+            if m.group(1) in _RECOGNIZED:
+                current_key = m.group(1)
+                current_value_parts = [m.group(2)]
+            # else: unrecognized key, drop entirely.
         else:
             if current_key is not None:
-                # Continuation line — keep the trailing newline behavior
-                # by joining via "\n" in flush().
+                # Free-text continuation of the current key's value
+                # (mostly for multi-line notes).
                 current_value_parts.append(raw_line)
             # else: free-floating line before the first recognized key,
             # ignore (lets users prepend a markdown title if they want).
