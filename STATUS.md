@@ -1,11 +1,22 @@
 # Build Status
 
-**Updated:** 2026-05-02T10:35:00Z
+**Updated:** 2026-05-02T10:42:00Z
 **Current branch:** main
-**Current stage:** Batch b complete. Stage H (DETACHED), Stage I
-(researcher+reporter subagents), Stage J (phase split) all shipped.
-196 pytest pass + 1 macOS skip. Stage smokes h/i/j all green. Next:
-gate validator + STATUS + sleep + Batch c.
+**Current stage:** Batch b complete. Awaiting `tests/gates/batch-b.sh`
+verdict before TG notify + 60-min sleep + Batch c kickoff.
+
+## Currently working on
+
+Batch b shipped Stages H/I/J in 9 atomic commits (state schema v2
+with Detached/current_phase/phases_completed; cc-autopipe-detach
+helper + dispatcher; orchestrator DETACHED branch with check_cmd
+polling; pre-tool-use rule 7 nohup+detach allowance; Stage H
+integration tests + smoke; researcher+reporter subagents in
+agents.json + 5 init tests + smoke; src/lib/prd.py phase parser
+with 11 unit tests; orchestrator phase transition + prompt
+focus + 7 integration tests + smoke). 196 pytest cases pass +
+1 macOS skip. Stage smokes A–F still green; H/I/J added.
+Roman should `git tag v1.0-batch-b` once gate passes.
 
 ## Currently working on
 
@@ -94,8 +105,12 @@ tests / gate).
       stage smokes + Stage G shakedown bug-fixes 2026-04-30)
 - [x] Batch a (v0.5.1 cleanup): 7 commits 2026-05-02 — rules.md
       template, verify.sh template, cc-autopipe stop subcommand,
-      gate validator. **v0.5.1 complete** (pending gate run + tag).
-- [ ] Batch b (v1.0 part 1: Stages H/I/J)
+      gate validator. **v0.5.1 complete** (pending Roman tag v0.5.1).
+- [x] Batch b (v1.0 part 1: Stages H/I/J): 9 commits 2026-05-02 —
+      schema v2, cc-autopipe-detach + dispatcher, orchestrator
+      DETACHED branch, pre-tool-use rule 7, R/R subagents,
+      PRD phase parser, orchestrator phase transitions. Pending
+      gate run + Roman tag v1.0-batch-b.
 - [ ] Batch c (v1.0 part 2: Stages K/L)
 - [ ] Batch d (v1.0 part 3: Stages M/N) — closes v1.0
 
