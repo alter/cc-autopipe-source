@@ -1,11 +1,11 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:35:00Z
+**Updated:** 2026-05-02T11:50:00Z
 **Current branch:** main
-**Current stage:** Stage L mostly shipped (orchestrator escalation
-logic + reminder injection + revert-after-success + resume.py
-clear). 212 pytest pass. Next: tests/integration/test_orchestrator_escalation.py
-+ smoke stage-l.sh.
+**Current stage:** Batch c complete. Stage K (quota_monitor) +
+Stage L (auto-escalation) shipped. 224 pytest pass + 1 macOS skip.
+Stage smokes h/i/j/k/l all green. Next: gate validator + STATUS +
+sleep + Batch d.
 
 ## Currently working on
 
