@@ -546,7 +546,8 @@ SPEC.md §9.2 should be updated:
 ## Resolved questions
 
 Q1 (resolved by Q12), Q3, Q4, Q7, Q8, Q9, Q10, Q11, Q12, Q13,
-Q14 (resolved-as-deviation), Q15 (resolved in v0.5.1 / Batch a).
+Q14 (resolved-as-deviation), Q15 (resolved in v0.5.1 / Batch a),
+Q20 (test-isolation fix, v1.0 final QA).
 
 Still open / deferred: Q2, Q5, Q6.
 
@@ -579,4 +580,81 @@ project-level rules.md template didn't).
    bakes the discipline into the project Claude reads.
 
 **Reference commit:** `templates: rules.md.example workflow discipline`
+
+---
+
+## Q20. [V1.0] [resolved] pytest fired real Telegram via tg.sh secrets-file leak
+
+**Discovered:** 2026-05-02 by Roman after Stage K + Stage N landed.
+**Stage:** v1.0 final QA (post Batch d).
+**Blocking:** v1.0 tag — hours of TG spam claiming `7d quota at 95%`
+when the real account was at 9%.
+
+**Question:**
+Multiple integration tests subprocess-spawn the orchestrator
+(`tests/integration/test_orchestrator_*.py`). Each test isolates
+`CC_AUTOPIPE_USER_HOME` to a tmp directory so quota-cache.json,
+state.json, and projects.list never touch the real `~/.cc-autopipe`.
+But `src/lib/tg.sh` resolved its secrets path independently:
+
+    SECRETS_FILE="${CC_AUTOPIPE_SECRETS_FILE:-$HOME/.cc-autopipe/secrets.env}"
+
+The default fell back to `$HOME` even when `CC_AUTOPIPE_USER_HOME`
+pointed elsewhere. Tests didn't override `CC_AUTOPIPE_SECRETS_FILE`,
+so any code path that called `_notify_tg` from inside the spawned
+orchestrator picked up the real `TG_BOT_TOKEN` / `TG_CHAT_ID` from
+the operator's real secrets.env and fired live Telegram.
+
+The "95% quota" content came from the orchestrator's own pre-flight
+pause path (`tests/integration/test_orchestrator_quota.py`
+deliberately seeds 7d=0.96 to verify the pause-and-alert behaviour)
+and from `quota_monitor.check_once` warnings during the daemon's
+lifetime in any test that triggered both quota_monitor startup and
+threshold reads against a high-seeded cache. Stage K and Stage N
+tests escalated visibility because they spawn the orchestrator with
+the daemon enabled and run multiple cycles.
+
+**Resolution:**
+
+1. **Structural fix in `src/lib/tg.sh`.** SECRETS_FILE now resolves
+   in the order:
+   ```
+   $CC_AUTOPIPE_SECRETS_FILE
+     -> $CC_AUTOPIPE_USER_HOME/secrets.env
+     -> $HOME/.cc-autopipe/secrets.env
+   ```
+   Any caller that already isolates user_home (every test) now
+   automatically isolates secrets too — no per-test env addition
+   required. Production behaviour unchanged: with no env vars set,
+   the resolver still lands at `$HOME/.cc-autopipe/secrets.env`.
+
+2. **Belt-and-suspenders `tests/conftest.py`.** Session-scope autouse
+   fixture sets `CC_AUTOPIPE_SECRETS_FILE` to a tmp path that is
+   never created. tg.sh treats unreadable secrets as "no creds" and
+   exits 0 without curling. Also seeds `CC_AUTOPIPE_USER_HOME` for
+   tests that forget to isolate explicitly.
+
+3. **`test_quota_monitor.py` hardening.** Two daemon tests that
+   omitted `notify_tg=...` now pass an explicit no-op so a future
+   regression in the structural fix is still caught.
+
+**Verification:**
+- `bash src/lib/tg.sh "msg"` with `CC_AUTOPIPE_USER_HOME=/tmp/empty`
+  exits 0 with no curl call (verified manually).
+- Full pytest run with `pgrep -f tg.sh` polled in background returns
+  no live processes after the run.
+- `~/.cc-autopipe/quota-cache.json` already shows real values (6% /
+  9%); no stale data to clean.
+
+**SPEC.md update note for v1 docs review:**
+SPEC.md §6.5 (Telegram) should document the three-tier SECRETS_FILE
+resolution and explicitly call out that test isolation MUST set
+either `CC_AUTOPIPE_USER_HOME` (preferred — also isolates state) or
+`CC_AUTOPIPE_SECRETS_FILE` directly.
+
+**Reference commits:**
+- `lib: tg.sh resolves secrets via CC_AUTOPIPE_USER_HOME (Q20 fix)`
+- `tests: conftest.py session-isolates secrets+user_home (Q20)`
+- `tests: test_quota_monitor.py explicit notify_tg overrides (Q20)`
+- `docs: OPEN_QUESTIONS Q20 (real-TG leak via tests)`
 
