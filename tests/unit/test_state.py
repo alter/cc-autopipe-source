@@ -359,22 +359,26 @@ def test_cli_set_paused(project: Path, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_2_for_fresh_state(project: Path) -> None:
+def test_schema_version_is_current_for_fresh_state(project: Path) -> None:
     state.write(project, state.State.fresh(project.name))
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == 3
+    # v1.0 fields still present.
     assert raw["detached"] is None
     assert raw["current_phase"] == 1
     assert raw["phases_completed"] == []
     assert raw["escalated_next_cycle"] is False
     assert raw["successful_cycles_since_improver"] == 0
     assert raw["improver_due"] is False
+    # v1.2 fields present with defaults.
+    assert raw["current_task"] is None
+    assert raw["last_in_progress"] is False
+    assert raw["consecutive_in_progress"] == 0
 
 
-def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
-    """A pre-v1.0 state.json (schema_version=1, no new fields) should
-    read cleanly with v1.0 defaults for the missing fields, then
-    persist as schema_version=2 on the next write."""
+def test_v1_state_file_migrates_to_current_on_read(project: Path) -> None:
+    """A pre-v1.0 state.json (schema_version=1) should read cleanly with
+    defaults for the missing fields, then persist as schema_version=3."""
     legacy = {
         "schema_version": 1,
         "name": project.name,
@@ -401,16 +405,20 @@ def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
     assert s.current_phase == 1
     assert s.phases_completed == []
     assert s.escalated_next_cycle is False
-    # schema_version forced to current on read so write() persists v2.
-    assert s.schema_version == 2
+    # schema_version forced to current on read so write() persists v3.
+    assert s.schema_version == 3
 
     state.write(project, s)
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == 3
     assert "detached" in raw
     assert "current_phase" in raw
     assert "phases_completed" in raw
     assert "escalated_next_cycle" in raw
+    # v1.2 fields filled with defaults on migration.
+    assert raw["current_task"] is None
+    assert raw["last_in_progress"] is False
+    assert raw["consecutive_in_progress"] == 0
 
 
 def test_set_detached_round_trip(project: Path) -> None:

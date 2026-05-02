@@ -90,8 +90,15 @@ Pre-Batch 1 infrastructure:
   with clear "expected schema_version=3, got 2" message. Becomes
   green after Batch 1 lands.
 
-Pre-Batch infra complete. Batch 1 starts next: state schema v3 +
-current_task end-to-end through hooks.
+Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
+- ✅ state.py schema_v3 with `current_task` (CurrentTask dataclass) +
+  `last_in_progress` + `consecutive_in_progress`. Pre-v3 state files
+  auto-migrate on read (defaults supply missing fields). 243+1 pytest
+  baseline holds. hello-fullstack-v12 regression now green.
+- ☐ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
+- ☐ `src/lib/stop_helper.py` — Stop hook wiring (CURRENT_TASK.md → state)
+- ☐ `src/lib/session_start_helper.py` — SessionStart hook wiring
+  (state.current_task → injected prompt block)
 
 ### Pre-flight (initial)
 

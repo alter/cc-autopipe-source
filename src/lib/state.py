@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
@@ -42,8 +42,14 @@ FAILURES_FILENAME = "failures.jsonl"
 #   - escalated_next_cycle:              bool            per Stage L (False)
 #   - successful_cycles_since_improver:  int             per Stage N (default 0)
 #   - improver_due:                      bool            per Stage N (False)
-# v1 state files migrate transparently — `read()` fills defaults via the
-# dataclass field defaults; `write()` then persists schema_version=2.
+#
+# v1.0 → v1.2 schema bump (SPEC-v1.2.md, Bug A + Bug B). New fields:
+#   - current_task:            Optional[CurrentTask]  per Bug A (default None)
+#   - last_in_progress:        bool                   per Bug B (False)
+#   - consecutive_in_progress: int                    per Bug B (0)
+#
+# Pre-v3 state files migrate transparently — `read()` fills defaults via
+# the dataclass field defaults; `write()` then persists schema_version=3.
 
 
 def _user_home() -> Path:
@@ -104,6 +110,46 @@ class Detached:
 
 
 @dataclass
+class CurrentTask:
+    """The backlog item Claude is actively working on per SPEC-v1.2.md Bug A.
+
+    Mirrors `.cc-autopipe/CURRENT_TASK.md` written by Claude. Stop hook
+    reads that file and updates state.json.current_task; SessionStart
+    hook reads state.json.current_task and injects a context block at
+    the top of the next cycle's prompt.
+
+    `id` matches a `[~]` task in backlog.md. `stage` is free-form text.
+    `stages_completed` lets verify.sh do progressive scoring (Bug F).
+    `artifact_paths` tells verify.sh where Claude's outputs land.
+    """
+
+    id: Optional[str] = None
+    started_at: Optional[str] = None
+    stage: str = ""
+    stages_completed: list[str] = field(default_factory=list)
+    artifact_paths: list[str] = field(default_factory=list)
+    claude_notes: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "CurrentTask":
+        # Tolerant of partial dicts written by older clients or by hand.
+        stages = d.get("stages_completed") or []
+        if not isinstance(stages, list):
+            stages = [str(stages)]
+        artifacts = d.get("artifact_paths") or []
+        if not isinstance(artifacts, list):
+            artifacts = [str(artifacts)]
+        return cls(
+            id=d.get("id"),
+            started_at=d.get("started_at"),
+            stage=str(d.get("stage", "")),
+            stages_completed=[str(x) for x in stages],
+            artifact_paths=[str(x) for x in artifacts],
+            claude_notes=str(d.get("claude_notes", "")),
+        )
+
+
+@dataclass
 class State:
     schema_version: int = SCHEMA_VERSION
     name: str = ""
@@ -124,6 +170,11 @@ class State:
     escalated_next_cycle: bool = False
     successful_cycles_since_improver: int = 0
     improver_due: bool = False
+    # v1.2 additions (Bug A + Bug B). Defaults preserve backward compat
+    # for v1 / v2 state files: missing keys → these defaults.
+    current_task: Optional[CurrentTask] = None
+    last_in_progress: bool = False
+    consecutive_in_progress: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -147,6 +198,9 @@ class State:
             "escalated_next_cycle": self.escalated_next_cycle,
             "successful_cycles_since_improver": (self.successful_cycles_since_improver),
             "improver_due": self.improver_due,
+            "current_task": asdict(self.current_task) if self.current_task else None,
+            "last_in_progress": self.last_in_progress,
+            "consecutive_in_progress": self.consecutive_in_progress,
         }
         d.update(self.extras)
         return d
@@ -166,9 +220,13 @@ class State:
             kwargs["detached"] = Detached.from_dict(kwargs["detached"])
         elif kwargs.get("detached") is None:
             kwargs["detached"] = None
-        # v1 → v2 migration: a v1 state file has no current_phase /
-        # phases_completed / detached. Dataclass defaults handle the
-        # missing fields; schema_version is bumped on next write().
+        if isinstance(kwargs.get("current_task"), dict):
+            kwargs["current_task"] = CurrentTask.from_dict(kwargs["current_task"])
+        elif kwargs.get("current_task") is None:
+            kwargs["current_task"] = None
+        # Migration: any pre-v3 state file (schema_version 1 or 2) is
+        # missing some fields. Dataclass defaults supply them; we force
+        # schema_version=SCHEMA_VERSION here so write() persists v3.
         kwargs["schema_version"] = SCHEMA_VERSION
         extras = {k: v for k, v in d.items() if k not in known}
         return cls(extras=extras, **kwargs)
