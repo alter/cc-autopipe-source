@@ -58,8 +58,16 @@ if [ -f "$FAILURES" ]; then
     fi
 fi
 
-# Always log the hook fired — never let a failure here abort the session.
+# v1.2 Bug A: inject current_task block. Helper exits 0 even on errors,
+# so a transient failure here can never abort the session.
 CC_AUTOPIPE_HOME="${CC_AUTOPIPE_HOME:-$HOME/cc-autopipe}"
+CURRENT_TASK_BLOCK=$(python3 "$CC_AUTOPIPE_HOME/lib/session_start_helper.py" \
+    current-task "$PROJECT" 2>/dev/null || true)
+if [ -n "${CURRENT_TASK_BLOCK:-}" ]; then
+    printf '%s\n\n' "$CURRENT_TASK_BLOCK"
+fi
+
+# Always log the hook fired — never let a failure here abort the session.
 python3 "$CC_AUTOPIPE_HOME/lib/state.py" log-event "$PROJECT" hook_session_start \
     >/dev/null 2>&1 || true
 
