@@ -1,0 +1,133 @@
+#!/bin/bash
+# cc-autopipe-detach — transition project to phase=detached.
+# Refs: SPEC-v1.md §2.1.2, §2.1.3
+#
+# Called by Claude inside a session BEFORE launching a long-running
+# background task (>10 minutes). Updates state.json so the orchestrator
+# releases the slot and polls check_cmd at check_every_sec until either
+# it succeeds (→ ACTIVE) or max_wait_sec elapses (→ FAILED).
+#
+# Usage:
+#   cc-autopipe-detach --reason "<text>" --check-cmd "<cheap bash>" \
+#                      [--check-every <sec>] [--max-wait <sec>] \
+#                      [--project PATH]
+#
+# Defaults pulled from env (CC_AUTOPIPE_DEFAULT_CHECK_EVERY,
+# CC_AUTOPIPE_DEFAULT_MAX_WAIT) or 600 / 14400 respectively.
+#
+# Exit:
+#   0 — state transitioned, engine takes over from here
+#   1 — missing args, not in a cc-autopipe project, or state.py error
+#   64 — bad CLI usage
+
+set -euo pipefail
+
+PROG=$(basename "$0")
+
+REASON=""
+CHECK_EVERY="${CC_AUTOPIPE_DEFAULT_CHECK_EVERY:-600}"
+CHECK_CMD=""
+MAX_WAIT="${CC_AUTOPIPE_DEFAULT_MAX_WAIT:-14400}"
+PROJECT=""
+
+usage() {
+    cat <<EOF
+$PROG — release the orchestrator slot for a long-running background task
+
+Usage:
+  $PROG --reason "<text>" --check-cmd "<bash>" \\
+        [--check-every <sec>] [--max-wait <sec>] [--project PATH]
+
+Options:
+  --reason TEXT       Why we're detaching (logged + visible in status).
+  --check-cmd CMD     Cheap bash that exits 0 once the task is done.
+                      Engine runs this every --check-every seconds.
+  --check-every SEC   Poll cadence (default: 600).
+  --max-wait SEC      Hard deadline; FAILED on timeout (default: 14400).
+  --project PATH      Project dir (default: cwd).
+  -h, --help          Show this help.
+
+The check_cmd should be cheap and idempotent — a file existence test,
+a single 'pgrep' lookup, or a quick HTTP probe. Heavy checks waste
+the orchestrator's polling slot. Avoid network calls that could hang
+past the 30s engine-side cap.
+
+After detach, your nohup'd background task can run independently —
+the engine will not spawn another claude session for this project
+until check_cmd succeeds or max-wait elapses.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --reason)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --reason needs a value" >&2; exit 64; }
+            REASON="$1"; shift
+            ;;
+        --check-cmd)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --check-cmd needs a value" >&2; exit 64; }
+            CHECK_CMD="$1"; shift
+            ;;
+        --check-every)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --check-every needs a value" >&2; exit 64; }
+            CHECK_EVERY="$1"; shift
+            ;;
+        --max-wait)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --max-wait needs a value" >&2; exit 64; }
+            MAX_WAIT="$1"; shift
+            ;;
+        --project)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --project needs a path" >&2; exit 64; }
+            PROJECT="$1"; shift
+            ;;
+        *)
+            echo "$PROG: unknown argument '$1'" >&2
+            echo "Run '$PROG --help' for usage." >&2
+            exit 64
+            ;;
+    esac
+done
+
+[ -z "$REASON" ] && { echo "$PROG: --reason required" >&2; exit 64; }
+[ -z "$CHECK_CMD" ] && { echo "$PROG: --check-cmd required" >&2; exit 64; }
+
+if [ -z "$PROJECT" ]; then
+    PROJECT="$(pwd)"
+fi
+
+if [ ! -d "$PROJECT/.cc-autopipe" ]; then
+    echo "$PROG: $PROJECT is not initialised (no .cc-autopipe/)" >&2
+    echo "Run 'cc-autopipe init' first." >&2
+    exit 1
+fi
+
+# Resolve CC_AUTOPIPE_HOME if not exported. Same idiom as the dispatcher.
+if [ -z "${CC_AUTOPIPE_HOME:-}" ]; then
+    SELF="${BASH_SOURCE[0]}"
+    while [ -L "$SELF" ]; do
+        TARGET="$(readlink "$SELF")"
+        case "$TARGET" in
+            /*) SELF="$TARGET" ;;
+            *)  SELF="$(cd "$(dirname "$SELF")" && pwd)/$TARGET" ;;
+        esac
+    done
+    CC_AUTOPIPE_HOME="$(cd "$(dirname "$SELF")/.." && pwd)"
+    export CC_AUTOPIPE_HOME
+fi
+
+python3 "$CC_AUTOPIPE_HOME/lib/state.py" set-detached "$PROJECT" \
+    --reason "$REASON" \
+    --check-cmd "$CHECK_CMD" \
+    --check-every "$CHECK_EVERY" \
+    --max-wait "$MAX_WAIT"
+
+echo "✓ detached: $PROJECT (engine resumes when check_cmd succeeds)"

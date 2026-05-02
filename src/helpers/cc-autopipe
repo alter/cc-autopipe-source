@@ -41,6 +41,7 @@ Project lifecycle:
 Helpers (called from inside Claude sessions):
   checkpoint <text>            Save .cc-autopipe/checkpoint.md         [stage F]
   block <reason>               Mark project blocked, alert human       [stage F]
+  detach --reason <r> ...      Release slot for long bg task           [v1.0]
 
 Meta:
   --help, -h                   Show this help
@@ -102,6 +103,9 @@ case "$CMD" in
         ;;
     block)
         exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-block" "$@"
+        ;;
+    detach)
+        exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-detach" "$@"
         ;;
     *)
         echo "cc-autopipe: unknown command '$CMD'" >&2

@@ -1,10 +1,10 @@
 # Build Status
 
-**Updated:** 2026-05-02T09:35:00Z
+**Updated:** 2026-05-02T09:40:00Z
 **Current branch:** main
-**Current stage:** Batch a (v0.5.1) GATE PASSED + tagged-pending. Batch b
-in flight: state.py schema-v2 migration (Detached + current_phase +
-phases_completed) landed; next is the cc-autopipe-detach helper.
+**Current stage:** Batch b in flight. Stage H data layer (schema v2 +
+Detached) landed; cc-autopipe-detach helper wired into dispatcher.
+Next: orchestrator DETACHED branch in process_project.
 
 ## Currently working on
 
