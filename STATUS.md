@@ -7,10 +7,9 @@
 
 ## Currently working on
 
-Batch a in flight. Commits 1/2 (rules.md, verify.sh) landed; commit 3
-adds `src/cli/stop.py` (SIGTERM-then-SIGKILL with --timeout, idempotent
-when no orchestrator runs). Next: tests + dispatcher wiring + gate
-script + STATUS finalization.
+Batch a in flight. Commits landed: rules.md (Q15), verify.sh.example
+PRD-counting + fail-closed default restoration, cli/stop.py.
+Next: dispatcher wires stop, tests, gate script, STATUS finalization.
 
 v1.0 build kicked off in autonomous batch mode. Four batches execute
 back-to-back without human intervention: Batch a (v0.5.1 cleanup —

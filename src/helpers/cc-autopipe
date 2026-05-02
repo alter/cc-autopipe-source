@@ -31,7 +31,7 @@ Usage: cc-autopipe <command> [args]
 Project lifecycle:
   init [--force]               Initialise .cc-autopipe/ in cwd        [stage B]
   start [--background]         Start the orchestrator                  [stage B]
-  stop                         Stop the running orchestrator           [stage B]
+  stop [--timeout <sec>]       Stop the running orchestrator           [v0.5.1]
   status [--json]              Show project phases and recent events   [stage B]
   resume <project>             Clear PAUSED/FAILED, reset failures     [stage F]
   run <project> [--once]       Run a single cycle for one project      [stage F]
@@ -80,7 +80,7 @@ case "$CMD" in
         exec python3 "$CC_AUTOPIPE_HOME/orchestrator" "$@"
         ;;
     stop)
-        not_implemented stop B
+        exec python3 "$CC_AUTOPIPE_HOME/cli/stop.py" "$@"
         ;;
     status)
         exec python3 "$CC_AUTOPIPE_HOME/cli/status.py" "$@"
