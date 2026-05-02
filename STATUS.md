@@ -1,11 +1,25 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:50:00Z
+**Updated:** 2026-05-02T11:55:00Z
 **Current branch:** main
-**Current stage:** Batch c complete. Stage K (quota_monitor) +
-Stage L (auto-escalation) shipped. 224 pytest pass + 1 macOS skip.
-Stage smokes h/i/j/k/l all green. Next: gate validator + STATUS +
-sleep + Batch d.
+**Current stage:** Batch c complete. Awaiting `tests/gates/batch-c.sh`
+verdict before TG notify + 60-min sleep + Batch d kickoff.
+
+## Currently working on
+
+Batch c shipped Stages K/L in 7 atomic commits:
+  K/1 src/lib/quota_monitor.py daemon + 15 unit tests
+  K/2 orchestrator wires QuotaMonitor (start in main, stop in finally)
+       + smoke stage-k.sh
+  L/1 config.yaml auto_escalation block + state.escalated_next_cycle
+       schema field + 2 round-trip tests
+  L/2 orchestrator escalation: _build_claude_cmd swaps to opus +
+       --effort xhigh, _build_prompt injects ESCALATED CYCLE reminder,
+       process_project sets/reverts the flag, resume.py clears it
+  L/3 12 escalation integration tests + smoke stage-l.sh
+
+224 pytest cases pass + 1 macOS skip. Stage smokes A-F + H/I/J/K/L
+all green. Roman should `git tag v1.0-batch-c` once gate passes.
 
 ## Currently working on
 
@@ -110,9 +124,13 @@ tests / gate).
 - [x] Batch b (v1.0 part 1: Stages H/I/J): 9 commits 2026-05-02 —
       schema v2, cc-autopipe-detach + dispatcher, orchestrator
       DETACHED branch, pre-tool-use rule 7, R/R subagents,
-      PRD phase parser, orchestrator phase transitions. Pending
-      gate run + Roman tag v1.0-batch-b.
-- [ ] Batch c (v1.0 part 2: Stages K/L)
+      PRD phase parser, orchestrator phase transitions. GATE PASSED;
+      pending Roman tag v1.0-batch-b.
+- [x] Batch c (v1.0 part 2: Stages K/L): 7 commits 2026-05-02 —
+      quota_monitor daemon + orchestrator wiring + smoke;
+      auto_escalation config + state field + orchestrator branch +
+      reminder injection + revert + resume clear + smoke. Pending
+      gate run + Roman tag v1.0-batch-c.
 - [ ] Batch d (v1.0 part 3: Stages M/N) — closes v1.0
 
 ## Stage E DoD verification
