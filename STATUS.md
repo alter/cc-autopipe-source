@@ -1,80 +1,48 @@
 # Build Status
 
-**Updated:** 2026-05-02T13:05:00Z
+**Updated:** 2026-05-02T13:18:00Z
 **Current branch:** main
-**Current stage:** Stage N complete. Improver subagent in agents.json,
-orchestrator counts successful cycles + triggers every N (config
-default 5), creates .claude/skills/, sets improver_due flag,
-_build_prompt injects IMPROVER TRIGGER hint. 243 pytest pass.
-Smoke stage-n.sh green. Next: gates batch-d + v1.0-final + STATUS
-v1.0 complete.
-
-## Currently working on (Batch c summary, retained for audit)
-
-Batch c shipped Stages K/L in 7 atomic commits:
-  K/1 src/lib/quota_monitor.py daemon + 15 unit tests
-  K/2 orchestrator wires QuotaMonitor (start in main, stop in finally)
-       + smoke stage-k.sh
-  L/1 config.yaml auto_escalation block + state.escalated_next_cycle
-       schema field + 2 round-trip tests
-  L/2 orchestrator escalation: _build_claude_cmd swaps to opus +
-       --effort xhigh, _build_prompt injects ESCALATED CYCLE reminder,
-       process_project sets/reverts the flag, resume.py clears it
-  L/3 12 escalation integration tests + smoke stage-l.sh
-
-224 pytest cases pass + 1 macOS skip. Stage smokes A-F + H/I/J/K/L
-all green. Roman should `git tag v1.0-batch-c` once gate passes.
+**Current stage:** **v1.0 BUILD COMPLETE.** Awaiting `tests/gates/batch-d.sh`
++ `tests/gates/v1.0-final.sh` verdicts and Roman tag v1.0.
 
 ## Currently working on
 
-Batch c started post-60min-sleep. quota_monitor.py exposes
-check_once() (single check + dedup) and QuotaMonitor (daemon
-loop wrapping it). Thresholds 70/80/90/95 each fire once per
-day per threshold via flag files at
-$CC_AUTOPIPE_USER_HOME/7d-warn-{pct}-{date}.flag. Iterates
-top-down so a 95% reading doesn't ALSO trigger 70/80/90 in the
-same poll. TG failures and quota.read_cached exceptions are
-swallowed so a flaky monitor never crashes the orchestrator.
-Next: wire into orchestrator main(), then Stage L (auto-escalation).
+v1.0 done. Four batches landed back-to-back over the 2026-05-02
+session, with mandatory 60-min inter-batch sleeps between each per
+AGENTS-v1.md §1.2:
 
-## Currently working on
+  Batch a (v0.5.1)        7 commits — rules.md template, verify.sh
+                                       template, `cc-autopipe stop`,
+                                       gate. GATE PASSED.
+  Batch b (Stages H/I/J)  9 commits — schema v2 + Detached, detach
+                                       helper, orchestrator DETACHED
+                                       branch, pre-tool-use rule 7,
+                                       researcher+reporter subagents,
+                                       PRD phase parser, orchestrator
+                                       phase transitions. GATE PASSED.
+  Batch c (Stages K/L)    7 commits — quota_monitor daemon +
+                                       orchestrator wiring;
+                                       auto_escalation config + state
+                                       field + orchestrator branch +
+                                       reminder + revert + resume
+                                       clear. GATE PASSED.
+  Batch d (Stages M/N)    2 commits — systemd + launchd templates +
+                                       install/uninstall CLI; improver
+                                       subagent + orchestrator
+                                       trigger every N successes +
+                                       skills dir prep + prompt hint.
 
-v0.5.1 cleanup batch landed in 7 atomic commits:
+Engine grew from ~3.6K lines (v0.5) to ~5.5K lines (v1.0). Test
+coverage: 243 pytest pass + 1 macOS skip; 13 stage smokes (a-f, h-n);
+4 batch gates + 1 final gate.
 
-  1. `templates: rules.md.example workflow discipline` (Q15 resolved)
-  2. `templates: verify.sh.example demonstrates safe grep idiom`
-     (SPEC-v1.md §1.2 — `|| true; UNCHECKED=${UNCHECKED:-0}` pattern)
-  3. `templates: verify.sh.example defaults stay fail-closed`
-     (regression repair on test_init.py::test_verify_sh_is_executable)
-  4. `cli: implement cc-autopipe stop subcommand` (SPEC.md §12.3 +
-     SPEC-v1.md §1.3, SIGTERM-then-SIGKILL with --timeout)
-  5. `helpers: dispatcher wires cc-autopipe stop`
-  6. `tests: cc-autopipe stop integration coverage` (8 new tests)
-  7. `tests: gates/batch-a.sh validator` (AGENTS-v1.md §2.1)
+Roman should:
+  1. `git tag v0.5.1` (Batch a)
+  2. `git tag v1.0-batch-b` (Batch b)
+  3. `git tag v1.0-batch-c` (Batch c)
+  4. `git tag v1.0` (Batch d / final)
 
-`cc-autopipe stop` is the v0.5 not_implemented item Roman called out
-in the prior STATUS — now wired via the singleton lock at
-`$CC_AUTOPIPE_USER_HOME/orchestrator.pid`, idempotent against missing/
-stale lock files (`fcntl.lock_status` re-acquires when the prior
-holder is dead), and escalates to SIGKILL after `--timeout` (default
-60s). 158 pytest pass + 1 macOS skip; ruff/shellcheck clean.
-
-Pending: run gate, TG-notify, sleep 60 min, start Batch b.
-
-Roman should `git tag v0.5.1` once the gate passes and Batch b
-begins. Tagging is HUMAN-ONLY per AGENTS-v1.md §6.
-
-v1.0 build kicked off in autonomous batch mode. Four batches execute
-back-to-back without human intervention: Batch a (v0.5.1 cleanup —
-rules.md template, verify.sh grep fix, cc-autopipe stop), Batch b
-(Stages H+I+J — DETACHED state, R/R subagents, phase split),
-Batch c (Stages K+L — quota monitor, auto-escalation), Batch d
-(Stages M+N — systemd/launchd, skill crystallization). Each batch
-ends with `tests/gates/batch-X.sh` running working-tree-clean +
-all smokes + pytest + lint + doctor; on GREEN the agent TG-notifies,
-sleeps 60 min, and starts the next batch with NO pause for human
-input. On RED the agent writes `BATCH_HALT.md`, TG-alerts, and ends
-the session.
+Tagging is HUMAN-ONLY per AGENTS-v1.md §6.
 
 ## v0.5 legacy stages — final state
 
@@ -133,9 +101,13 @@ tests / gate).
 - [x] Batch c (v1.0 part 2: Stages K/L): 7 commits 2026-05-02 —
       quota_monitor daemon + orchestrator wiring + smoke;
       auto_escalation config + state field + orchestrator branch +
-      reminder injection + revert + resume clear + smoke. Pending
-      gate run + Roman tag v1.0-batch-c.
-- [ ] Batch d (v1.0 part 3: Stages M/N) — closes v1.0
+      reminder injection + revert + resume clear + smoke.
+      GATE PASSED; pending Roman tag v1.0-batch-c.
+- [x] Batch d (v1.0 part 3: Stages M/N): 2 commits 2026-05-02 —
+      systemd + launchd templates + install/uninstall CLI + smoke;
+      improver subagent + orchestrator N-success trigger + skills
+      dir + prompt hint + smoke. **v1.0 BUILD COMPLETE** pending
+      Roman tag v1.0.
 
 ## Stage E DoD verification
 
