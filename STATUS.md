@@ -1,10 +1,11 @@
 # Build Status
 
-**Updated:** 2026-05-02T10:08:00Z
+**Updated:** 2026-05-02T10:15:00Z
 **Current branch:** main
-**Current stage:** Stage H complete (DETACHED state). 7 integration
-tests + 8 state.py unit tests + 3 hook unit tests + smoke stage-h.sh
-all green. Next: Stage I (researcher + reporter subagents).
+**Current stage:** Stage I complete (researcher + reporter subagents).
+agents.json template grew researcher/reporter entries; init now
+provisions all four. 5 new init tests + smoke stage-i.sh green.
+Next: Stage J (phase-split PRDs).
 
 ## Currently working on
 

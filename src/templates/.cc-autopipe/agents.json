@@ -12,5 +12,21 @@
     "tools": ["Bash", "Read"],
     "model": "haiku",
     "maxTurns": 3
+  },
+  "researcher": {
+    "description": "Web research before implementation. Use when backlog task is tagged [research] or when implementation requires unfamiliar API/library knowledge.",
+    "prompt": "You research the web. For each topic: WebSearch (3-5 queries), synthesize findings into research/<topic>.md with sections: Summary (3 sentences), Key Findings (bulleted, specific), Implementation Recommendations, Sources with relevance scores. Do NOT implement code.",
+    "tools": ["WebSearch", "WebFetch", "Write", "Read"],
+    "model": "sonnet",
+    "effort": "medium",
+    "maxTurns": 12
+  },
+  "reporter": {
+    "description": "Per-iteration progress report. Run after a productive cycle (>=2 backlog items completed).",
+    "prompt": "Read memory/progress.jsonl, last 5 verify scores, current backlog. Write reports/iteration-NNN.md with: Tasks Completed (bulleted), Tasks Blocked (with reasons), Score Trend, Lessons Learned (1-3 bullets), Backlog Status (N tasks remaining), Recommended Next Focus.",
+    "tools": ["Read", "Write"],
+    "model": "haiku",
+    "maxTurns": 5,
+    "background": true
   }
 }

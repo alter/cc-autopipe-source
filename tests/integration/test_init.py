@@ -227,3 +227,85 @@ def test_init_via_bash_dispatcher(fresh: tuple[Path, Path]) -> None:
     )
     assert "cc-autopipe initialized" in cp.stdout
     assert (project / ".cc-autopipe" / "state.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# agents.json structure (Stage I — researcher + reporter)
+# ---------------------------------------------------------------------------
+
+
+def test_init_provisions_v1_subagents(fresh: tuple[Path, Path]) -> None:
+    """Stage I: a freshly initialised project must include the researcher
+    and reporter subagents alongside the v0.5 io-worker + verifier."""
+    project, user_home = fresh
+    _run_init(project, user_home, expect_rc=0)
+
+    agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
+    expected = {"io-worker", "verifier", "researcher", "reporter"}
+    assert set(agents.keys()) == expected, f"got {sorted(agents.keys())}"
+
+
+def test_v1_subagents_have_required_keys(fresh: tuple[Path, Path]) -> None:
+    """Each subagent must declare description, prompt, tools, model,
+    and maxTurns — those are the minimum keys Claude Code reads when
+    discovering project-local agents."""
+    project, user_home = fresh
+    _run_init(project, user_home, expect_rc=0)
+    agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
+
+    required = {"description", "prompt", "tools", "model", "maxTurns"}
+    for name, spec in agents.items():
+        missing = required - set(spec.keys())
+        assert not missing, f"{name} missing keys: {missing}"
+        assert isinstance(spec["tools"], list), f"{name}.tools not a list"
+        assert spec["tools"], f"{name}.tools empty"
+
+
+def test_researcher_uses_websearch_and_writes_research_dir(
+    fresh: tuple[Path, Path],
+) -> None:
+    """Researcher must have WebSearch + Write so it can produce
+    research/<topic>.md per SPEC-v1.md §2.2.1."""
+    project, user_home = fresh
+    _run_init(project, user_home, expect_rc=0)
+    agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
+
+    r = agents["researcher"]
+    assert "WebSearch" in r["tools"]
+    assert "Write" in r["tools"]
+    assert "Read" in r["tools"]
+    # research/ output target referenced in the prompt.
+    assert "research/" in r["prompt"]
+
+
+def test_reporter_uses_read_write_and_targets_reports_dir(
+    fresh: tuple[Path, Path],
+) -> None:
+    """Reporter must have Read + Write and produce reports/iteration-NNN.md."""
+    project, user_home = fresh
+    _run_init(project, user_home, expect_rc=0)
+    agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
+
+    r = agents["reporter"]
+    assert set(r["tools"]) >= {"Read", "Write"}
+    assert "reports/" in r["prompt"]
+    # background flag per SPEC-v1.md §2.2.2.
+    assert r.get("background") is True
+
+
+def test_v1_subagents_dont_break_existing_orchestrator_agents_arg(
+    fresh: tuple[Path, Path],
+) -> None:
+    """The orchestrator passes --agents <agents.json> to claude. Adding
+    new entries must not break the JSON validity that argument relies on."""
+    project, user_home = fresh
+    _run_init(project, user_home, expect_rc=0)
+    # If json.load succeeds the file is well-formed.
+    agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
+    assert isinstance(agents, dict)
+    # No two entries should share the same description prefix (would
+    # confuse Claude's task tool).
+    descriptions = [v.get("description", "") for v in agents.values()]
+    assert len(set(descriptions)) == len(descriptions), (
+        "duplicate subagent descriptions: " + str(descriptions)
+    )
