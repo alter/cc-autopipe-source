@@ -1,22 +1,22 @@
 # Build Status
 
-**Updated:** 2026-05-02T10:42:00Z
+**Updated:** 2026-05-02T11:13:00Z
 **Current branch:** main
-**Current stage:** Batch b complete. Awaiting `tests/gates/batch-b.sh`
-verdict before TG notify + 60-min sleep + Batch c kickoff.
+**Current stage:** Batch b GATE PASSED + 60min inter-batch elapsed.
+Batch c (Stages K/L) in flight. Stage K/1 landed:
+src/lib/quota_monitor.py daemon thread + 15 unit tests.
 
 ## Currently working on
 
-Batch b shipped Stages H/I/J in 9 atomic commits (state schema v2
-with Detached/current_phase/phases_completed; cc-autopipe-detach
-helper + dispatcher; orchestrator DETACHED branch with check_cmd
-polling; pre-tool-use rule 7 nohup+detach allowance; Stage H
-integration tests + smoke; researcher+reporter subagents in
-agents.json + 5 init tests + smoke; src/lib/prd.py phase parser
-with 11 unit tests; orchestrator phase transition + prompt
-focus + 7 integration tests + smoke). 196 pytest cases pass +
-1 macOS skip. Stage smokes A–F still green; H/I/J added.
-Roman should `git tag v1.0-batch-b` once gate passes.
+Batch c started post-60min-sleep. quota_monitor.py exposes
+check_once() (single check + dedup) and QuotaMonitor (daemon
+loop wrapping it). Thresholds 70/80/90/95 each fire once per
+day per threshold via flag files at
+$CC_AUTOPIPE_USER_HOME/7d-warn-{pct}-{date}.flag. Iterates
+top-down so a 95% reading doesn't ALSO trigger 70/80/90 in the
+same poll. TG failures and quota.read_cached exceptions are
+swallowed so a flaky monitor never crashes the orchestrator.
+Next: wire into orchestrator main(), then Stage L (auto-escalation).
 
 ## Currently working on
 
