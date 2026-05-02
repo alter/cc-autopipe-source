@@ -26,14 +26,17 @@ log "agents.json template structure"
 "$PY" -c "
 import json, sys
 d = json.load(open('src/templates/.cc-autopipe/agents.json'))
-expected = {'io-worker', 'verifier', 'researcher', 'reporter'}
-assert set(d) == expected, sorted(d)
+# Stage I shipped researcher+reporter; Stage N (Batch d) added improver.
+# This smoke covers both — assert at least the Stage I subset.
+required_stage_i = {'io-worker', 'verifier', 'researcher', 'reporter'}
+missing = required_stage_i - set(d)
+assert not missing, f'Stage I subset missing: {missing}'
 for name, spec in d.items():
     for k in ('description', 'prompt', 'tools', 'model', 'maxTurns'):
         assert k in spec, f'{name} missing {k}'
 print('template valid:', sorted(d))
 " || die "template structure check failed"
-ok "template parses with 4 subagents (io-worker, verifier, researcher, reporter)"
+ok "template carries Stage I subagents (researcher + reporter present)"
 
 # 2. Pytest slice: init provisions v1 subagents.
 log "pytest tests/integration/test_init.py (v1 subagent cases)"
@@ -54,13 +57,15 @@ export CC_AUTOPIPE_USER_HOME="$USER_HOME"
 
 "$DISPATCHER" init "$PROJECT" >/dev/null || die "init failed"
 
-INSTALLED_KEYS=$("$PY" -c "
+"$PY" -c "
 import json
-print(' '.join(sorted(json.load(open('$PROJECT/.cc-autopipe/agents.json')).keys())))
-")
-[ "$INSTALLED_KEYS" = "io-worker reporter researcher verifier" ] \
-    || die "agents.json keys not as expected: $INSTALLED_KEYS"
-ok "real-init project has io-worker + verifier + researcher + reporter"
+keys = set(json.load(open('$PROJECT/.cc-autopipe/agents.json')))
+required = {'io-worker', 'verifier', 'researcher', 'reporter'}
+missing = required - keys
+assert not missing, f'real-init missing Stage I subset: {missing}'
+print('real-init keys:', sorted(keys))
+" || die "real-init agents.json missing Stage I subset"
+ok "real-init project has at least io-worker + verifier + researcher + reporter"
 
 # 4. Backward compat: a project initialised on v0.5 (without researcher/
 # reporter in its agents.json) must still be readable by the orchestrator.

@@ -106,8 +106,12 @@ check_sh "src/init/cc-autopipe.service.template exists" \
     'test -f src/init/cc-autopipe.service.template'
 check_sh "src/init/com.cc-autopipe.plist.template exists" \
     'test -f src/init/com.cc-autopipe.plist.template'
-check_sh "src/cli/service.py exposes 4 subcommands" \
-    "python3 src/cli/service.py --help 2>&1 | grep -E 'install-systemd|install-launchd|uninstall-systemd|uninstall-launchd' | wc -l | grep -q 4"
+check_sh "src/cli/service.py exposes all 4 subcommands" \
+    "python3 src/cli/service.py --help 2>&1 | tee /tmp/svc-help.txt >/dev/null && \
+     grep -q install-systemd   /tmp/svc-help.txt && \
+     grep -q uninstall-systemd /tmp/svc-help.txt && \
+     grep -q install-launchd   /tmp/svc-help.txt && \
+     grep -q uninstall-launchd /tmp/svc-help.txt"
 check_sh "dispatcher --help lists install-systemd" \
     "$DISPATCHER --help | grep -q install-systemd"
 check_sh "dispatcher --help lists install-launchd" \
