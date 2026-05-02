@@ -1,10 +1,10 @@
 # Build Status
 
-**Updated:** 2026-05-02T09:55:00Z
+**Updated:** 2026-05-02T10:08:00Z
 **Current branch:** main
-**Current stage:** Batch b in flight. Stage H pre-tool-use rule 7
-(nohup + cc-autopipe-detach explicit allowance) shipped. Next:
-end-to-end test_orchestrator_detached.py + smoke stage-h.sh.
+**Current stage:** Stage H complete (DETACHED state). 7 integration
+tests + 8 state.py unit tests + 3 hook unit tests + smoke stage-h.sh
+all green. Next: Stage I (researcher + reporter subagents).
 
 ## Currently working on
 
