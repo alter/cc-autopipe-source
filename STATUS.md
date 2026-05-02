@@ -1,10 +1,12 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:13:00Z
+**Updated:** 2026-05-02T11:22:00Z
 **Current branch:** main
-**Current stage:** Batch b GATE PASSED + 60min inter-batch elapsed.
-Batch c (Stages K/L) in flight. Stage K/1 landed:
-src/lib/quota_monitor.py daemon thread + 15 unit tests.
+**Current stage:** Stage K complete. quota_monitor wired into
+orchestrator main (start/stop in finally), CC_AUTOPIPE_QUOTA_MONITOR_INTERVAL_SEC
+env override for tests. Smoke stage-k.sh verifies startup log
++ graceful SIGTERM teardown + 92% threshold fire. 211 pytest pass.
+Next: Stage L (auto-escalation).
 
 ## Currently working on
 

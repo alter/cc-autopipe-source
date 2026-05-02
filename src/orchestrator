@@ -35,6 +35,7 @@ sys.path.insert(0, str(_LIB))
 import locking  # noqa: E402
 import prd as prd_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
+import quota_monitor as quota_monitor_lib  # noqa: E402
 import state  # noqa: E402
 
 DEFAULT_COOLDOWN_SEC = 30
@@ -889,10 +890,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Stage K: spin up the proactive 7d-quota warning daemon. This is
+    # additive to the pre-flight check (which still hard-pauses at
+    # >=95%) — the monitor fires TG warnings at 70 / 80 / 90 / 95 so
+    # the operator sees the burn early. Daemon thread; orchestrator
+    # crash takes it down with the process per quota_monitor design.
+    monitor_interval = float(
+        os.environ.get(
+            "CC_AUTOPIPE_QUOTA_MONITOR_INTERVAL_SEC",
+            quota_monitor_lib.DEFAULT_CHECK_INTERVAL_SEC,
+        )
+    )
+    quota_monitor = quota_monitor_lib.QuotaMonitor(
+        check_interval_sec=monitor_interval,
+        notify_tg=_notify_tg,
+        user_home=user_home,
+    )
+    quota_monitor.start()
+
     try:
         _log(
             f"started; user_home={user_home}; cooldown={cooldown}s; "
-            f"singleton_pid={singleton.pid}"
+            f"singleton_pid={singleton.pid}; "
+            f"quota_monitor_interval={monitor_interval}s"
         )
 
         loops = 0
@@ -922,6 +942,7 @@ def main(argv: list[str] | None = None) -> int:
         _log("orchestrator shutdown gracefully")
         return 0
     finally:
+        quota_monitor.stop(timeout=5.0)
         singleton.release()
 
 
