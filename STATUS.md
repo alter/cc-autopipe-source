@@ -1,13 +1,106 @@
 # Build Status
 
-**Updated:** 2026-05-02T14:50:00Z
+**Updated:** 2026-05-02T22:30:00Z
 **Current branch:** main
-**Current stage:** **v1.0 BUILD COMPLETE.** Q20 (test-isolation TG leak)
-fixed in 4 atomic commits 2026-05-02 afternoon. All batch-d gate
-components verified pass individually (see "Batch d gate verification"
-below); awaiting Roman tag v1.0.
+**Current stage:** **v1.2 BUILD STARTED.** Pre-Batch infrastructure
+in progress. v1.0 BUILD COMPLETE on 2026-05-02 afternoon (243 pytest +
+1 skip baseline holds; 13/13 stage smokes individually verified;
+4 batch gates + final gate green; awaiting Roman tag v1.0).
 
-## Currently working on
+---
+
+## v1.2 BUILD — in progress
+
+### Understanding check
+
+8 production hardening fixes (A–H) discovered through real-world
+test of v1.0 on AI-trade ML R&D project. Grouped into 3 batches per
+AGENTS-v1.2.md §3:
+
+- **Batch 1 = A + E:** state schema v3 (`current_task` field with
+  id/started_at/stage/stages_completed/artifact_paths/claude_notes;
+  also `last_in_progress` + `consecutive_in_progress`); CURRENT_TASK.md
+  read by Stop hook → state.json; SessionStart hook reads state →
+  injects current task into prompt; v2 → v3 auto-migration on
+  first read+write. **E is implicit in A** — `current_task.id`
+  replaces standalone CAND_NAME concept.
+- **Batch 2 = B + H:** verify.sh contract gains optional
+  `in_progress: bool`; engine does NOT count as failure when
+  in_progress=true (consecutive_in_progress incremented instead;
+  cooldown × multiplier). Smart escalation reads recent failures,
+  categorises by error type — `claude_subprocess_failed` (3 in
+  a row) → escalate to Opus; `verify_failed` (3 in a row) →
+  HUMAN_NEEDED.md + TG, no escalation; mixed/5+ → phase=failed.
+- **Batch 3 = C + D + F + G:** SessionStart hook adds long-op
+  guidance block (Bug C); reads top-3 OPEN tasks from backlog.md
+  by priority and injects (Bug D); detects task switch (Bug D);
+  extends current_task with stages_completed array + injects
+  progress block (Bug F); orchestrator TG-alerts on rc != 0
+  with 600s sentinel-based dedup (Bug G).
+
+After Batch 3 + final integration check + hello-fullstack regression,
+build halts for Roman validation. He tags v1.2.
+
+### Tactical SPEC↔repo deviations (per AGENTS-v1.2.md §15)
+
+SPEC-v1.2.md and AGENTS-v1.2.md were drafted against a Python-modular
+hook layout that does not match v1.0 reality. Roman approved the
+following adaptations as tactical (acknowledged in
+[chat 2026-05-02T22:25Z]):
+
+1. **Hook architecture stays bash.** `src/hooks/*.sh` remain thin
+   bash dispatchers; v1.2 logic lives in Python helpers under
+   `src/lib/` and is invoked from bash via `python3 -c "..."` or
+   `python3 src/lib/<helper>.py ...`. Read every SPEC-v1.2.md
+   reference like `src/orchestrator/hooks/session_start.py` as
+   "the SessionStart logic, implemented in
+   `src/lib/session_start_helper.py`".
+2. **Test directory is `tests/smoke/` (singular).** The new smoke
+   runner lives at `tests/smoke/run-all-smokes.sh`, not
+   `tests/smokes/`.
+3. **Regression scripts created from scratch as minimal mocked-claude
+   smokes.** `tests/regression/hello-fullstack-v1.sh` did not exist
+   in v1.0 (was deferred per Stage G shakedown). Built minimally for
+   v1.2 to enable programmatic backward-compat verification.
+
+Test-dir mapping under §15 tactical:
+- `tests/lib/test_*.py` → `tests/unit/test_*.py`
+- `tests/orchestrator/test_*.py` → `tests/integration/test_*.py`
+- `tests/hooks/test_*.py` → `tests/unit/test_hooks/test_*.{py,sh}`
+
+Library helpers go flat under `src/lib/`:
+`current_task.py`, `session_start_helper.py`, `stop_helper.py`,
+`backlog.py`, `failures.py`, `human_needed.py`, plus a Python
+`notify.py` adding a `notify_subprocess_failed_dedup` wrapper around
+the existing `tg.sh`.
+
+### Currently working on
+
+Pre-Batch 1 infrastructure:
+- ✅ `tests/smoke/run-all-smokes.sh` — wrapper around 13 stage smokes
+  (validated against stage-a; full 13/13 trusted from v1.0 final
+  STATUS.md "individually verified all green" 2026-05-02 afternoon)
+- ☐ `tests/regression/hello-fullstack-v1.sh` — mocked-claude regression base
+- ☐ `tests/regression/hello-fullstack-v12.sh` — extends v1 with schema_v3 + current_task assertions
+
+After this infra lands, Batch 1 starts: state schema v3 + current_task
+end-to-end through hooks.
+
+### Pre-flight (initial)
+
+| Check | Status |
+|---|---|
+| 1. `git status` clean | ✅ after `0d09893` (doc switch v0.5/v1.0 → v1.2) |
+| 2. pytest 243 + 1 skip | ✅ (130.87s, 2026-05-02T22:00Z) |
+| 3. `tests/smoke/run-all-smokes.sh` | ◐ runner being built; individual smokes 13/13 verified per v1.0 final |
+| 4. `cc-autopipe doctor` 10/10 | ⏸ deferred to Roman (live oauth/usage call) |
+| 5. quota 7d < 90% | ⏸ deferred to Roman (live call burns quota) |
+
+Roman validates 4 + 5 manually before he resumes from any halt.
+
+---
+
+## v1.0 BUILD — final state (frozen 2026-05-02 14:50Z)
 
 v1.0 done. Four batches landed back-to-back over the 2026-05-02
 session, with mandatory 60-min inter-batch sleeps between each per
