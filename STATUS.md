@@ -98,7 +98,9 @@ Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
 - ✅ test_state.py: +5 tests covering v2→v3 migration, current_task
   round-trip, partial-dict tolerance, in_progress counters round-trip,
   forward-compat extras pass-through. 248 + 1 skipped now.
-- ☐ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
+- ✅ `src/lib/current_task.py` — parse/write CURRENT_TASK.md
+  (line-oriented `key: value`; multi-line notes via continuation;
+  artifact: lines accumulate; CLI: `parse` / `write`).
 - ☐ `src/lib/stop_helper.py` — Stop hook wiring (CURRENT_TASK.md → state)
 - ☐ `src/lib/session_start_helper.py` — SessionStart hook wiring
   (state.current_task → injected prompt block)
