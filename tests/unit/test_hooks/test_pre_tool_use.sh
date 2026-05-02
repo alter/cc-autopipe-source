@@ -75,6 +75,18 @@ run_hook pre-tool-use "$(bash_input 'pip install foo &')"
 assert_eq "rule3 pip install &: rc=0" 0 "$HOOK_RC"
 cleanup_project
 
+# --- Rule 7 (v1.0): nohup + cc-autopipe-detach pair is explicitly allowed ---
+fresh_project
+run_hook pre-tool-use "$(bash_input 'nohup python train.py > train.log 2>&1 & cc-autopipe-detach --reason train --check-cmd "test -f done"')"
+assert_eq "rule7 nohup+detach pair: rc=0" 0 "$HOOK_RC"
+run_hook pre-tool-use "$(bash_input 'nohup ./long_op.sh > out.log 2>&1 & cc-autopipe detach --reason op --check-cmd "test -f flag"')"
+assert_eq "rule7 nohup+detach (dispatcher form): rc=0" 0 "$HOOK_RC"
+# Without nohup the pair is irrelevant — falls through to other rules.
+# pip install (rule 3) WITHOUT nohup remains blocked even if user mentions detach.
+run_hook pre-tool-use "$(bash_input 'pip install foo  # cc-autopipe-detach later')"
+assert_eq "rule7 pip install plus detach mention without nohup still blocked" 2 "$HOOK_RC"
+cleanup_project
+
 # --- Rule 4: Write/Edit to .cc-autopipe/state.json ---
 fresh_project
 run_hook pre-tool-use "$(write_input '.cc-autopipe/state.json' '{}')"

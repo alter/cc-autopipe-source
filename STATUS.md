@@ -1,12 +1,10 @@
 # Build Status
 
-**Updated:** 2026-05-02T09:48:00Z
+**Updated:** 2026-05-02T09:55:00Z
 **Current branch:** main
-**Current stage:** Batch b in flight. Stage H orchestrator branch
-(_process_detached) wired into process_project — handles
-DETACHED→ACTIVE on check_cmd success, DETACHED→FAILED on
-max_wait timeout, lock released between checks. Next: pre-tool-use
-nohup+detach allowance + tests + smoke.
+**Current stage:** Batch b in flight. Stage H pre-tool-use rule 7
+(nohup + cc-autopipe-detach explicit allowance) shipped. Next:
+end-to-end test_orchestrator_detached.py + smoke stage-h.sh.
 
 ## Currently working on
 

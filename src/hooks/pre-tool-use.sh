@@ -58,6 +58,16 @@ case "$TOOL" in
                 block "long operation without nohup. Split into smaller steps in v0.5"
             fi
         fi
+
+        # Rule 7 (v1.0, SPEC-v1.md §2.1.4): explicitly allow nohup-launched
+        # background commands paired with cc-autopipe-detach. The previous
+        # rule already permits nohup, but we promote this combo to "OK,
+        # take the slot release" so projects know the engine is aware.
+        if printf '%s' "$CMD" | grep -qE 'nohup' \
+            && printf '%s' "$CMD" | grep -qE '&[[:space:]]*($|[;&|])' \
+            && printf '%s' "$CMD" | grep -qE 'cc-autopipe[ -]detach'; then
+            exit 0
+        fi
         ;;
 
     Write|Edit|MultiEdit)
