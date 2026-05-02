@@ -21,6 +21,23 @@ Delegate to `io-worker` ONLY when:
 
 Otherwise: use Read/Bash directly.
 
+## Workflow discipline
+
+- After each implemented component (single file or tightly-related
+  pair), commit atomically with a descriptive message.
+- Do NOT batch unrelated changes into a single commit.
+- Commit message format: `<scope>: <imperative summary>`.
+- Tests for a component get a separate commit from implementation.
+- After completing a backlog task, commit before marking `[x]`.
+- Never `git push` — agent commits locally only; push is human action.
+
+## Forbidden git operations
+
+- `git push` (to any remote)
+- `git tag` (release tagging is human action)
+- `git reset --hard` to undo recent commits without explicit justification
+- `git commit --amend` after the commit was made (create a new commit instead)
+
 ## Project-specific guidance
 
 (Add what's specific to this project. Stack idioms, files Claude

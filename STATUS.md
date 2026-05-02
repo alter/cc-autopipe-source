@@ -1,15 +1,29 @@
 # Build Status
 
-**Updated:** 2026-04-30T03:10:00Z
+**Updated:** 2026-05-02T08:15:00Z
 **Current branch:** main
-**Current stage:** F complete — Engine v0.5.0 functionally complete.
-Only Stage G (hello-fullstack smoke against real claude) remains.
-Q14 threshold revision applied during Stage G prep (see below).
-Stage G Bug-1/2/3 fixes landed 2026-04-30 — see "Stage G shakedown".
+**Current stage:** v0.5.0 + Stage G shakedown complete; v1.0 build started
+(autonomous batch mode per AGENTS-v1.md).
 
 ## Currently working on
 
-Engine v0.5.0 is feature-complete. All 6 Stage F surfaces shipped:
+v1.0 build kicked off in autonomous batch mode. Four batches execute
+back-to-back without human intervention: Batch a (v0.5.1 cleanup —
+rules.md template, verify.sh grep fix, cc-autopipe stop), Batch b
+(Stages H+I+J — DETACHED state, R/R subagents, phase split),
+Batch c (Stages K+L — quota monitor, auto-escalation), Batch d
+(Stages M+N — systemd/launchd, skill crystallization). Each batch
+ends with `tests/gates/batch-X.sh` running working-tree-clean +
+all smokes + pytest + lint + doctor; on GREEN the agent TG-notifies,
+sleeps 60 min, and starts the next batch with NO pause for human
+input. On RED the agent writes `BATCH_HALT.md`, TG-alerts, and ends
+the session. Currently mid-Batch-a; Stage F functionally-complete
+engine ("v0.5.0") confirmed by green smokes A–F — see legacy
+section below.
+
+## v0.5 legacy stages — final state
+
+All 6 Stage F surfaces shipped in the v0.5.0 build:
 
   - `helpers/cc-autopipe-checkpoint` — bash, saves
     `.cc-autopipe/checkpoint.md` from arg or stdin (atomic write)

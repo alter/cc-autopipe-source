@@ -546,6 +546,37 @@ SPEC.md §9.2 should be updated:
 ## Resolved questions
 
 Q1 (resolved by Q12), Q3, Q4, Q7, Q8, Q9, Q10, Q11, Q12, Q13,
-Q14 (resolved-as-deviation).
+Q14 (resolved-as-deviation), Q15 (resolved in v0.5.1 / Batch a).
 
 Still open / deferred: Q2, Q5, Q6.
+
+## Q15. [STAGE-G] [resolved] hello-fullstack project rules.md should require atomic commits
+
+**Discovered:** 2026-05-02 during Stage G validation
+**Stage:** G (smoke test) → resolved in v0.5.1 (Batch a)
+**Blocking:** None — engine v0.5.0 validated successfully
+
+**Question:**
+Stage G ran successfully but produced ZERO git commits in the
+hello-fullstack project (only Roman's bootstrap commit visible).
+Generated code lives in working tree without history. This makes
+rollback impossible and audit trail empty.
+
+The cause: project rules.md template did not require atomic commits
+per component (cc-autopipe build's AGENTS.md required them, but
+project-level rules.md template didn't).
+
+**Resolution (Batch a, 2026-05-02):**
+1. `src/templates/.cc-autopipe/rules.md.example` now contains a
+   "Workflow discipline" section (atomic-commit, separate-test-commit,
+   no-amend) and a "Forbidden git operations" section (no `git push`,
+   no `git tag`, no `git reset --hard` without justification, no
+   `git commit --amend` after the fact). Verbatim from SPEC-v1.md §1.1.
+2. Items 2 (Stop hook commit-presence warning) and 3 (SETUP.md /
+   QUICKSTART.md doc update) are deferred to v1.x — they are nice-
+   to-haves, not v1.0 blockers. The template change is the load-
+   bearing fix because every `cc-autopipe init` from v0.5.1 onward
+   bakes the discipline into the project Claude reads.
+
+**Reference commit:** `templates: rules.md.example workflow discipline`
+
