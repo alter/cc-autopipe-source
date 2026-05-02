@@ -1,12 +1,11 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:25:00Z
+**Updated:** 2026-05-02T11:35:00Z
 **Current branch:** main
-**Current stage:** Stage K complete. Stage L starting:
-config.yaml grew auto_escalation block (enabled, trigger=3,
-escalate_to=opus-4-7, effort=xhigh, revert_after_success);
-state.py adds escalated_next_cycle (bool default False) with
-2 new round-trip tests. Next: orchestrator escalation logic.
+**Current stage:** Stage L mostly shipped (orchestrator escalation
+logic + reminder injection + revert-after-success + resume.py
+clear). 212 pytest pass. Next: tests/integration/test_orchestrator_escalation.py
++ smoke stage-l.sh.
 
 ## Currently working on
 

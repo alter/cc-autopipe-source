@@ -196,19 +196,27 @@ def test_passing_verify_with_prd_complete_transitions_to_done(
 def test_three_consecutive_failures_transition_to_failed(
     env_paths: tuple[Path, Path],
 ) -> None:
+    """v1.0 (Stage L): the path to FAILED is consecutive_failures >=
+    trigger AND escalation has already been attempted. With the
+    template's auto_escalation enabled by default, the third failure
+    sets escalated_next_cycle (not FAILED); the fourth failure (the
+    escalated cycle, also failing because verify is still malformed)
+    drops into the FAILED branch."""
     user_home, project = env_paths
     _init_project(project, user_home)
     # Malformed verify → consecutive_failures bumps each cycle.
     _write_verify(project, "echo not json")
 
-    _run_orch(user_home, max_loops=3)
+    _run_orch(user_home, max_loops=4)
 
     s = _read_state(project)
     assert s["phase"] == "failed"
-    assert s["consecutive_failures"] >= 3
+    assert s["consecutive_failures"] >= 4
     assert (project / ".cc-autopipe" / "HUMAN_NEEDED.md").exists()
 
     types = [e.get("event") for e in _read_aggregate(user_home)]
+    # Escalation happened mid-walk and FAILED happened at the end.
+    assert "escalated_to_opus" in types
     assert "failed" in types
 
 

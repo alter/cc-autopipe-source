@@ -45,10 +45,15 @@ def main(argv: list[str]) -> int:
     s = state.read(project)
     prev_phase = s.phase
     prev_failures = s.consecutive_failures
+    prev_escalated = s.escalated_next_cycle
 
     s.phase = "active"
     s.consecutive_failures = 0
     s.paused = None
+    # Stage L: a resume is the operator's "fresh start" — clear the
+    # escalation flag too so the resumed cycle uses the default model
+    # (sonnet) rather than continuing under opus from a prior burn.
+    s.escalated_next_cycle = False
     state.write(project, s)
 
     human_needed = project / ".cc-autopipe" / "HUMAN_NEEDED.md"
@@ -66,12 +71,15 @@ def main(argv: list[str]) -> int:
         prev_phase=prev_phase,
         prev_failures=prev_failures,
         removed_human_needed=removed_human,
+        prev_escalated=prev_escalated,
     )
 
     print(f"✓ resumed: {project.name}")
     print(f"  phase: {prev_phase} → active")
     if prev_failures:
         print(f"  consecutive_failures: {prev_failures} → 0")
+    if prev_escalated:
+        print("  escalated_next_cycle: True → False")
     if removed_human:
         print("  HUMAN_NEEDED.md removed")
     return 0

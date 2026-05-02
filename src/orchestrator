@@ -166,6 +166,18 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
             "Continue from there.\n\n"
         )
 
+    # Stage L: prompt-side escalation notice. Engine raised the model +
+    # effort already in _build_claude_cmd; the reminder tells the agent
+    # WHY this cycle is more deliberate.
+    if s.escalated_next_cycle:
+        parts.append(
+            "**ESCALATED CYCLE:** Previous cycles failed "
+            f"({s.consecutive_failures} consecutive failures). "
+            "Reconsider your approach — the prior solution did not "
+            "land. Audit assumptions, add diagnostic prints, narrow the "
+            "failure mode before re-attempting.\n\n"
+        )
+
     if current_phase_obj is not None:
         parts.append(
             f"## Current phase ({s.current_phase}: {current_phase_obj.name})\n"
@@ -219,6 +231,68 @@ def _read_config_model(project_path: Path, default: str) -> str:
     return default
 
 
+# Stage L auto-escalation defaults — match the template in
+# src/templates/.cc-autopipe/config.yaml so a project that omits the
+# auto_escalation block gets the same behaviour as the template.
+AUTO_ESC_DEFAULTS = {
+    "enabled": True,
+    "trigger_consecutive_failures": 3,
+    "escalate_to": "claude-opus-4-7",
+    "effort": "xhigh",
+    "revert_after_success": True,
+}
+
+
+def _coerce_yaml_value(text: str) -> object:
+    """Tiny YAML scalar coercion — bool / int / quoted string / bare string.
+    Good enough for the auto_escalation block; kept narrow so we don't
+    grow a YAML dependency."""
+    text = text.strip()
+    lowered = text.lower()
+    if lowered in ("true", "yes"):
+        return True
+    if lowered in ("false", "no"):
+        return False
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    return text.strip('"').strip("'")
+
+
+def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
+    """Parse the `auto_escalation:` block from config.yaml.
+
+    Returns the merged dict (defaults + overrides). Missing block → all
+    defaults. Malformed lines are silently ignored — the engine
+    must keep working even if the operator typoed config.yaml.
+    """
+    out = dict(AUTO_ESC_DEFAULTS)
+    cfg = project_path / ".cc-autopipe" / "config.yaml"
+    if not cfg.exists():
+        return out
+    in_block = False
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped == "auto_escalation:":
+            in_block = True
+            continue
+        if in_block:
+            if stripped and not stripped.startswith(" "):
+                in_block = False
+                continue
+            if ":" not in stripped:
+                continue
+            key, _, raw = stripped.strip().partition(":")
+            if key in AUTO_ESC_DEFAULTS:
+                out[key] = _coerce_yaml_value(raw)
+    return out
+
+
 def _agents_json_path(project_path: Path) -> Path | None:
     candidate = project_path / ".cc-autopipe" / "agents.json"
     return candidate if candidate.exists() else None
@@ -251,7 +325,20 @@ def _build_claude_cmd(project_path: Path, s: state.State) -> list[str]:
     agents = _agents_json_path(project_path)
     if agents is not None:
         cmd += ["--agents", str(agents)]
-    cmd += ["--model", _read_config_model(project_path, "claude-sonnet-4-6")]
+
+    # Stage L: when escalated, swap model + add --effort. The flag is
+    # set in process_project before this is called.
+    if s.escalated_next_cycle:
+        esc = _read_config_auto_escalation(project_path)
+        cmd += ["--model", str(esc["escalate_to"])]
+        effort = str(esc.get("effort") or "")
+        if effort:
+            cmd += ["--effort", effort]
+    else:
+        cmd += [
+            "--model",
+            _read_config_model(project_path, "claude-sonnet-4-6"),
+        ]
     return cmd
 
 
@@ -755,6 +842,26 @@ def process_project(project_path: Path) -> str:
         if s.phase == "active":
             phase_transitioned = _maybe_transition_phase(project_path, s)
 
+        # Stage L: revert escalation flag on a successful cycle BEFORE the
+        # done / failed branches so the next cycle goes back to the default
+        # model. Sonnet stays the first responder; opus is only the relief.
+        esc_cfg = _read_config_auto_escalation(project_path)
+        esc_trigger = int(esc_cfg.get("trigger_consecutive_failures") or 3)
+        if (
+            esc_cfg.get("enabled")
+            and bool(esc_cfg.get("revert_after_success", True))
+            and s.last_passed
+            and s.escalated_next_cycle
+        ):
+            s.escalated_next_cycle = False
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "escalation_reverted",
+                iteration=s.iteration,
+                last_score=s.last_score,
+            )
+
         # Post-cycle phase transitions per SPEC §6.1 (single-phase PRDs).
         if (
             not phase_transitioned
@@ -769,15 +876,43 @@ def process_project(project_path: Path) -> str:
                 project_path, "done", score=s.last_score, iteration=s.iteration
             )
         elif s.consecutive_failures >= 3 and s.phase == "active":
-            s.phase = "failed"
-            state.write(project_path, s)
-            state.log_event(
-                project_path,
-                "failed",
-                iteration=s.iteration,
-                consecutive_failures=s.consecutive_failures,
-            )
-            _write_human_needed(project_path, stderr)
+            # Stage L: defer the FAIL by one cycle if auto-escalation is
+            # enabled AND we haven't tried escalation yet. Setting
+            # escalated_next_cycle here means the NEXT _build_claude_cmd
+            # uses opus + --effort xhigh + injected reminder. If THAT
+            # cycle also fails, escalated_next_cycle is still set on the
+            # NEXT pass, so we drop into the FAIL branch and mark failed.
+            if (
+                esc_cfg.get("enabled")
+                and s.consecutive_failures >= esc_trigger
+                and not s.escalated_next_cycle
+            ):
+                s.escalated_next_cycle = True
+                state.write(project_path, s)
+                state.log_event(
+                    project_path,
+                    "escalated_to_opus",
+                    iteration=s.iteration,
+                    consecutive_failures=s.consecutive_failures,
+                    escalate_to=esc_cfg.get("escalate_to"),
+                    effort=esc_cfg.get("effort"),
+                )
+                _log(
+                    f"{project_path.name}: consecutive_failures="
+                    f"{s.consecutive_failures} → escalating next cycle to "
+                    f"{esc_cfg.get('escalate_to')}"
+                )
+            else:
+                s.phase = "failed"
+                state.write(project_path, s)
+                state.log_event(
+                    project_path,
+                    "failed",
+                    iteration=s.iteration,
+                    consecutive_failures=s.consecutive_failures,
+                    escalation_attempted=bool(s.escalated_next_cycle),
+                )
+                _write_human_needed(project_path, stderr)
 
         # Persist claude's stdout/stderr to disk on EVERY cycle (even on
         # empty content) so a fast rc!=0 exit is debuggable. Names are
