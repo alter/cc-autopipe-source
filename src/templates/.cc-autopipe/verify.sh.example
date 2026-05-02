@@ -3,20 +3,48 @@
 # Required keys: passed (bool), score (0..1), prd_complete (bool), details (object).
 # Engine times out after 60s.
 #
-# Replace the body of this file with the real checks for your project
-# (pytest, npm test, docker compose ps, integration script, etc).
+# Replace the project-specific check block (see PROJECT CHECKS below) with the
+# real checks for your project (pytest, npm test, docker compose ps,
+# integration script, etc). The PRD-completeness block at the bottom should
+# work as-is — it counts unchecked items in prd.md.
 
 set -u  # NOT -e: we want to capture failures, not abort on them.
 
-# Run your real checks here.
-# Examples:
+# ---------------------------------------------------------------------------
+# PROJECT CHECKS — replace this block with your project's actual gates.
+# Each failed check should set ALL_PASS=0. Aim for SCORE to track "fraction
+# of checks passing" so the orchestrator's threshold (default 0.85) means
+# something concrete.
+# ---------------------------------------------------------------------------
+
+ALL_PASS=1
+SCORE=1.0
+
+# Examples (uncomment and adapt):
 #   pytest --tb=line -q                              || ALL_PASS=0
 #   npm --prefix frontend run build                  || ALL_PASS=0
 #   docker compose -f compose.yml config >/dev/null  || ALL_PASS=0
 
-ALL_PASS=0
-SCORE=0.0
-PRD_COMPLETE="false"
+# ---------------------------------------------------------------------------
+# PRD-completeness block.
+# Counts unchecked `- [ ]` lines in prd.md. Safe against grep-found-nothing
+# (grep exits 1, which would clobber UNCHECKED via `|| echo 0` writing two
+# lines — see SPEC-v1.md §1.2). Use `|| true` then default-empty to 0.
+# ---------------------------------------------------------------------------
+
+PRD="$(dirname "$0")/../prd.md"
+if [ -f "$PRD" ]; then
+    UNCHECKED=$(grep -c '^- \[ \]' "$PRD" 2>/dev/null || true)
+    UNCHECKED=${UNCHECKED:-0}
+    if [ "$UNCHECKED" -eq 0 ]; then
+        PRD_COMPLETE="true"
+    else
+        PRD_COMPLETE="false"
+    fi
+else
+    UNCHECKED=0
+    PRD_COMPLETE="false"
+fi
 
 cat <<JSON
 {
@@ -24,7 +52,8 @@ cat <<JSON
   "score": $SCORE,
   "prd_complete": $PRD_COMPLETE,
   "details": {
-    "note": "stub verify.sh — replace before running cc-autopipe start"
+    "unchecked_prd_items": $UNCHECKED,
+    "note": "stub verify.sh — replace PROJECT CHECKS block before running cc-autopipe start"
   }
 }
 JSON

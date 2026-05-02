@@ -7,6 +7,12 @@
 
 ## Currently working on
 
+Batch a in flight. v0.5.1 cleanup commits 1/2 landed: rules.md.example
+gained workflow-discipline + forbidden-git sections (Q15 resolved);
+verify.sh.example now demonstrates the safe `grep -c '^- \[ \]' || true`
+PRD-counting pattern (SPEC-v1.md §1.2) so future projects don't repeat
+the `|| echo 0` write-twice bug. Next: cli/stop.py implementation.
+
 v1.0 build kicked off in autonomous batch mode. Four batches execute
 back-to-back without human intervention: Batch a (v0.5.1 cleanup —
 rules.md template, verify.sh grep fix, cc-autopipe stop), Batch b
