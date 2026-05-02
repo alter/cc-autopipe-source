@@ -1,0 +1,18 @@
+[Unit]
+Description=cc-autopipe orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__
+Environment="CC_AUTOPIPE_HOME=__CC_AUTOPIPE_HOME__"
+Environment="PATH=__PATH__"
+ExecStart=__CC_AUTOPIPE_HOME__/orchestrator
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:__HOME__/.cc-autopipe/log/systemd.log
+StandardError=append:__HOME__/.cc-autopipe/log/systemd.log
+
+[Install]
+WantedBy=default.target

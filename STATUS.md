@@ -1,11 +1,13 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:55:00Z
+**Updated:** 2026-05-02T12:53:00Z
 **Current branch:** main
-**Current stage:** Batch c complete. Awaiting `tests/gates/batch-c.sh`
-verdict before TG notify + 60-min sleep + Batch d kickoff.
+**Current stage:** Batch c GATE PASSED + 60min inter-batch elapsed.
+Batch d (Stages M/N) in flight. Stage M complete: systemd + launchd
+templates, install/uninstall CLI subcommands, dispatcher wiring,
+11 tests + smoke. 235 pytest pass. Next: Stage N (skill crystallization).
 
-## Currently working on
+## Currently working on (Batch c summary, retained for audit)
 
 Batch c shipped Stages K/L in 7 atomic commits:
   K/1 src/lib/quota_monitor.py daemon + 15 unit tests

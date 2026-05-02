@@ -43,6 +43,12 @@ Helpers (called from inside Claude sessions):
   block <reason>               Mark project blocked, alert human       [stage F]
   detach --reason <r> ...      Release slot for long bg task           [v1.0]
 
+Service install (Stage M):
+  install-systemd              Linux: copy + enable user unit          [v1.0]
+  uninstall-systemd            Linux: disable + remove user unit       [v1.0]
+  install-launchd              macOS: copy + load user agent           [v1.0]
+  uninstall-launchd            macOS: unload + remove user agent       [v1.0]
+
 Meta:
   --help, -h                   Show this help
   --version, -V                Print engine version
@@ -106,6 +112,9 @@ case "$CMD" in
         ;;
     detach)
         exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-detach" "$@"
+        ;;
+    install-systemd|uninstall-systemd|install-launchd|uninstall-launchd)
+        exec python3 "$CC_AUTOPIPE_HOME/cli/service.py" "$CMD" "$@"
         ;;
     *)
         echo "cc-autopipe: unknown command '$CMD'" >&2
