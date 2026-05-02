@@ -32,6 +32,14 @@ auto_escalation:
   effort: "xhigh"
   revert_after_success: true
 
+# v1.0 (Stage N): the improver subagent reflects on a window of recent
+# successful cycles and crystallises reusable patterns into
+# .claude/skills/<name>/SKILL.md. The orchestrator triggers it every N
+# successful cycles. Set enabled: false to opt out per project.
+improver:
+  enabled: true
+  trigger_every_n_successes: 5
+
 paths:
   src: "."
   tests: "."

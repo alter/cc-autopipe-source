@@ -1,11 +1,13 @@
 # Build Status
 
-**Updated:** 2026-05-02T12:53:00Z
+**Updated:** 2026-05-02T13:05:00Z
 **Current branch:** main
-**Current stage:** Batch c GATE PASSED + 60min inter-batch elapsed.
-Batch d (Stages M/N) in flight. Stage M complete: systemd + launchd
-templates, install/uninstall CLI subcommands, dispatcher wiring,
-11 tests + smoke. 235 pytest pass. Next: Stage N (skill crystallization).
+**Current stage:** Stage N complete. Improver subagent in agents.json,
+orchestrator counts successful cycles + triggers every N (config
+default 5), creates .claude/skills/, sets improver_due flag,
+_build_prompt injects IMPROVER TRIGGER hint. 243 pytest pass.
+Smoke stage-n.sh green. Next: gates batch-d + v1.0-final + STATUS
+v1.0 complete.
 
 ## Currently working on (Batch c summary, retained for audit)
 

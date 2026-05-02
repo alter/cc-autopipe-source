@@ -36,10 +36,12 @@ PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
 
 # v0.5 → v1.0 schema bump (SPEC-v1.md §3.1). New fields:
-#   - detached:               Optional[dict]  per Stage H
-#   - current_phase:          int             per Stage J (default 1)
-#   - phases_completed:       list[int]       per Stage J (default [])
-#   - escalated_next_cycle:   bool            per Stage L (default False)
+#   - detached:                          Optional[dict]  per Stage H
+#   - current_phase:                     int             per Stage J (default 1)
+#   - phases_completed:                  list[int]       per Stage J (default [])
+#   - escalated_next_cycle:              bool            per Stage L (False)
+#   - successful_cycles_since_improver:  int             per Stage N (default 0)
+#   - improver_due:                      bool            per Stage N (False)
 # v1 state files migrate transparently — `read()` fills defaults via the
 # dataclass field defaults; `write()` then persists schema_version=2.
 
@@ -120,6 +122,8 @@ class State:
     current_phase: int = 1
     phases_completed: list[int] = field(default_factory=list)
     escalated_next_cycle: bool = False
+    successful_cycles_since_improver: int = 0
+    improver_due: bool = False
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,6 +145,8 @@ class State:
             "current_phase": self.current_phase,
             "phases_completed": list(self.phases_completed),
             "escalated_next_cycle": self.escalated_next_cycle,
+            "successful_cycles_since_improver": (self.successful_cycles_since_improver),
+            "improver_due": self.improver_due,
         }
         d.update(self.extras)
         return d

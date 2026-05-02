@@ -28,5 +28,14 @@
     "model": "haiku",
     "maxTurns": 5,
     "background": true
+  },
+  "improver": {
+    "description": "Reflect on completed cycles, propose skills. Run after every 5 successful cycles or when explicitly invoked.",
+    "prompt": "Read last 5 reports/iteration-*.md and memory/success_patterns.jsonl. Identify: 1) Patterns used in 2+ tasks, 2) Solutions to non-obvious problems, 3) Project-specific conventions. For each: write .claude/skills/<short-name>/SKILL.md following Claude Code skill format. Do NOT modify project source code.",
+    "tools": ["Read", "Write"],
+    "model": "sonnet",
+    "effort": "medium",
+    "maxTurns": 10,
+    "background": true
   }
 }

@@ -235,13 +235,14 @@ def test_init_via_bash_dispatcher(fresh: tuple[Path, Path]) -> None:
 
 
 def test_init_provisions_v1_subagents(fresh: tuple[Path, Path]) -> None:
-    """Stage I: a freshly initialised project must include the researcher
-    and reporter subagents alongside the v0.5 io-worker + verifier."""
+    """v1.0 (Stages I + N): a freshly initialised project must include the
+    researcher + reporter (Stage I) + improver (Stage N) subagents
+    alongside the v0.5 io-worker + verifier — five total."""
     project, user_home = fresh
     _run_init(project, user_home, expect_rc=0)
 
     agents = json.loads((project / ".cc-autopipe" / "agents.json").read_text())
-    expected = {"io-worker", "verifier", "researcher", "reporter"}
+    expected = {"io-worker", "verifier", "researcher", "reporter", "improver"}
     assert set(agents.keys()) == expected, f"got {sorted(agents.keys())}"
 
 

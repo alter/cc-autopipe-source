@@ -178,6 +178,20 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
             "failure mode before re-attempting.\n\n"
         )
 
+    # Stage N: prompt-side improver trigger. Orchestrator counted N
+    # successful cycles; ask the main agent to invoke the `improver`
+    # subagent via the task tool BEFORE picking up the next backlog
+    # task. The improver writes .claude/skills/<name>/SKILL.md.
+    if s.improver_due:
+        parts.append(
+            "**IMPROVER TRIGGER:** N successful cycles since the last "
+            "skill-crystallisation pass. Before the next backlog task, "
+            "invoke the `improver` subagent via the task tool — it will "
+            "review recent progress reports and write reusable skills "
+            "into `.claude/skills/<name>/SKILL.md`. The skills directory "
+            "already exists.\n\n"
+        )
+
     if current_phase_obj is not None:
         parts.append(
             f"## Current phase ({s.current_phase}: {current_phase_obj.name})\n"
@@ -243,6 +257,13 @@ AUTO_ESC_DEFAULTS = {
 }
 
 
+# Stage N improver defaults — same template-mirroring rationale.
+IMPROVER_DEFAULTS = {
+    "enabled": True,
+    "trigger_every_n_successes": 5,
+}
+
+
 def _coerce_yaml_value(text: str) -> object:
     """Tiny YAML scalar coercion — bool / int / quoted string / bare string.
     Good enough for the auto_escalation block; kept narrow so we don't
@@ -260,14 +281,18 @@ def _coerce_yaml_value(text: str) -> object:
     return text.strip('"').strip("'")
 
 
-def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
-    """Parse the `auto_escalation:` block from config.yaml.
+def _read_yaml_top_block(
+    project_path: Path,
+    block_name: str,
+    defaults: dict[str, object],
+) -> dict[str, object]:
+    """Generic top-level-block parser shared by auto_escalation + improver.
 
-    Returns the merged dict (defaults + overrides). Missing block → all
-    defaults. Malformed lines are silently ignored — the engine
-    must keep working even if the operator typoed config.yaml.
+    Returns merged dict (defaults + overrides). Missing block → defaults.
+    Tolerant of typos: unknown keys ignored, malformed values fall back
+    to defaults at first parse error.
     """
-    out = dict(AUTO_ESC_DEFAULTS)
+    out = dict(defaults)
     cfg = project_path / ".cc-autopipe" / "config.yaml"
     if not cfg.exists():
         return out
@@ -276,9 +301,10 @@ def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
         text = cfg.read_text(encoding="utf-8")
     except OSError:
         return out
+    block_header = f"{block_name}:"
     for line in text.splitlines():
         stripped = line.rstrip()
-        if stripped == "auto_escalation:":
+        if stripped == block_header:
             in_block = True
             continue
         if in_block:
@@ -288,9 +314,22 @@ def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
             if ":" not in stripped:
                 continue
             key, _, raw = stripped.strip().partition(":")
-            if key in AUTO_ESC_DEFAULTS:
+            if key in defaults:
                 out[key] = _coerce_yaml_value(raw)
     return out
+
+
+def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
+    """Parse the `auto_escalation:` block from config.yaml. Defaults
+    apply when the block (or individual keys) is absent. See
+    AUTO_ESC_DEFAULTS for the merged shape."""
+    return _read_yaml_top_block(project_path, "auto_escalation", AUTO_ESC_DEFAULTS)
+
+
+def _read_config_improver(project_path: Path) -> dict[str, object]:
+    """Parse the `improver:` block from config.yaml (Stage N).
+    Defaults apply when absent."""
+    return _read_yaml_top_block(project_path, "improver", IMPROVER_DEFAULTS)
 
 
 def _agents_json_path(project_path: Path) -> Path | None:
@@ -811,7 +850,29 @@ def process_project(project_path: Path) -> str:
         s.last_progress_at = s.last_cycle_started_at
         state.write(project_path, s)
 
+        # Snapshot improver_due for the prompt builder, then clear it on
+        # state so we don't double-send the trigger if the cycle fails
+        # and we re-enter. The trigger is one-shot: orchestrator detected
+        # N successes, asked the main agent to invoke improver, done.
+        improver_was_due = s.improver_due
+        if s.improver_due:
+            s.improver_due = False
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "improver_invoked_in_prompt",
+                successful_cycles_since_improver=(s.successful_cycles_since_improver),
+            )
+            # Re-tag s.improver_due so _build_claude_cmd → _build_prompt
+            # still sees it (we only cleared it in persisted state, not
+            # in this snapshot).
+            s.improver_due = True
+
         cmd = _build_claude_cmd(project_path, s)
+        # After the prompt is baked, drop the in-memory flag so any
+        # subsequent re-read doesn't see stale True.
+        if improver_was_due:
+            s.improver_due = False
         timeout = float(
             os.environ.get("CC_AUTOPIPE_CYCLE_TIMEOUT_SEC", DEFAULT_CYCLE_TIMEOUT_SEC)
         )
@@ -841,6 +902,41 @@ def process_project(project_path: Path) -> str:
         phase_transitioned = False
         if s.phase == "active":
             phase_transitioned = _maybe_transition_phase(project_path, s)
+
+        # Stage N: improver-trigger bookkeeping on successful cycles. This
+        # runs BEFORE the escalation revert / done / failed branches so a
+        # cycle that ALSO completes a phase still gets counted toward the
+        # next improver pass. The actual subagent invocation is delegated
+        # to the main agent on the NEXT cycle via the prompt hint
+        # _build_prompt emits when improver_due is True.
+        if s.last_passed and s.phase == "active":
+            imp_cfg = _read_config_improver(project_path)
+            if imp_cfg.get("enabled"):
+                trigger_n = int(imp_cfg.get("trigger_every_n_successes") or 5)
+                s.successful_cycles_since_improver += 1
+                if s.successful_cycles_since_improver >= trigger_n:
+                    skills_dir = project_path / ".claude" / "skills"
+                    try:
+                        skills_dir.mkdir(parents=True, exist_ok=True)
+                    except OSError as exc:
+                        _log(
+                            f"{project_path.name}: could not create skills dir: {exc!r}"
+                        )
+                    s.successful_cycles_since_improver = 0
+                    s.improver_due = True
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "improver_trigger_due",
+                        iteration=s.iteration,
+                        skills_dir=str(skills_dir),
+                    )
+                    _log(
+                        f"{project_path.name}: improver triggered "
+                        f"(every {trigger_n} successes)"
+                    )
+                else:
+                    state.write(project_path, s)
 
         # Stage L: revert escalation flag on a successful cycle BEFORE the
         # done / failed branches so the next cycle goes back to the default

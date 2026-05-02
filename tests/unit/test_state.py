@@ -367,6 +367,8 @@ def test_schema_version_is_2_for_fresh_state(project: Path) -> None:
     assert raw["current_phase"] == 1
     assert raw["phases_completed"] == []
     assert raw["escalated_next_cycle"] is False
+    assert raw["successful_cycles_since_improver"] == 0
+    assert raw["improver_due"] is False
 
 
 def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
