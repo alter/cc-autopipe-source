@@ -21,6 +21,17 @@ models:
   io_worker: "claude-haiku-4-5"
   verifier: "claude-haiku-4-5"
 
+# v1.0 (Stage L): when consecutive_failures >= trigger AND auto-escalation
+# is enabled, the next cycle uses the escalate_to model + effort, with a
+# reminder injected into the prompt. After a successful cycle the model
+# reverts to default. Set enabled: false to opt out per project.
+auto_escalation:
+  enabled: true
+  trigger_consecutive_failures: 3
+  escalate_to: "claude-opus-4-7"
+  effort: "xhigh"
+  revert_after_success: true
+
 paths:
   src: "."
   tests: "."

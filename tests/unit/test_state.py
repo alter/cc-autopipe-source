@@ -366,6 +366,7 @@ def test_schema_version_is_2_for_fresh_state(project: Path) -> None:
     assert raw["detached"] is None
     assert raw["current_phase"] == 1
     assert raw["phases_completed"] == []
+    assert raw["escalated_next_cycle"] is False
 
 
 def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
@@ -397,6 +398,7 @@ def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
     assert s.detached is None
     assert s.current_phase == 1
     assert s.phases_completed == []
+    assert s.escalated_next_cycle is False
     # schema_version forced to current on read so write() persists v2.
     assert s.schema_version == 2
 
@@ -406,6 +408,7 @@ def test_v1_state_file_migrates_to_v2_on_read(project: Path) -> None:
     assert "detached" in raw
     assert "current_phase" in raw
     assert "phases_completed" in raw
+    assert "escalated_next_cycle" in raw
 
 
 def test_set_detached_round_trip(project: Path) -> None:
@@ -502,6 +505,14 @@ def test_cli_set_detached(project: Path, tmp_path: Path) -> None:
     assert s.detached.reason == "training run"
     assert s.detached.check_every_sec == 120
     assert s.detached.max_wait_sec == 7200
+
+
+def test_escalated_next_cycle_round_trip(project: Path) -> None:
+    s = state.State.fresh(project.name)
+    s.escalated_next_cycle = True
+    state.write(project, s)
+    s2 = state.read(project)
+    assert s2.escalated_next_cycle is True
 
 
 def test_cli_complete_phase(project: Path, tmp_path: Path) -> None:

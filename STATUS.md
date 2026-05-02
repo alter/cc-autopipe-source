@@ -1,12 +1,12 @@
 # Build Status
 
-**Updated:** 2026-05-02T11:22:00Z
+**Updated:** 2026-05-02T11:25:00Z
 **Current branch:** main
-**Current stage:** Stage K complete. quota_monitor wired into
-orchestrator main (start/stop in finally), CC_AUTOPIPE_QUOTA_MONITOR_INTERVAL_SEC
-env override for tests. Smoke stage-k.sh verifies startup log
-+ graceful SIGTERM teardown + 92% threshold fire. 211 pytest pass.
-Next: Stage L (auto-escalation).
+**Current stage:** Stage K complete. Stage L starting:
+config.yaml grew auto_escalation block (enabled, trigger=3,
+escalate_to=opus-4-7, effort=xhigh, revert_after_success);
+state.py adds escalated_next_cycle (bool default False) with
+2 new round-trip tests. Next: orchestrator escalation logic.
 
 ## Currently working on
 
