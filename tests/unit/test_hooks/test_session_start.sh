@@ -70,5 +70,43 @@ cd "$REPO_ROOT"
 rm -rf "$ALT"
 cleanup_project
 
+# ---------------------------------------------------------------------------
+# v1.2 Bug A: current_task injection block
+# ---------------------------------------------------------------------------
+
+# Case 7: no current_task in state → "No current task tracked" prompt.
+fresh_project
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_eq "rc=0 with null current_task"            0     "$HOOK_RC"
+assert_contains "block header present"          "=== Current task ===" "$HOOK_OUT"
+assert_contains "no-task helper points to CURRENT_TASK.md" \
+    "CURRENT_TASK.md" "$HOOK_OUT"
+cleanup_project
+
+# Case 8: populated current_task → injected block has all fields.
+fresh_project
+cat > "$PROJECT/.cc-autopipe/CURRENT_TASK.md" <<EOF
+task: cand_imbloss_v2
+stage: training
+stages_completed: hypothesis
+artifact: data/models/exp_cand_imbloss_v2/
+notes: SwingLoss kicked off
+EOF
+# Project CURRENT_TASK.md → state.current_task by invoking stop_helper
+# directly (no need for verify.sh fixture in this test).
+CC_AUTOPIPE_HOME="$SRC" CC_AUTOPIPE_USER_HOME="$USER_HOME" \
+    python3 "$SRC/lib/stop_helper.py" sync "$PROJECT" >/dev/null 2>&1
+# Now session-start should emit the populated block.
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_eq "rc=0 with populated current_task"       0     "$HOOK_RC"
+assert_contains "Task line surfaces id"            "Task: cand_imbloss_v2" "$HOOK_OUT"
+assert_contains "Stage line surfaces stage"        "Stage: training"       "$HOOK_OUT"
+assert_contains "Stages completed line"            "Stages completed: hypothesis" "$HOOK_OUT"
+assert_contains "Artifacts header"                 "Artifacts:"            "$HOOK_OUT"
+assert_contains "Artifact path emitted"            "data/models/exp_cand_imbloss_v2/" "$HOOK_OUT"
+assert_contains "Notes line"                       "SwingLoss kicked off"  "$HOOK_OUT"
+assert_contains "discipline reminder"              "Update CURRENT_TASK.md" "$HOOK_OUT"
+cleanup_project
+
 print_summary "test_session_start"
 exit "$FAIL"

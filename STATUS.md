@@ -109,12 +109,10 @@ Pre-Batch infra complete. **Batch 1 in progress** (Bug A + E):
   pytest 282+1.
 - ✅ `src/lib/session_start_helper.py` + `src/hooks/session-start.sh` —
   SessionStart hook injects `=== Current task ===` block from
-  state.current_task. Two output modes: empty/null current_task →
-  helpful "how to write CURRENT_TASK.md" prompt; populated → full
-  task / stage / Started (relative + absolute) / stages / artifacts /
-  notes block. Helper enforces always-exit-0; hook gates on
-  non-empty output. Batch 3 will extend this helper with backlog
-  top-3 (Bug D), long-op guidance (Bug C), stages progress (Bug F).
+  state.current_task. +17 unit tests in test_session_start_helper.py
+  (formatting / null-safety / relative-time / hook-contract / CLI /
+  v2-state migration). +9 hook-level bash assertions (28/28 PASS).
+  299+1 pytest. Both regressions green (v1 + v12).
 
 ### Pre-flight (initial)
 
