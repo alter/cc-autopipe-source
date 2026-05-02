@@ -1,11 +1,10 @@
 # Build Status
 
-**Updated:** 2026-05-02T10:15:00Z
+**Updated:** 2026-05-02T10:22:00Z
 **Current branch:** main
-**Current stage:** Stage I complete (researcher + reporter subagents).
-agents.json template grew researcher/reporter entries; init now
-provisions all four. 5 new init tests + smoke stage-i.sh green.
-Next: Stage J (phase-split PRDs).
+**Current stage:** Stage J in flight. PRD phase parser (src/lib/prd.py)
+landed with 11 unit tests. Next: orchestrator phase-transition logic
++ smoke stage-j.sh.
 
 ## Currently working on
 
