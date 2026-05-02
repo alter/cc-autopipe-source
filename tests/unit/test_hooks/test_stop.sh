@@ -136,5 +136,93 @@ assert_jq "session_id remains null when absent" \
     "$PROJECT/.cc-autopipe/state.json" .session_id "null"
 cleanup_project
 
+# ---------------------------------------------------------------------------
+# v1.2 Bug A: CURRENT_TASK.md → state.json.current_task
+# ---------------------------------------------------------------------------
+
+# --- CURRENT_TASK.md absent → current_task stays null ---
+fresh_project
+write_verify 'echo '"'"'{"passed":true,"score":1.0,"prd_complete":false,"details":{}}'"'"
+run_hook stop "$(stop_input sess-no-ct)"
+assert_eq "rc=0 with no CURRENT_TASK.md" 0 "$HOOK_RC"
+assert_jq "current_task remains null when CURRENT_TASK.md absent" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task "null"
+cleanup_project
+
+# --- CURRENT_TASK.md populated → state.current_task fields populated ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.4,"prd_complete":false,"details":{}}'"'"
+cat > "$PROJECT/.cc-autopipe/CURRENT_TASK.md" <<EOF
+task: cand_imbloss_v2
+stage: training
+stages_completed: hypothesis
+artifact: data/models/exp_cand_imbloss_v2/
+notes: SwingLoss training kicked off
+EOF
+run_hook stop "$(stop_input sess-with-ct)"
+assert_eq "rc=0 with CURRENT_TASK.md" 0 "$HOOK_RC"
+assert_jq "current_task.id projected from CURRENT_TASK.md" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task.id "cand_imbloss_v2"
+assert_jq "current_task.stage projected" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task.stage "training"
+assert_jq "current_task.stages_completed projected (length)" \
+    "$PROJECT/.cc-autopipe/state.json" '.current_task.stages_completed | length' 1
+assert_jq "current_task.stages_completed[0]" \
+    "$PROJECT/.cc-autopipe/state.json" '.current_task.stages_completed[0]' "hypothesis"
+assert_jq "current_task.artifact_paths[0]" \
+    "$PROJECT/.cc-autopipe/state.json" '.current_task.artifact_paths[0]' \
+    "data/models/exp_cand_imbloss_v2/"
+assert_jq "current_task.claude_notes" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task.claude_notes \
+    "SwingLoss training kicked off"
+cleanup_project
+
+# --- empty CURRENT_TASK.md → current_task stays null ---
+fresh_project
+write_verify 'echo '"'"'{"passed":true,"score":1.0,"prd_complete":false,"details":{}}'"'"
+: > "$PROJECT/.cc-autopipe/CURRENT_TASK.md"
+run_hook stop "$(stop_input sess-empty-ct)"
+assert_eq "rc=0 with empty CURRENT_TASK.md" 0 "$HOOK_RC"
+assert_jq "current_task null with empty CURRENT_TASK.md" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task "null"
+cleanup_project
+
+# --- second hook fire with updated CURRENT_TASK.md replaces fully ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.5,"prd_complete":false,"details":{}}'"'"
+
+cat > "$PROJECT/.cc-autopipe/CURRENT_TASK.md" <<EOF
+task: task_a
+stage: setup
+stages_completed: [foo, bar]
+artifact: data/a/
+EOF
+run_hook stop "$(stop_input sess-1)"
+assert_jq "first sync: task_a" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task.id "task_a"
+
+# Claude switches task — fewer fields this time.
+cat > "$PROJECT/.cc-autopipe/CURRENT_TASK.md" <<EOF
+task: task_b
+stage: init
+EOF
+run_hook stop "$(stop_input sess-2)"
+assert_jq "second sync: task_b (replaced, not merged)" \
+    "$PROJECT/.cc-autopipe/state.json" .current_task.id "task_b"
+assert_jq "second sync: stages_completed reset to []" \
+    "$PROJECT/.cc-autopipe/state.json" '.current_task.stages_completed | length' 0
+assert_jq "second sync: artifact_paths reset to []" \
+    "$PROJECT/.cc-autopipe/state.json" '.current_task.artifact_paths | length' 0
+cleanup_project
+
+# --- corrupted CURRENT_TASK.md must not abort hook ---
+fresh_project
+write_verify 'echo '"'"'{"passed":true,"score":1.0,"prd_complete":false,"details":{}}'"'"
+# Write a binary blob that's neither valid text nor parseable.
+printf '\x00\x01\x02\xff\xfe' > "$PROJECT/.cc-autopipe/CURRENT_TASK.md"
+run_hook stop "$(stop_input sess-corrupt)"
+assert_eq "rc=0 even with corrupt CURRENT_TASK.md" 0 "$HOOK_RC"
+cleanup_project
+
 print_summary "test_stop"
 exit "$FAIL"
