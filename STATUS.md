@@ -1,10 +1,12 @@
 # Build Status
 
-**Updated:** 2026-05-02T09:40:00Z
+**Updated:** 2026-05-02T09:48:00Z
 **Current branch:** main
-**Current stage:** Batch b in flight. Stage H data layer (schema v2 +
-Detached) landed; cc-autopipe-detach helper wired into dispatcher.
-Next: orchestrator DETACHED branch in process_project.
+**Current stage:** Batch b in flight. Stage H orchestrator branch
+(_process_detached) wired into process_project — handles
+DETACHED→ACTIVE on check_cmd success, DETACHED→FAILED on
+max_wait timeout, lock released between checks. Next: pre-tool-use
+nohup+detach allowance + tests + smoke.
 
 ## Currently working on
 

@@ -82,6 +82,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _parse_iso_utc(value: str | None) -> datetime | None:
+    """Best-effort parse of `YYYY-MM-DDTHH:MM:SSZ`. Returns None on bad input."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
 def _resume_paused_if_due(s: state.State) -> bool:
     """If state is PAUSED with resume_at in the past, transition to ACTIVE.
 
@@ -399,6 +411,113 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
     return "ok"
 
 
+DETACHED_CHECK_TIMEOUT_SEC = 30
+
+
+def _process_detached(project_path: Path, s: state.State) -> str:
+    """One iteration of the DETACHED state machine per SPEC-v1.md §2.1.3.
+
+    Returns one of:
+      "detached" — still waiting (poll interval not reached, or check_cmd
+                   ran and still failed); orchestrator releases the slot
+                   for next outer pass
+      "failed"   — max_wait_sec exceeded; project transitioned to FAILED
+      "active"   — check_cmd succeeded; caller should fall through to a
+                   normal ACTIVE cycle
+    """
+    if s.detached is None:
+        # State says detached but no payload — corruption recovery.
+        s.phase = "active"
+        state.write(project_path, s)
+        state.log_event(project_path, "detach_corrupt_recovery")
+        _log(
+            f"{project_path.name}: phase=detached but detached=None; recovered to active"
+        )
+        return "active"
+
+    now = datetime.now(timezone.utc)
+    started = _parse_iso_utc(s.detached.started_at) or now
+    elapsed = (now - started).total_seconds()
+
+    if elapsed > s.detached.max_wait_sec:
+        s.phase = "failed"
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "detached_timeout",
+            elapsed_sec=int(elapsed),
+            reason=s.detached.reason,
+            checks=s.detached.checks_count,
+        )
+        _notify_tg(
+            f"[{project_path.name}] DETACHED timeout after "
+            f"{int(elapsed)}s — check check_cmd"
+        )
+        _write_human_needed(
+            project_path,
+            f"DETACHED operation '{s.detached.reason}' timed out after "
+            f"{int(elapsed)}s (max_wait_sec={s.detached.max_wait_sec}). "
+            f"check_cmd: {s.detached.check_cmd}",
+        )
+        return "failed"
+
+    last_check = _parse_iso_utc(s.detached.last_check_at) or started
+    if (now - last_check).total_seconds() < s.detached.check_every_sec:
+        # Not time to poll again. Caller releases the slot for other projects.
+        return "detached"
+
+    # Run check_cmd with a hard 30s cap. A timeout counts as a failed
+    # check (not a project failure) so the operator can fix a slow probe
+    # without losing the in-flight task.
+    try:
+        cp = subprocess.run(
+            ["bash", "-c", s.detached.check_cmd],
+            cwd=project_path,
+            timeout=DETACHED_CHECK_TIMEOUT_SEC,
+            capture_output=True,
+            text=True,
+        )
+        rc = cp.returncode
+        check_stderr_tail = (cp.stderr or "")[-200:]
+    except subprocess.TimeoutExpired:
+        rc = 124
+        check_stderr_tail = f"check_cmd exceeded {DETACHED_CHECK_TIMEOUT_SEC}s timeout"
+        _log(
+            f"{project_path.name}: detached check_cmd timed out after {DETACHED_CHECK_TIMEOUT_SEC}s"
+        )
+
+    s.detached.last_check_at = _now_iso()
+    s.detached.checks_count += 1
+    state.write(project_path, s)
+
+    if rc == 0:
+        state.log_event(
+            project_path,
+            "detach_resumed",
+            reason=s.detached.reason,
+            checks=s.detached.checks_count,
+            elapsed_sec=int(elapsed),
+        )
+        _log(
+            f"{project_path.name}: detach_resumed "
+            f"checks={s.detached.checks_count} elapsed={int(elapsed)}s"
+        )
+        s.phase = "active"
+        s.detached = None
+        state.write(project_path, s)
+        return "active"
+
+    state.log_event(
+        project_path,
+        "detach_check_failed",
+        rc=rc,
+        checks=s.detached.checks_count,
+        elapsed_sec=int(elapsed),
+        stderr_tail=check_stderr_tail,
+    )
+    return "detached"
+
+
 def process_project(project_path: Path) -> str:
     """Run one cycle for a single project."""
     if not project_path.exists():
@@ -434,6 +553,17 @@ def process_project(project_path: Path) -> str:
     heartbeat = locking.HeartbeatThread(project_lock)
     heartbeat.start()
     try:
+        # DETACHED handling per SPEC-v1.md §2.1.3. Runs BEFORE quota
+        # pre-flight: a detached cycle is a cheap check_cmd, not a claude
+        # spawn — no quota burn, so the 7d cap shouldn't gate it.
+        if s.phase == "detached":
+            d_result = _process_detached(project_path, s)
+            if d_result == "detached":
+                return "detached"
+            if d_result == "failed":
+                return "failed"
+            # d_result == "active": fall through to normal cycle.
+
         # Pre-flight quota check per SPEC §9.2. Pauses the project (or
         # all projects, on 7d threshold) BEFORE bumping iteration so
         # we don't burn one on a paused decision. Cache TTL is 60s, so
