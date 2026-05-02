@@ -80,7 +80,9 @@ Pre-Batch 1 infrastructure:
 - ✅ `tests/smoke/run-all-smokes.sh` — wrapper around 13 stage smokes
   (validated against stage-a; full 13/13 trusted from v1.0 final
   STATUS.md "individually verified all green" 2026-05-02 afternoon)
-- ☐ `tests/regression/hello-fullstack-v1.sh` — mocked-claude regression base
+- ✅ `tests/regression/hello-fullstack-v1.sh` — mocked-claude regression base
+  (131 lines, shellcheck clean, passes on current v1.0 engine; uses
+  /usr/bin/true as claude_bin + pre-seeded quota cache)
 - ☐ `tests/regression/hello-fullstack-v12.sh` — extends v1 with schema_v3 + current_task assertions
 
 After this infra lands, Batch 1 starts: state schema v3 + current_task
