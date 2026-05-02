@@ -33,6 +33,7 @@ from pathlib import Path
 _LIB = Path(__file__).resolve().parent / "lib"
 sys.path.insert(0, str(_LIB))
 import locking  # noqa: E402
+import prd as prd_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
 
@@ -138,7 +139,25 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
     cca = project_path / ".cc-autopipe"
     parts: list[str] = []
     parts.append(f"# Project: {s.name or project_path.name}\n")
-    parts.append(f"Iteration {s.iteration}. Phase: {s.phase}.\n\n")
+    parts.append(f"Iteration {s.iteration}. Phase: {s.phase}.\n")
+
+    # If the PRD has phases (Stage J), focus the agent on the current
+    # phase's items. Single-phase PRDs (no `### Phase N:` headers) skip
+    # this block and the agent sees the full PRD excerpt below.
+    phases = prd_lib.read_phases(cca / "prd.md")
+    current_phase_obj = None
+    if phases:
+        current_phase_obj = next(
+            (p for p in phases if p.number == s.current_phase), None
+        )
+        if current_phase_obj is not None:
+            parts.append(
+                f"Current PRD phase: **{s.current_phase} — {current_phase_obj.name}** "
+                f"({current_phase_obj.unchecked_count} of "
+                f"{current_phase_obj.total_items} items remaining). "
+                f"Phases completed so far: {s.phases_completed or 'none'}.\n"
+            )
+    parts.append("\n")
 
     if (cca / "checkpoint.md").exists():
         parts.append(
@@ -146,9 +165,20 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
             "Continue from there.\n\n"
         )
 
-    parts.append("## PRD (excerpt)\n")
-    parts.append(_read_truncated(cca / "prd.md", 2048))
-    parts.append("\n\n## Project context (excerpt)\n")
+    if current_phase_obj is not None:
+        parts.append(
+            f"## Current phase ({s.current_phase}: {current_phase_obj.name})\n"
+        )
+        # Phase body is small (just the items + acceptance) — pass entire body
+        # rather than a truncated PRD excerpt.
+        parts.append(current_phase_obj.body)
+        parts.append("\n")
+    else:
+        parts.append("## PRD (excerpt)\n")
+        parts.append(_read_truncated(cca / "prd.md", 2048))
+        parts.append("\n")
+
+    parts.append("\n## Project context (excerpt)\n")
     parts.append(_read_truncated(cca / "context.md", 1024))
     parts.append("\n\n## Next backlog tasks\n")
     parts.append(_read_top_open_tasks(project_path / "backlog.md", 5) or "(none)")
@@ -414,6 +444,122 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
 DETACHED_CHECK_TIMEOUT_SEC = 30
 
 
+def _append_to_archive(archive_path: Path, body: str, phase_number: int) -> None:
+    """Append a phase block to backlog-archive.md per SPEC-v1.md §2.3.4.
+
+    Atomic via tmp+rename so a crash mid-write doesn't truncate the
+    existing archive. The archive file accumulates each completed phase
+    as one section so the operator can audit what shipped per phase.
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    header = f"\n## Archived Phase {phase_number} — {_now_iso()}\n\n"
+    new_content = ""
+    if archive_path.exists():
+        try:
+            new_content = archive_path.read_text(encoding="utf-8")
+        except OSError:
+            new_content = ""
+    new_content += header + body.rstrip() + "\n"
+    tmp = archive_path.with_suffix(f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(new_content, encoding="utf-8")
+        os.replace(tmp, archive_path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _maybe_transition_phase(project_path: Path, s: state.State) -> bool:
+    """If the project's PRD has phases AND the current phase is complete,
+    advance to the next phase (or mark DONE on last phase).
+
+    Returns True iff the project's terminal state was changed (transition
+    completed or DONE). Caller should NOT run additional post-cycle logic
+    when True is returned because state.phase / current_phase have moved.
+
+    Behaviour:
+    - PRD without `### Phase N:` headers → returns False (caller falls
+      back to v0.5 prd_complete logic).
+    - Current phase incomplete (unchecked items remain) → False.
+    - Current phase complete AND verify passed (last_score >= threshold) →
+      archive the phase block to backlog-archive.md, log phase_transition,
+      TG, advance current_phase. If that was the last phase: phase=done.
+    """
+    prd_path = project_path / ".cc-autopipe" / "prd.md"
+    phases = prd_lib.read_phases(prd_path)
+    if not phases:
+        return False  # single-phase PRD; defer to caller
+
+    current = next((p for p in phases if p.number == s.current_phase), None)
+    if current is None:
+        # current_phase number doesn't appear in the PRD — operator likely
+        # advanced past the end manually, or PRD was edited mid-flight.
+        # If every authored phase has been completed, mark DONE; otherwise
+        # leave as-is and let next cycle re-evaluate.
+        if all(p.number in s.phases_completed for p in phases):
+            s.phase = "done"
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "done",
+                reason="all phases completed",
+                phases_completed=list(s.phases_completed),
+            )
+            return True
+        return False
+
+    if not current.is_complete:
+        return False
+
+    # Phase items all checked. Require verify pass too: a green PRD with a
+    # red verify means the items were marked done prematurely.
+    if s.last_score is None or s.last_score < s.threshold or s.last_passed is False:
+        return False
+
+    archive_path = project_path / ".cc-autopipe" / "backlog-archive.md"
+    completed_phase = s.current_phase
+    _append_to_archive(archive_path, current.body, completed_phase)
+
+    last_phase_number = max(p.number for p in phases)
+    is_last_phase = completed_phase >= last_phase_number
+
+    state.complete_phase(project_path)  # writes; resets session_id
+    s_after = state.read(project_path)
+    state.log_event(
+        project_path,
+        "phase_transition",
+        completed_phase=completed_phase,
+        new_phase=(None if is_last_phase else s_after.current_phase),
+        is_last_phase=is_last_phase,
+    )
+    _notify_tg(
+        f"[{project_path.name}] Phase {completed_phase} complete. "
+        f"{'All phases done — project DONE.' if is_last_phase else 'Advancing to next phase.'}"
+    )
+
+    if is_last_phase:
+        s_after.phase = "done"
+        state.write(project_path, s_after)
+        state.log_event(
+            project_path,
+            "done",
+            score=s_after.last_score,
+            iteration=s_after.iteration,
+            via_phase_split=True,
+        )
+
+    # Mutate caller's snapshot so the rest of process_project sees the
+    # updated phase number.
+    s.phase = s_after.phase
+    s.current_phase = s_after.current_phase
+    s.phases_completed = s_after.phases_completed
+    s.session_id = s_after.session_id
+    return True
+
+
 def _process_detached(project_path: Path, s: state.State) -> str:
     """One iteration of the DETACHED state machine per SPEC-v1.md §2.1.3.
 
@@ -599,9 +745,19 @@ def process_project(project_path: Path) -> str:
         # subprocess (stop.sh's update-verify, stop-failure.sh's set-paused).
         s = state.read(project_path)
 
-        # Post-cycle phase transitions per SPEC §6.1.
+        # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
+        # when prd.md declares `### Phase N:` headers AND the current
+        # phase is complete AND verify passed. Single-phase PRDs (and
+        # legacy v0.5 projects without phase headers) fall through to
+        # the v0.5 prd_complete logic below.
+        phase_transitioned = False
+        if s.phase == "active":
+            phase_transitioned = _maybe_transition_phase(project_path, s)
+
+        # Post-cycle phase transitions per SPEC §6.1 (single-phase PRDs).
         if (
-            s.last_score is not None
+            not phase_transitioned
+            and s.last_score is not None
             and s.last_score >= s.threshold
             and s.prd_complete
             and s.phase == "active"

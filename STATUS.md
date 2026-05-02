@@ -1,10 +1,11 @@
 # Build Status
 
-**Updated:** 2026-05-02T10:22:00Z
+**Updated:** 2026-05-02T10:35:00Z
 **Current branch:** main
-**Current stage:** Stage J in flight. PRD phase parser (src/lib/prd.py)
-landed with 11 unit tests. Next: orchestrator phase-transition logic
-+ smoke stage-j.sh.
+**Current stage:** Batch b complete. Stage H (DETACHED), Stage I
+(researcher+reporter subagents), Stage J (phase split) all shipped.
+196 pytest pass + 1 macOS skip. Stage smokes h/i/j all green. Next:
+gate validator + STATUS + sleep + Batch c.
 
 ## Currently working on
 
