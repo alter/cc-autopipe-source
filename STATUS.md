@@ -141,18 +141,40 @@ regress any v0.5/v1.0 stage smoke.
 
 ### Currently working on
 
-**Batch 1 done. Batch 2 in progress** (Bug B + Bug H, cooldown
-skipped per .cc-autopipe/SKIP_COOLDOWN, Roman 2026-05-03).
+**Batch 1 + Batch 2 done. Batch 3 starting** (Bug C + D + F + G,
+cooldown skipped per .cc-autopipe/SKIP_COOLDOWN, Roman 2026-05-03).
 
-- ◐ state.update_verify gains `in_progress` kwarg + CLI flag
-- ☐ stop.sh parses `.in_progress` from verify output
-- ☐ orchestrator: cooldown × multiplier, cycle_in_progress event,
-  max_in_progress_cycles cap
-- ☐ src/lib/failures.py — categorize_recent
-- ☐ src/lib/human_needed.py — write_human_needed
-- ☐ orchestrator: smart escalation (claude_subprocess_failed pattern
-  → opus; verify_failed pattern → HUMAN_NEEDED + TG, no escalation)
-- ☐ tests/gates/batch-2-v12.sh
+### Batch 2 (Bug B + Bug H) — done
+
+- ✅ state.update_verify accepts `in_progress` kwarg (CLI: --in-progress)
+- ✅ src/hooks/stop.sh parses `.in_progress` from verify output, routes
+  to cycle_in_progress event when true (no failures.jsonl pollution)
+- ✅ orchestrator: in_progress cooldown × multiplier in main loop;
+  cap at consecutive_in_progress >= max → phase=failed +
+  in_progress-specific HUMAN_NEEDED + TG
+- ✅ src/lib/failures.py — `read_recent`, `categorize_recent` with
+  CRASH/VERIFY buckets and recommend_{escalation,human_needed,failed}
+- ✅ src/lib/human_needed.py — `write`, `write_verify_pattern`,
+  `write_mixed_pattern` (atomic, contract-safe)
+- ✅ orchestrator: smart escalation routes by category — verify-pattern
+  → HUMAN_NEEDED no escalation; crash-pattern → opus (v1.0 path);
+  5+ mixed → fail; fallback preserves v1.0 deferred-fail
+- ✅ tests/gates/batch-2-v12.sh — 12-category gate (PASSED fast mode)
+
+**Test counts (Batch 2 close):**
+- pytest 299+1 → **340 passed, 1 skipped** (+41 new tests)
+- test_stop.sh: 47 → **60 PASS**
+- regressions: v1 + v12 green
+- gate (fast): 12/12 GATE OK
+
+### Batch 3 in progress (Bug C + D + F + G)
+
+- ☐ Bug C: SessionStart long-operation guidance block + rules.md
+  template addition
+- ☐ Bug D: backlog top-3 injection + task_switched detection
+- ☐ Bug F: stages_completed array progressive scoring + injection
+- ☐ Bug G: subprocess rc!=0 TG alert with sentinel-based dedup
+- ☐ tests/gates/batch-3-v12.sh
 
 ### Pre-flight (initial)
 
