@@ -65,11 +65,11 @@ check_sh() {
 # A) Source-tree hygiene
 # ---------------------------------------------------------------------------
 
-# BATCH_HALT.md is allowed to exist as a working artifact during a build,
-# so we exclude it from the working-tree-clean check.
+# BATCH_HALT.md and .cc-autopipe/ runtime state are working artifacts
+# during a build, so we exclude them from the clean-tree check.
 # shellcheck disable=SC2016
-check_sh "working tree clean (excl. BATCH_HALT.md)" \
-    'test -z "$(git status --porcelain | grep -v "^?? BATCH_HALT.md$")"'
+check_sh "working tree clean (excl. BATCH_HALT.md, .cc-autopipe/)" \
+    'test -z "$(git status --porcelain | grep -vE "^\?\? (BATCH_HALT.md|\.cc-autopipe/)")"'
 check_sh "OPEN_QUESTIONS.md has no Status: blocked entries" \
     '! grep -qE "^\*\*Status:\*\*[[:space:]]*blocked" OPEN_QUESTIONS.md'
 
