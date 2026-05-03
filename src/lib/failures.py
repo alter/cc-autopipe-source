@@ -40,14 +40,21 @@ FAILURES_RELATIVE = ".cc-autopipe/memory/failures.jsonl"
 
 # Error type buckets. Anything not in either set is counted toward
 # "other" and only contributes to the 5+ mixed cap.
+#
+# SPEC-v1.2.md Bug H literal: "3 consecutive verify_failed (score=0)
+# → HUMAN_NEEDED, no escalation". Only verify_failed (verify ran
+# cleanly and reported passed=false) is the structural-mismatch
+# signal. verify_malformed (verify.sh emitted bad JSON) and
+# verify_missing (no verify.sh) are different — they could be a
+# project setup issue OR real-world bugs Claude can fix, so they
+# stay in "other" and only contribute to the 5+ mixed cap. This
+# preserves v1.0 escalation semantics for those error types.
 CRASH_ERRORS = {
     "claude_subprocess_failed",
     "claude_timeout",  # forward-compat: future error type
 }
 VERIFY_ERRORS = {
     "verify_failed",
-    "verify_malformed",
-    "verify_missing",
 }
 
 

@@ -32,6 +32,8 @@ from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
 sys.path.insert(0, str(_LIB))
+import failures as failures_lib  # noqa: E402
+import human_needed as human_needed_lib  # noqa: E402
 import locking  # noqa: E402
 import prd as prd_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
@@ -992,17 +994,52 @@ def process_project(project_path: Path) -> str:
                 project_path, "done", score=s.last_score, iteration=s.iteration
             )
         elif s.consecutive_failures >= 3 and s.phase == "active":
-            # Stage L: defer the FAIL by one cycle if auto-escalation is
-            # enabled AND we haven't tried escalation yet. Setting
-            # escalated_next_cycle here means the NEXT _build_claude_cmd
-            # uses opus + --effort xhigh + injected reminder. If THAT
-            # cycle also fails, escalated_next_cycle is still set on the
-            # NEXT pass, so we drop into the FAIL branch and mark failed.
-            if (
-                esc_cfg.get("enabled")
-                and s.consecutive_failures >= esc_trigger
+            # v1.2 Bug H: smart escalation. v1.0 escalated to opus on
+            # any 3 consecutive failures. Real-world: most failures are
+            # verify-driven (structural mismatch), and opus can't fix
+            # those — burns quota. Read recent failures, categorise,
+            # then route:
+            #   3+ claude_subprocess_failed → escalate (v1.0 path)
+            #   3+ verify_failed            → HUMAN_NEEDED, NO escalation
+            #   5+ mixed                    → mark failed
+            #   otherwise (fallback)        → preserve v1.0 phase=failed
+            recent = failures_lib.read_recent(project_path, n=5)
+            cat = failures_lib.categorize_recent(recent)
+            _log(f"{project_path.name}: failure category — {cat['reason']}")
+
+            if cat["recommend_human_needed"]:
+                # Verify pattern dominates → don't escalate. Mark failed
+                # and tell the operator escalation was SKIPPED on purpose.
+                s.phase = "failed"
+                state.write(project_path, s)
+                state.log_event(
+                    project_path,
+                    "escalation_skipped",
+                    iteration=s.iteration,
+                    consecutive_failures=s.consecutive_failures,
+                    crash_count=cat["crash_count"],
+                    verify_count=cat["verify_count"],
+                    reason=cat["reason"],
+                )
+                state.log_event(
+                    project_path,
+                    "failed",
+                    iteration=s.iteration,
+                    consecutive_failures=s.consecutive_failures,
+                    pattern="verify",
+                )
+                human_needed_lib.write_verify_pattern(project_path, recent)
+                _notify_tg(
+                    f"[{project_path.name}] needs human attention — "
+                    f"verify failing {cat['verify_count']}/{cat['total']} "
+                    "cycles, no escalation"
+                )
+            elif (
+                cat["recommend_escalation"]
+                and esc_cfg.get("enabled")
                 and not s.escalated_next_cycle
             ):
+                # Crash pattern → escalate (existing Stage L behaviour).
                 s.escalated_next_cycle = True
                 state.write(project_path, s)
                 state.log_event(
@@ -1010,15 +1047,18 @@ def process_project(project_path: Path) -> str:
                     "escalated_to_opus",
                     iteration=s.iteration,
                     consecutive_failures=s.consecutive_failures,
+                    crash_count=cat["crash_count"],
                     escalate_to=esc_cfg.get("escalate_to"),
                     effort=esc_cfg.get("effort"),
                 )
                 _log(
-                    f"{project_path.name}: consecutive_failures="
-                    f"{s.consecutive_failures} → escalating next cycle to "
+                    f"{project_path.name}: {cat['crash_count']} recent "
+                    f"crashes → escalating next cycle to "
                     f"{esc_cfg.get('escalate_to')}"
                 )
-            else:
+            elif cat["recommend_failed"]:
+                # 5+ mixed pattern → give up, no escalation (already
+                # tried, and pattern is too jumbled to act on).
                 s.phase = "failed"
                 state.write(project_path, s)
                 state.log_event(
@@ -1026,9 +1066,52 @@ def process_project(project_path: Path) -> str:
                     "failed",
                     iteration=s.iteration,
                     consecutive_failures=s.consecutive_failures,
-                    escalation_attempted=bool(s.escalated_next_cycle),
+                    pattern="mixed",
                 )
-                _write_human_needed(project_path, stderr)
+                human_needed_lib.write_mixed_pattern(project_path, total=cat["total"])
+                _notify_tg(
+                    f"[{project_path.name}] mixed-pattern fail — "
+                    f"{cat['total']} failures, marked FAILED"
+                )
+            else:
+                # No clear pattern but consecutive_failures hit the
+                # threshold. Preserve the v1.0 escalation-attempted
+                # fallback: try escalation once if available, else
+                # fail. This matches the v1.0 deferred-fail semantics.
+                if (
+                    esc_cfg.get("enabled")
+                    and s.consecutive_failures >= esc_trigger
+                    and not s.escalated_next_cycle
+                ):
+                    s.escalated_next_cycle = True
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "escalated_to_opus",
+                        iteration=s.iteration,
+                        consecutive_failures=s.consecutive_failures,
+                        crash_count=cat["crash_count"],
+                        escalate_to=esc_cfg.get("escalate_to"),
+                        effort=esc_cfg.get("effort"),
+                        reason="v1.0_fallback_no_clear_pattern",
+                    )
+                    _log(
+                        f"{project_path.name}: consecutive_failures="
+                        f"{s.consecutive_failures} (no clear category) → "
+                        f"escalating next cycle to "
+                        f"{esc_cfg.get('escalate_to')}"
+                    )
+                else:
+                    s.phase = "failed"
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "failed",
+                        iteration=s.iteration,
+                        consecutive_failures=s.consecutive_failures,
+                        escalation_attempted=bool(s.escalated_next_cycle),
+                    )
+                    _write_human_needed(project_path, stderr)
 
         # Persist claude's stdout/stderr to disk on EVERY cycle (even on
         # empty content) so a fast rc!=0 exit is debuggable. Names are

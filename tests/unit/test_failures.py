@@ -124,10 +124,16 @@ def test_categorize_three_verify_recommends_human_needed() -> None:
     assert "structural" in cat["reason"]
 
 
-def test_categorize_verify_malformed_counted_as_verify() -> None:
+def test_categorize_verify_malformed_NOT_counted_as_verify_pattern() -> None:
+    """SPEC literal: only verify_failed (clean run, passed=false) is
+    the structural-mismatch signal. verify_malformed and verify_missing
+    are project-setup / claude-output bugs and may be fixable by claude
+    itself — keep them in "other" so the v1.0 escalation path can
+    still try to recover from them."""
     cat = failures.categorize_recent([_malformed(), _malformed(), _malformed()])
-    assert cat["recommend_human_needed"] is True
-    assert cat["verify_count"] == 3
+    assert cat["recommend_human_needed"] is False
+    assert cat["verify_count"] == 0
+    assert cat["other_count"] == 3
 
 
 # ---------------------------------------------------------------------------
