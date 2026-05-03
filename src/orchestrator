@@ -35,6 +35,7 @@ sys.path.insert(0, str(_LIB))
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
 import locking  # noqa: E402
+import notify as notify_lib  # noqa: E402
 import prd as prd_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
 import quota_monitor as quota_monitor_lib  # noqa: E402
@@ -1175,6 +1176,24 @@ def process_project(project_path: Path) -> str:
                 exit_code=rc,
                 stderr_tail=(stderr or "")[-500:],
             )
+            # v1.2 Bug G: TG alert on subprocess failure with sentinel
+            # dedup. v0.5/v1.0 only alerted on quota; silent rc!=0 loops
+            # were running for hours unnoticed in real-world test.
+            # 600s dedup window (per project, per rc) so noisy crashes
+            # don't drown the channel.
+            sent = notify_lib.notify_subprocess_failed_dedup(
+                project_path.name,
+                rc,
+                stderr or "",
+                sentinel_dir=_user_home(),
+            )
+            if sent:
+                state.log_event(
+                    project_path,
+                    "subprocess_alerted",
+                    iteration=s.iteration,
+                    rc=rc,
+                )
 
         # v1.2 Bug B: in_progress streak cap. If verify keeps reporting
         # in_progress=true forever, the project is structurally stuck —
