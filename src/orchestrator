@@ -910,11 +910,59 @@ def process_project(project_path: Path) -> str:
             f"claude_bin={cmd[0]}"
         )
 
+        # v1.2 Bug D + Bug F: capture current_task identity + stages
+        # snapshot BEFORE the cycle so we can detect task_switched and
+        # stage_completed events after the cycle's Stop hook runs.
+        pre_task_id = s.current_task.id if s.current_task else None
+        pre_stages = list(s.current_task.stages_completed) if s.current_task else []
+
         rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
 
         # Re-read state.json — hooks may have updated it from inside the claude
         # subprocess (stop.sh's update-verify, stop-failure.sh's set-paused).
         s = state.read(project_path)
+
+        # v1.2 Bug D: task_switched event when current_task.id changes
+        # cycle-over-cycle. None → non-None is task_started; non-None →
+        # different non-None is task_switched. Same id → no event.
+        post_task_id = s.current_task.id if s.current_task else None
+        if pre_task_id != post_task_id:
+            if pre_task_id is None and post_task_id is not None:
+                state.log_event(
+                    project_path,
+                    "task_started",
+                    iteration=s.iteration,
+                    task_id=post_task_id,
+                )
+            elif pre_task_id is not None and post_task_id is not None:
+                state.log_event(
+                    project_path,
+                    "task_switched",
+                    iteration=s.iteration,
+                    from_task=pre_task_id,
+                    to_task=post_task_id,
+                )
+
+        # v1.2 Bug F: stage_completed event when stages_completed grows
+        # within the same task. Switching tasks resets the streak (the
+        # comparison is only meaningful when the task id is unchanged).
+        if (
+            post_task_id is not None
+            and pre_task_id == post_task_id
+            and s.current_task is not None
+        ):
+            new_stages = [
+                st for st in s.current_task.stages_completed if st not in pre_stages
+            ]
+            for st in new_stages:
+                state.log_event(
+                    project_path,
+                    "stage_completed",
+                    iteration=s.iteration,
+                    task_id=post_task_id,
+                    stage=st,
+                    stages_total=len(s.current_task.stages_completed),
+                )
 
         # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
         # when prd.md declares `### Phase N:` headers AND the current
