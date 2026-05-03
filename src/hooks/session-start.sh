@@ -58,13 +58,16 @@ if [ -f "$FAILURES" ]; then
     fi
 fi
 
-# v1.2 Bug A: inject current_task block. Helper exits 0 even on errors,
-# so a transient failure here can never abort the session.
+# v1.2 Bug A + C + D: inject context blocks (current_task + backlog
+# top-3 + long-operation guidance). Helper exits 0 even on errors, so
+# a transient failure here can never abort the session. The `all`
+# subcommand composes whichever sub-blocks have content; empty
+# sub-blocks (e.g. no backlog.md, no current_task) are omitted cleanly.
 CC_AUTOPIPE_HOME="${CC_AUTOPIPE_HOME:-$HOME/cc-autopipe}"
-CURRENT_TASK_BLOCK=$(python3 "$CC_AUTOPIPE_HOME/lib/session_start_helper.py" \
-    current-task "$PROJECT" 2>/dev/null || true)
-if [ -n "${CURRENT_TASK_BLOCK:-}" ]; then
-    printf '%s\n\n' "$CURRENT_TASK_BLOCK"
+V12_BLOCKS=$(python3 "$CC_AUTOPIPE_HOME/lib/session_start_helper.py" \
+    all "$PROJECT" 2>/dev/null || true)
+if [ -n "${V12_BLOCKS:-}" ]; then
+    printf '%s\n\n' "$V12_BLOCKS"
 fi
 
 # Always log the hook fired — never let a failure here abort the session.
