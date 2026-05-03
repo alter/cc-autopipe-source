@@ -224,5 +224,72 @@ run_hook stop "$(stop_input sess-corrupt)"
 assert_eq "rc=0 even with corrupt CURRENT_TASK.md" 0 "$HOOK_RC"
 cleanup_project
 
+# ---------------------------------------------------------------------------
+# v1.2 Bug B: verify in_progress flag
+# ---------------------------------------------------------------------------
+
+# --- in_progress=true → no failure count, cycle_in_progress event ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.4,"prd_complete":false,"in_progress":true,"details":{}}'"'"
+run_hook stop "$(stop_input sess-ip)"
+assert_eq "rc=0 with in_progress=true" 0 "$HOOK_RC"
+assert_jq "consecutive_failures NOT incremented for in_progress" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_failures 0
+assert_jq "consecutive_in_progress=1" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_in_progress 1
+assert_jq "last_in_progress=true" \
+    "$PROJECT/.cc-autopipe/state.json" .last_in_progress "true"
+assert_contains "aggregate.jsonl logs cycle_in_progress" \
+    '"event":"cycle_in_progress"' \
+    "$(cat "$USER_HOME/log/aggregate.jsonl" 2>/dev/null)"
+# Critical: in_progress must NOT pollute failures.jsonl (otherwise Bug H
+# categorizer would treat the in-progress streak as broken verify).
+if [ -f "$PROJECT/.cc-autopipe/memory/failures.jsonl" ]; then
+    assert_not_contains "in_progress does NOT log verify_failed" \
+        '"error":"verify_failed"' \
+        "$(cat "$PROJECT/.cc-autopipe/memory/failures.jsonl")"
+fi
+cleanup_project
+
+# --- in_progress=false (or missing) preserves v1.0 behavior ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.4,"prd_complete":false,"details":{}}'"'"
+run_hook stop "$(stop_input sess-classic)"
+assert_jq "no in_progress field → consecutive_failures=1" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_failures 1
+assert_jq "no in_progress field → last_in_progress=false" \
+    "$PROJECT/.cc-autopipe/state.json" .last_in_progress "false"
+assert_contains "v1.0 path still logs verify_failed" '"error":"verify_failed"' \
+    "$(cat "$PROJECT/.cc-autopipe/memory/failures.jsonl")"
+cleanup_project
+
+# --- in_progress streak then real fail resets the streak ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.4,"prd_complete":false,"in_progress":true,"details":{}}'"'"
+run_hook stop "$(stop_input sess-ip-1)"
+run_hook stop "$(stop_input sess-ip-2)"
+run_hook stop "$(stop_input sess-ip-3)"
+assert_jq "after 3 in_progress: consecutive_in_progress=3" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_in_progress 3
+# Now switch to real failure.
+write_verify 'echo '"'"'{"passed":false,"score":0.0,"prd_complete":false,"details":{}}'"'"
+run_hook stop "$(stop_input sess-real-fail)"
+assert_jq "real fail breaks in_progress streak" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_in_progress 0
+assert_jq "real fail bumps consecutive_failures" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_failures 1
+cleanup_project
+
+# --- malformed in_progress (string instead of bool) → treated as false ---
+fresh_project
+write_verify 'echo '"'"'{"passed":false,"score":0.4,"prd_complete":false,"in_progress":"yes","details":{}}'"'"
+run_hook stop "$(stop_input sess-malformed)"
+assert_eq "rc=0 with malformed in_progress" 0 "$HOOK_RC"
+# String "yes" is not a valid bool → IN_PROGRESS sanitized to false →
+# v1.0 path → consecutive_failures incremented.
+assert_jq "malformed in_progress treated as false" \
+    "$PROJECT/.cc-autopipe/state.json" .consecutive_failures 1
+cleanup_project
+
 print_summary "test_stop"
 exit "$FAIL"
