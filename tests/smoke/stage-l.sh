@@ -39,10 +39,17 @@ log "pytest tests/integration/test_orchestrator_escalation.py"
 ok "12 escalation tests pass"
 
 # 3. End-to-end: 3 failed cycles → 4th cycle uses opus model in cmd args.
-# We capture mock-claude.sh's argv via its DUMP_INPUT facility — when
-# CC_AUTOPIPE_MOCK_DUMP_ARGV is set, mock-claude writes its argv to
-# the named file. Then we grep for "claude-opus-4-7" + "--effort".
-log "end-to-end: 3 mock failures → 4th cycle uses opus + --effort"
+#
+# v1.2 Bug H change: a verify_failed pattern (passed=false, score>0)
+# routes to HUMAN_NEEDED (no escalation) on purpose. To exercise the
+# escalation MACHINERY end-to-end we drive consecutive_failures via
+# verify_malformed (echo not json → verify_malformed) which sits in
+# the "other" bucket: doesn't trigger the verify-pattern HUMAN_NEEDED
+# branch, doesn't trigger the crash-pattern escalation branch, falls
+# through to the v1.0 fallback path (consecutive_failures>=trigger
+# AND escalation enabled AND not yet escalated → flip
+# escalated_next_cycle on next pass).
+log "end-to-end: 3 malformed-verify cycles → 4th cycle uses opus + --effort"
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 PROJECT="$SCRATCH/proj"
@@ -55,10 +62,14 @@ export CC_AUTOPIPE_USER_HOME="$USER_HOME"
 
 "$DISPATCHER" init "$PROJECT" >/dev/null || die "init failed"
 
-# Always-failing verify so consecutive_failures climbs by 1 each cycle.
+# Malformed verify (not valid JSON) → "verify_malformed" entries.
+# Bug H sorts these under "other" so they don't trigger the
+# verify-pattern HUMAN_NEEDED branch; consecutive_failures still
+# climbs via stop.sh's malformed-envelope inc_failures path, and on
+# the 4th cycle the v1.0 fallback escalation fires.
 cat > "$PROJECT/.cc-autopipe/verify.sh" <<'SH'
 #!/bin/bash
-echo '{"passed":false,"score":0.1,"prd_complete":false,"details":{}}'
+echo not json
 SH
 chmod +x "$PROJECT/.cc-autopipe/verify.sh"
 
