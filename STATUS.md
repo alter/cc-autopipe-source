@@ -1,11 +1,95 @@
 # Build Status
 
-**Updated:** 2026-05-02T22:30:00Z
+**Updated:** 2026-05-03T13:30:00Z
 **Current branch:** main
-**Current stage:** **v1.2 BUILD STARTED.** Pre-Batch infrastructure
-in progress. v1.0 BUILD COMPLETE on 2026-05-02 afternoon (243 pytest +
-1 skip baseline holds; 13/13 stage smokes individually verified;
-4 batch gates + final gate green; awaiting Roman tag v1.0).
+**Current stage:** **v1.2 BUILD COMPLETE.** All 8 bugs (A-H) landed
+across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
+session, mocked claude — no real quota at risk). Awaiting Roman
+validation + tag v1.2.
+
+## v1.2 BUILD — final state
+
+**8 bugs landed across 3 batches. ~30 atomic commits. Engine grew
+from ~5.5K (v1.0) to ~7.4K lines (v1.2).**
+
+| Batch | Bugs | Commits | Tests added |
+|---|---|---|---|
+| Pre-Batch infra | smoke runner + 2 regressions | 3 | n/a (infra) |
+| Batch 1 | A + E | 9 | +56 (state v3, current_task, hooks) |
+| Batch 2 | B + H | 11 | +41 (in_progress, failures, human_needed, smart escalation) |
+| Batch 3 | C + D + F + G | 9 | +57 (backlog, long-op, task_switched, stage_completed, notify) |
+
+**Test counts (v1.2 final):**
+- pytest: 243+1 (v1.0 baseline) → **378 passed, 1 skipped**
+- test_stop.sh: 34/34 → 60/60
+- test_session_start.sh: 17/17 → 41/41
+- regression: hello-fullstack-v1 + v12 both green
+- gates: batch-1-v12 ✓, batch-2-v12 ✓, batch-3-v12 ✓ (all fast mode)
+- smoke runner: **13/13 in 1333s (~22min)** post-Batch 3, post stage-l fix
+
+**v1.2 SPEC↔repo deviations** (per AGENTS-v1.2.md §15 tactical):
+1. Hooks stay bash; v1.2 logic in `src/lib/*_helper.py` invoked from
+   bash (Q-V12-2 Roman 2026-05-02).
+2. Tests under `tests/{unit,integration}/`, not the
+   `tests/{lib,orchestrator,hooks}/` paths SPEC-v1.2.md uses
+   illustratively (Q-V12-4).
+3. `tests/regression/hello-fullstack-{v1,v12}.sh` created from
+   scratch as minimal mocked-claude smokes (Q-V12-6).
+
+**v1.0 backward compat:** confirmed via hello-fullstack-v1.sh
+(synthetic v1.0-style project; engine pipeline still works) +
+state v2 → v3 auto-migration tests + 5 fresh-state schema tests.
+
+### Bug coverage summary
+
+- **Bug A — current_task in state.json (v3 schema):** state.py
+  schema_v3 with CurrentTask dataclass; current_task.py parses
+  CURRENT_TASK.md; stop_helper syncs file → state; session_start_helper
+  injects block.
+- **Bug B — verify in_progress flag:** state.update_verify accepts
+  `in_progress`; stop.sh parses `.in_progress` from verify; orchestrator
+  applies cooldown × multiplier + caps at max_in_progress_cycles
+  with verify-stuck HUMAN_NEEDED message.
+- **Bug C — DETACHED long-op guidance:** session_start_helper.long_op
+  block always injected; rules.md template adds "Long operation
+  discipline" section.
+- **Bug D — backlog FIFO + task_switched:** backlog.py parses top-N
+  by priority; session_start_helper injects top-3 + CURRENT TASK
+  highlight; orchestrator emits task_switched / task_started events.
+- **Bug E (covered by A):** legacy v1.0 projects without CURRENT_TASK.md
+  work via current_task=None default.
+- **Bug F — stages_completed progressive scoring:** CurrentTask
+  stages_completed field + parser/render; orchestrator emits
+  stage_completed event when array grows within same task; verify.sh
+  can use for progressive scoring.
+- **Bug G — subprocess fail TG alert with dedup:** notify.py
+  notify_subprocess_failed_dedup with sentinel-based 600s window
+  per-project per-rc; orchestrator wires after rc!=0 log_failure;
+  subprocess_alerted event when not deduped.
+- **Bug H — smart escalation:** failures.py categorize_recent
+  buckets CRASH vs VERIFY; human_needed.py write_verify_pattern /
+  write_mixed_pattern; orchestrator routes 3+ verify_failed →
+  HUMAN_NEEDED no escalation, 3+ crashes → opus, 5+ mixed → fail,
+  fallback preserves v1.0.
+
+### Currently working on
+
+**v1.2 build done.** All gates + smokes green; awaiting Roman validation.
+
+### Next
+
+Roman validates manually + tags `v1.2` per AGENTS-v1.2.md §13.
+Roman should:
+1. Read this STATUS.md.
+2. Run `bash tests/regression/hello-fullstack-v12.sh` (~7s).
+3. Optionally run `bash tests/smoke/run-all-smokes.sh` (~20min).
+4. Pick a real R&D project (AI-trade) and try a single
+   `cc-autopipe run --once` to feel the new SessionStart blocks.
+5. `git tag v1.2` when satisfied.
+
+---
+
+## v1.0 BUILD — final state (frozen 2026-05-02 14:50Z)
 
 ---
 
