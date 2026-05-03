@@ -21,6 +21,33 @@ Delegate to `io-worker` ONLY when:
 
 Otherwise: use Read/Bash directly.
 
+## Long operation discipline (v1.2 Bug C)
+
+Operations expected to take >5 minutes (model training, large data
+processing, batch inference, multi-period backtests, simulation runs)
+MUST use `cc-autopipe-detach` instead of running synchronously.
+Pattern:
+
+1. Launch the operation with nohup, redirect output to a log:
+   ```
+   nohup bash scripts/run_<task>.sh > logs/<task>.log 2>&1 &
+   ```
+2. Immediately call `cc-autopipe-detach`:
+   ```
+   cc-autopipe-detach \
+       --reason "<short label>" \
+       --check-cmd "<one-liner that exits 0 when done>" \
+       --check-every 600 \
+       --max-wait 14400
+   ```
+3. End your turn. The engine releases the slot, polls the check-cmd
+   periodically, and resumes you when it succeeds (or max-wait elapses).
+
+Never wait synchronously for: model training (>30s in tests, >5min
+in prod), large file downloads, multi-period backtests, simulation
+runs. Each second you wait synchronously is a second of cycle budget
+burned for every other project on this orchestrator.
+
 ## Workflow discipline
 
 - After each implemented component (single file or tightly-related
