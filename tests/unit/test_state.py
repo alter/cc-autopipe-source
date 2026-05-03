@@ -655,6 +655,114 @@ def test_in_progress_counters_round_trip(project: Path) -> None:
     assert s2.consecutive_in_progress == 4
 
 
+def test_update_verify_in_progress_does_not_count_failure(project: Path) -> None:
+    """Bug B: in_progress=True must NOT bump consecutive_failures."""
+    state.write(project, state.State.fresh(project.name))
+    state.update_verify(
+        project,
+        passed=False,
+        score=0.4,
+        prd_complete=False,
+        in_progress=True,
+    )
+    s = state.read(project)
+    assert s.consecutive_failures == 0  # NOT incremented
+    assert s.consecutive_in_progress == 1
+    assert s.last_in_progress is True
+    assert s.last_passed is False
+    assert s.last_score == 0.4
+
+
+def test_update_verify_in_progress_accumulates(project: Path) -> None:
+    state.write(project, state.State.fresh(project.name))
+    for _ in range(5):
+        state.update_verify(
+            project,
+            passed=False,
+            score=0.0,
+            prd_complete=False,
+            in_progress=True,
+        )
+    s = state.read(project)
+    assert s.consecutive_failures == 0
+    assert s.consecutive_in_progress == 5
+
+
+def test_update_verify_passing_resets_in_progress_counter(project: Path) -> None:
+    """A passing cycle resets consecutive_in_progress as well as
+    consecutive_failures, so a project that was 'cooking' for 5 cycles
+    and finally produced output starts fresh."""
+    s = state.State.fresh(project.name)
+    s.consecutive_in_progress = 5
+    state.write(project, s)
+    state.update_verify(project, passed=True, score=1.0, prd_complete=False)
+    s2 = state.read(project)
+    assert s2.consecutive_in_progress == 0
+    assert s2.last_in_progress is False
+
+
+def test_update_verify_real_failure_resets_in_progress_counter(
+    project: Path,
+) -> None:
+    """A real failure (in_progress=False, passed=False) breaks any
+    in-progress streak. The next cycle has to re-build the streak
+    if it really is still cooking."""
+    s = state.State.fresh(project.name)
+    s.consecutive_in_progress = 3
+    state.write(project, s)
+    state.update_verify(
+        project,
+        passed=False,
+        score=0.0,
+        prd_complete=False,
+        in_progress=False,
+    )
+    s2 = state.read(project)
+    assert s2.consecutive_failures == 1
+    assert s2.consecutive_in_progress == 0
+    assert s2.last_in_progress is False
+
+
+def test_update_verify_in_progress_default_false_preserves_v10(project: Path) -> None:
+    """Callers that omit in_progress hit the v1.0 path verbatim — no
+    accidental side effects on consecutive_in_progress."""
+    state.write(project, state.State.fresh(project.name))
+    state.update_verify(project, passed=False, score=0.4, prd_complete=False)
+    s = state.read(project)
+    assert s.consecutive_failures == 1
+    assert s.consecutive_in_progress == 0
+    assert s.last_in_progress is False
+
+
+def test_cli_update_verify_in_progress_flag(project: Path, tmp_path: Path) -> None:
+    """state.py update-verify --in-progress true exposes the new path."""
+    state.write(project, state.State.fresh(project.name))
+    env = os.environ.copy()
+    env["CC_AUTOPIPE_USER_HOME"] = str(tmp_path / ".cc-autopipe-user")
+    subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "state.py"),
+            "update-verify",
+            str(project),
+            "--passed",
+            "false",
+            "--score",
+            "0.3",
+            "--prd-complete",
+            "false",
+            "--in-progress",
+            "true",
+        ],
+        check=True,
+        env=env,
+    )
+    s = state.read(project)
+    assert s.last_in_progress is True
+    assert s.consecutive_in_progress == 1
+    assert s.consecutive_failures == 0
+
+
 def test_v3_preserves_extras_dict(project: Path) -> None:
     """Unknown keys in state.json (e.g. from a future v1.3) flow into
     extras and round-trip without loss. Ensures forward-compat."""
