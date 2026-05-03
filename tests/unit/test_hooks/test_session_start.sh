@@ -108,5 +108,62 @@ assert_contains "Notes line"                       "SwingLoss kicked off"  "$HOO
 assert_contains "discipline reminder"              "Update CURRENT_TASK.md" "$HOOK_OUT"
 cleanup_project
 
+# ---------------------------------------------------------------------------
+# v1.2 Bug C + D: long-op guidance + backlog top-3 in injected blocks
+# ---------------------------------------------------------------------------
+
+# Case 9: long-op guidance always present (universal block)
+fresh_project
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_eq "rc=0 long-op block path" 0 "$HOOK_RC"
+assert_contains "long-op header present" "Long operation guidance" "$HOOK_OUT"
+assert_contains "long-op mentions cc-autopipe-detach" "cc-autopipe-detach" "$HOOK_OUT"
+assert_contains "long-op mentions nohup" "nohup" "$HOOK_OUT"
+cleanup_project
+
+# Case 10: backlog top-3 injected when backlog.md exists
+fresh_project
+cat > "$PROJECT/backlog.md" <<EOF
+- [ ] [implement] [P1] cand_b — second
+- [ ] [implement] [P0] cand_a — first
+- [ ] [implement] [P2] cand_c — third
+- [ ] [implement] [P3] cand_d — fourth (NOT in top 3)
+EOF
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_eq "rc=0 with backlog" 0 "$HOOK_RC"
+assert_contains "backlog header"             "Backlog directive"    "$HOOK_OUT"
+assert_contains "backlog top-3 incl P0"      "cand_a"               "$HOOK_OUT"
+assert_contains "backlog top-3 incl P1"      "cand_b"               "$HOOK_OUT"
+assert_contains "backlog top-3 incl P2"      "cand_c"               "$HOOK_OUT"
+assert_not_contains "backlog NOT including P3 outside top-3" "cand_d" "$HOOK_OUT"
+cleanup_project
+
+# Case 11: backlog highlights current_task when state has one
+fresh_project
+cat > "$PROJECT/backlog.md" <<EOF
+- [ ] [P0] cand_active — currently working on
+- [ ] [P1] cand_other — other
+EOF
+cat > "$PROJECT/.cc-autopipe/CURRENT_TASK.md" <<EOF
+task: cand_active
+stage: training
+EOF
+CC_AUTOPIPE_HOME="$SRC" CC_AUTOPIPE_USER_HOME="$USER_HOME" \
+    python3 "$SRC/lib/stop_helper.py" sync "$PROJECT" >/dev/null 2>&1
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_contains "current task highlighted in backlog block" \
+    "CURRENT TASK (per state.json): cand_active" "$HOOK_OUT"
+cleanup_project
+
+# Case 12: hook output is non-empty even with no backlog + no current_task
+# (long-op block guarantees content)
+fresh_project
+run_hook session-start "$(jq -nc --arg cwd "$PROJECT" '{cwd:$cwd}')"
+assert_contains "non-empty output: long-op present without backlog" \
+    "Long operation guidance" "$HOOK_OUT"
+assert_contains "non-empty output: no-task helper present" \
+    "No current task tracked" "$HOOK_OUT"
+cleanup_project
+
 print_summary "test_session_start"
 exit "$FAIL"

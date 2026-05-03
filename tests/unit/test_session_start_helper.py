@@ -249,3 +249,142 @@ def test_block_works_against_v2_state_file(tmp_path: Path, monkeypatch) -> None:
     (project / ".cc-autopipe" / "state.json").write_text(json.dumps(legacy))
     block = session_start_helper.build_current_task_block(project)
     assert "No current task tracked" in block
+
+
+# ---------------------------------------------------------------------------
+# build_backlog_top3_block (Bug D)
+# ---------------------------------------------------------------------------
+
+
+def test_backlog_block_empty_when_no_backlog(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    assert session_start_helper.build_backlog_top3_block(project) == ""
+
+
+def test_backlog_block_empty_when_all_done(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text("- [x] [P0] task_done — already finished\n")
+    assert session_start_helper.build_backlog_top3_block(project) == ""
+
+
+def test_backlog_block_lists_top3_in_priority_order(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text(
+        "- [ ] [implement] [P1] cand_imbloss_v2 — SwingLoss\n"
+        "- [ ] [implement] [P0] cand_regimemoe — iTransformer + 3 regime heads\n"
+        "- [ ] [implement] [P1] cand_mamba — Mamba SSM\n"
+        "- [ ] [implement] [P2] cand_explorer — exploratory\n"
+    )
+    block = session_start_helper.build_backlog_top3_block(project)
+    assert "=== Backlog directive ===" in block
+    # P0 first.
+    assert block.index("cand_regimemoe") < block.index("cand_imbloss_v2")
+    # P2 not in top-3 (n=3 default).
+    assert "cand_explorer" not in block
+
+
+def test_backlog_block_highlights_current_task(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text(
+        "- [ ] [P0] cand_active — being worked on\n- [ ] [P1] cand_other — other\n"
+    )
+    s = state.State.fresh(project.name)
+    s.current_task = state.CurrentTask(id="cand_active", stage="training")
+    state.write(project, s)
+    block = session_start_helper.build_backlog_top3_block(project)
+    assert "CURRENT TASK (per state.json): cand_active" in block
+
+
+def test_backlog_block_falls_back_to_cca_path(tmp_path: Path) -> None:
+    """Some Stage I projects placed backlog.md under .cc-autopipe/.
+    Helper should find it there as a fallback."""
+    project = _make_project(tmp_path)
+    (project / ".cc-autopipe" / "backlog.md").write_text("- [ ] [P0] task_x — desc\n")
+    block = session_start_helper.build_backlog_top3_block(project)
+    assert "task_x" in block
+
+
+def test_backlog_block_no_current_task_message(tmp_path: Path) -> None:
+    """When state.current_task is None and backlog has tasks, the
+    block tells the operator the agent should pick from top-3."""
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text("- [ ] [P0] task_x — desc\n")
+    block = session_start_helper.build_backlog_top3_block(project)
+    assert "(none — pick one of the above)" in block
+
+
+def test_backlog_block_in_progress_marker_visible(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text("- [~] [P0] task_active — in flight\n")
+    block = session_start_helper.build_backlog_top3_block(project)
+    assert "[~]" in block
+
+
+# ---------------------------------------------------------------------------
+# build_long_op_block (Bug C)
+# ---------------------------------------------------------------------------
+
+
+def test_long_op_block_static_content() -> None:
+    block = session_start_helper.build_long_op_block()
+    assert "=== Long operation guidance ===" in block
+    assert "cc-autopipe-detach" in block
+    assert "nohup" in block
+    assert "check-every 600" in block
+    assert "max-wait 14400" in block
+
+
+def test_long_op_block_no_args_required() -> None:
+    """Long-op block is universal — no project arg, no state read."""
+    block = session_start_helper.build_long_op_block()
+    assert len(block) > 200  # not empty / not stub
+
+
+# ---------------------------------------------------------------------------
+# build_full_block (composer)
+# ---------------------------------------------------------------------------
+
+
+def test_full_block_includes_all_three_when_populated(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    project = _make_project(tmp_path)
+    (project / "backlog.md").write_text("- [ ] [P0] x — desc\n")
+    s = state.State.fresh(project.name)
+    s.current_task = state.CurrentTask(id="x", stage="setup")
+    state.write(project, s)
+    block = session_start_helper.build_full_block(project)
+    assert "=== Current task ===" in block
+    assert "=== Backlog directive ===" in block
+    assert "=== Long operation guidance ===" in block
+
+
+def test_full_block_omits_empty_subblocks(tmp_path: Path) -> None:
+    """With no backlog and null current_task, the full block should
+    still emit the no-current-task helper and long-op guidance, but
+    NOT a backlog block."""
+    project = _make_project(tmp_path)
+    block = session_start_helper.build_full_block(project)
+    assert "=== Current task ===" in block
+    assert "=== Backlog directive ===" not in block
+    assert "=== Long operation guidance ===" in block
+
+
+def test_full_block_cli_smoke(tmp_path: Path) -> None:
+    """`session_start_helper.py all <project>` runs without errors and
+    emits the long-op block at minimum."""
+    project = _make_project(tmp_path)
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "session_start_helper.py"),
+            "all",
+            str(project),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "=== Long operation guidance ===" in cp.stdout
