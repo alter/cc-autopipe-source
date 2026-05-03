@@ -357,15 +357,39 @@ def update_verify(
     passed: bool,
     score: float,
     prd_complete: bool,
+    in_progress: bool = False,
 ) -> None:
+    """Apply verify result to state.
+
+    SPEC-v1.2.md Bug B: when verify reports `in_progress=True`, the
+    cycle is "still cooking" — Claude has work running, but not yet
+    verifiable. Engine should NOT count it toward consecutive_failures
+    (otherwise long ML training looks like 3+ silent failures and
+    auto-escalation kicks in). Instead increment consecutive_in_progress
+    so the orchestrator can extend cooldown.
+
+    Mutually exclusive paths:
+      - in_progress=True  → bump consecutive_in_progress, leave failures
+        counter alone (passed flag is informational).
+      - in_progress=False (default) → existing v1.0 semantics:
+        passed=True resets consecutive_failures + consecutive_in_progress,
+        passed=False increments consecutive_failures and resets
+        consecutive_in_progress (a real fail breaks any in-progress
+        streak).
+    """
     s = read(project_path)
     s.last_passed = passed
     s.last_score = score
     s.prd_complete = prd_complete
-    if passed:
+    s.last_in_progress = in_progress
+    if in_progress:
+        s.consecutive_in_progress += 1
+    elif passed:
         s.consecutive_failures = 0
+        s.consecutive_in_progress = 0
     else:
         s.consecutive_failures += 1
+        s.consecutive_in_progress = 0
     s.last_progress_at = _now_iso()
     write(project_path, s)
 
@@ -467,6 +491,12 @@ def main(argv: list[str]) -> int:
     p_upd.add_argument("--passed", required=True, type=_parse_bool)
     p_upd.add_argument("--score", required=True, type=float)
     p_upd.add_argument("--prd-complete", required=True, type=_parse_bool)
+    p_upd.add_argument(
+        "--in-progress",
+        type=_parse_bool,
+        default=False,
+        help="v1.2 Bug B: cycle is still in progress, do not count as failure.",
+    )
 
     p_paused = sub.add_parser("set-paused")
     p_paused.add_argument("project")
@@ -516,6 +546,7 @@ def main(argv: list[str]) -> int:
             passed=args.passed,
             score=args.score,
             prd_complete=args.prd_complete,
+            in_progress=args.in_progress,
         )
         return 0
 

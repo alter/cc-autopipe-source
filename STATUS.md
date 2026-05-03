@@ -141,15 +141,18 @@ regress any v0.5/v1.0 stage smoke.
 
 ### Currently working on
 
-**Batch 1 done.** Cooldown / Batch 2 sequencing pending Roman's call
-in chat 2026-05-02 (interactive session, not unattended; mocked claude
-so cooldown is not protecting real quota).
+**Batch 1 done. Batch 2 in progress** (Bug B + Bug H, cooldown
+skipped per .cc-autopipe/SKIP_COOLDOWN, Roman 2026-05-03).
 
-Next: **Batch 2 (Bug B + H)** — verify in_progress flag (engine does
-not count as failure when verify returns in_progress=true) + smart
-escalation (failure categorization: claude_subprocess_failed →
-escalate to Opus; verify_failed pattern → HUMAN_NEEDED.md, no
-escalation).
+- ◐ state.update_verify gains `in_progress` kwarg + CLI flag
+- ☐ stop.sh parses `.in_progress` from verify output
+- ☐ orchestrator: cooldown × multiplier, cycle_in_progress event,
+  max_in_progress_cycles cap
+- ☐ src/lib/failures.py — categorize_recent
+- ☐ src/lib/human_needed.py — write_human_needed
+- ☐ orchestrator: smart escalation (claude_subprocess_failed pattern
+  → opus; verify_failed pattern → HUMAN_NEEDED + TG, no escalation)
+- ☐ tests/gates/batch-2-v12.sh
 
 ### Pre-flight (initial)
 
