@@ -97,14 +97,32 @@ PASSED=$(printf '%s' "$RAW" | jq -r '.passed')
 SCORE=$(printf '%s' "$RAW" | jq -r '.score')
 PRD=$(printf '%s' "$RAW" | jq -r '.prd_complete')
 
+# v1.2 Bug B: optional in_progress flag. Verify output that includes
+# `"in_progress": true` signals "work is happening, don't count this
+# as a failure". Missing field → false (backward-compat with v1.0
+# verify scripts).
+IN_PROGRESS=$(printf '%s' "$RAW" | jq -r '.in_progress // false' 2>/dev/null || echo "false")
+case "$IN_PROGRESS" in
+    true|false) ;;
+    *) IN_PROGRESS="false" ;;
+esac
+
 python3 "$STATE_PY" update-verify "$PROJECT" \
     --passed "$PASSED" --score "$SCORE" --prd-complete "$PRD" \
+    --in-progress "$IN_PROGRESS" \
     >/dev/null 2>&1 || true
 
 # Per SPEC §15.2: verify_pass/verify_fail go to progress.jsonl only
 # (NOT aggregate.jsonl). On fail, also append to failures.jsonl.
 log_progress_verify "$PASSED" "$SCORE" "$PRD"
-if [ "$PASSED" = "false" ]; then
+if [ "$IN_PROGRESS" = "true" ]; then
+    # v1.2 Bug B: cycle_in_progress event in aggregate.jsonl so the
+    # operator sees the project is "cooking" not "broken". No
+    # failures.jsonl entry — would otherwise inflate the failure
+    # categorizer (Bug H) into thinking verify is structurally broken.
+    python3 "$STATE_PY" log-event "$PROJECT" cycle_in_progress \
+        score="$SCORE" >/dev/null 2>&1 || true
+elif [ "$PASSED" = "false" ]; then
     EXTRAS=$(jq -nc --argjson score "$SCORE" '{details: {score: $score}}')
     log_failure "verify_failed" "$EXTRAS"
 fi
