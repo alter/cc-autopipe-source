@@ -264,6 +264,20 @@ IMPROVER_DEFAULTS = {
 }
 
 
+# v1.2 Bug B in_progress defaults. SPEC-v1.2.md "Engine config":
+#   in_progress:
+#     max_in_progress_cycles: 12
+#     cooldown_multiplier: 3
+# When state.last_in_progress is True the orchestrator extends the
+# inter-project cooldown by the multiplier; once consecutive_in_progress
+# hits the cap, the engine forces a normal-failure accounting on the
+# project (see process_project tail).
+IN_PROGRESS_DEFAULTS = {
+    "max_in_progress_cycles": 12,
+    "cooldown_multiplier": 3,
+}
+
+
 def _coerce_yaml_value(text: str) -> object:
     """Tiny YAML scalar coercion — bool / int / quoted string / bare string.
     Good enough for the auto_escalation block; kept narrow so we don't
@@ -324,6 +338,12 @@ def _read_config_auto_escalation(project_path: Path) -> dict[str, object]:
     apply when the block (or individual keys) is absent. See
     AUTO_ESC_DEFAULTS for the merged shape."""
     return _read_yaml_top_block(project_path, "auto_escalation", AUTO_ESC_DEFAULTS)
+
+
+def _read_config_in_progress(project_path: Path) -> dict[str, object]:
+    """Parse the v1.2 `in_progress:` block from config.yaml. See
+    IN_PROGRESS_DEFAULTS."""
+    return _read_yaml_top_block(project_path, "in_progress", IN_PROGRESS_DEFAULTS)
 
 
 def _read_config_improver(project_path: Path) -> dict[str, object]:
@@ -1025,6 +1045,33 @@ def process_project(project_path: Path) -> str:
                 stderr_tail=(stderr or "")[-500:],
             )
 
+        # v1.2 Bug B: in_progress streak cap. If verify keeps reporting
+        # in_progress=true forever, the project is structurally stuck —
+        # escalating to opus won't help (verify-side issue, not
+        # capability). Mark failed + HUMAN_NEEDED so the operator
+        # adjusts verify.sh expectations or breaks the task into
+        # smaller pieces.
+        ip_cfg = _read_config_in_progress(project_path)
+        max_in_progress = int(ip_cfg.get("max_in_progress_cycles") or 12)
+        if s.consecutive_in_progress >= max_in_progress and s.phase == "active":
+            s.phase = "failed"
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "in_progress_cap_hit",
+                iteration=s.iteration,
+                consecutive_in_progress=s.consecutive_in_progress,
+                max=max_in_progress,
+            )
+            _write_in_progress_cap_human_needed(
+                project_path, s.consecutive_in_progress, max_in_progress
+            )
+            _notify_tg(
+                f"[{project_path.name}] in_progress for "
+                f"{s.consecutive_in_progress} cycles (cap={max_in_progress}); "
+                f"phase=failed — verify likely stuck, see HUMAN_NEEDED.md"
+            )
+
         state.log_event(
             project_path,
             "cycle_end",
@@ -1070,6 +1117,38 @@ def _write_human_needed(project_path: Path, last_stderr: str) -> None:
             "`cc-autopipe resume <project>` to restart.\n\n"
             "## Last claude stderr (truncated)\n\n"
             "```\n" + (last_stderr or "(empty)")[-2000:] + "\n```\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _write_in_progress_cap_human_needed(
+    project_path: Path, n_cycles: int, cap: int
+) -> None:
+    """Bug B: write HUMAN_NEEDED.md when a project sits in_progress
+    forever. Likely causes: verify.sh expectations don't match where
+    Claude actually puts artifacts, or the task itself is too large
+    for one PRD item."""
+    target = project_path / ".cc-autopipe" / "HUMAN_NEEDED.md"
+    try:
+        target.write_text(
+            "# Human attention required (in_progress cap hit)\n\n"
+            f"This project reported `in_progress=true` for "
+            f"{n_cycles} consecutive cycles "
+            f"(cap = {cap}). Engine has marked it FAILED.\n\n"
+            "Likely causes:\n"
+            "- verify.sh expects artifacts in different paths than "
+            "Claude is producing\n"
+            "- task is too large for one PRD item; consider splitting\n"
+            "- Claude has been stuck in DETACHED long-op without "
+            "the check-cmd succeeding\n\n"
+            "Inspect:\n"
+            "- `.cc-autopipe/memory/progress.jsonl` for cycle_in_progress events\n"
+            "- `.cc-autopipe/CURRENT_TASK.md` for what Claude thinks the task is\n"
+            "- `.cc-autopipe/state.json.current_task.artifact_paths` "
+            "vs. what files actually exist\n\n"
+            "After resolving, run `cc-autopipe resume <project>` to restart.\n",
             encoding="utf-8",
         )
     except OSError:
@@ -1160,7 +1239,21 @@ def main(argv: list[str] | None = None) -> int:
                     status_str = "error"
                 if status_str == "active":
                     active_count += 1
-                _interruptible_sleep(cooldown)
+                # v1.2 Bug B: extend cooldown when verify reported the
+                # project is "still cooking". Burns less of the operator's
+                # observed cycle budget on a project that won't have
+                # anything new to verify for a while.
+                project_cooldown = cooldown
+                try:
+                    project_state = state.read(project)
+                    if project_state.last_in_progress:
+                        ip_cfg = _read_config_in_progress(project)
+                        mult = int(ip_cfg.get("cooldown_multiplier") or 3)
+                        if mult > 1:
+                            project_cooldown = cooldown * mult
+                except Exception:  # noqa: BLE001 — fail open to base cooldown
+                    pass
+                _interruptible_sleep(project_cooldown)
 
             loops += 1
             if max_loops and loops >= max_loops:
