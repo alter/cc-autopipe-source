@@ -22,9 +22,7 @@ SAMPLE_HOOKS = {
     "PreToolUse": [
         {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo block"}]}
     ],
-    "UserPromptSubmit": [
-        {"hooks": [{"type": "command", "command": "echo remind"}]}
-    ],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo remind"}]}],
 }
 
 

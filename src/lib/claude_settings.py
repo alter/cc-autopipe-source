@@ -99,9 +99,7 @@ def disable_global_hooks_with_backup(home: Path | None = None) -> dict:
 
     cleaned = {k: v for k, v in data.items() if k != "hooks"}
     try:
-        settings_path.write_text(
-            json.dumps(cleaned, indent=2) + "\n", encoding="utf-8"
-        )
+        settings_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         print(
             f"claude_settings: could not write {settings_path}: {exc!r}",
