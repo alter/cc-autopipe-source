@@ -32,6 +32,7 @@ from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
 sys.path.insert(0, str(_LIB))
+import claude_settings  # noqa: E402
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
 import locking  # noqa: E402
@@ -1349,6 +1350,21 @@ def main(argv: list[str] | None = None) -> int:
             f"(pid={prior_pid}, started_at={prior_started}). Exiting."
         )
         return 1
+
+    # Disable the operator's global ~/.claude/settings.json hooks for
+    # the duration of the engine run. Roman's PreToolUse / UserPromptSubmit
+    # hooks block routine bash + inject compliance reminders that conflict
+    # with engine-driven Claude sessions. Backup is restored by
+    # `cc-autopipe stop`. Idempotent across crashes (existing backup not
+    # overwritten). Refs: instruction-hotfix.md (post-v1.2 patch).
+    hooks_result = claude_settings.disable_global_hooks_with_backup()
+    if hooks_result["action"] == "backed_up":
+        _log(
+            f"disabled global Claude hooks "
+            f"(backed up to {hooks_result['backup_path']})"
+        )
+    elif hooks_result["action"] == "parse_error":
+        _log("WARN: could not parse ~/.claude/settings.json, leaving as-is")
 
     # Stage K: spin up the proactive 7d-quota warning daemon. This is
     # additive to the pre-flight check (which still hard-pauses at
