@@ -27,6 +27,7 @@ from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent.parent / "lib"
 sys.path.insert(0, str(_LIB))
+import claude_settings  # noqa: E402
 import locking  # noqa: E402
 
 DEFAULT_TIMEOUT_SEC = 60
@@ -59,6 +60,25 @@ def _wait_for_exit(pid: int, timeout_sec: float) -> bool:
             return True
         time.sleep(POLL_INTERVAL_SEC)
     return not _is_alive(pid)
+
+
+def _restore_global_hooks_quiet() -> None:
+    """Call after we're certain the orchestrator is gone. Restores the
+    operator's pre-engine ~/.claude/settings.json from the backup taken
+    at start, then deletes the backup. No-op if there's no backup
+    (engine was never started, or already restored).
+    """
+    result = claude_settings.restore_global_hooks_from_backup()
+    if result["action"] == "restored":
+        print("orchestrator: restored global Claude hooks from backup")
+    elif result["action"] == "restore_failed":
+        print(
+            "orchestrator: WARN — could not restore global hooks from "
+            "backup; manual fix may be needed",
+            file=sys.stderr,
+        )
+    # 'no_backup' is the silent expected case — engine wasn't started,
+    # or already cleaned up by a previous stop.
 
 
 def _resolve_pid(user_home: Path) -> tuple[int | None, str]:
@@ -108,6 +128,9 @@ def main(argv: list[str]) -> int:
         # nothing to stop. Print to stderr so scripted callers can grep
         # stdout for the success line they emit themselves.
         print("orchestrator: not running", file=sys.stderr)
+        # Cover the crash-recovery case: orchestrator died via SIGKILL
+        # without restoring hooks. The backup is still on disk.
+        _restore_global_hooks_quiet()
         return 0
 
     if status == "corrupt" or pid is None:
@@ -128,6 +151,7 @@ def main(argv: list[str]) -> int:
             f"orchestrator: PID {pid} not running (stale lock file)",
             file=sys.stderr,
         )
+        _restore_global_hooks_quiet()
         return 0
     except PermissionError:
         print(
@@ -140,6 +164,7 @@ def main(argv: list[str]) -> int:
 
     if _wait_for_exit(pid, args.timeout):
         print(f"orchestrator: stopped (PID {pid})")
+        _restore_global_hooks_quiet()
         return 0
 
     # Graceful shutdown didn't happen — escalate.
@@ -162,6 +187,7 @@ def main(argv: list[str]) -> int:
     # Brief grace for the kernel to reap before we report success.
     if _wait_for_exit(pid, 5):
         print(f"orchestrator: killed (PID {pid})")
+        _restore_global_hooks_quiet()
         return 0
 
     print(
