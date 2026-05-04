@@ -13,6 +13,19 @@ validation + tag v1.2.
 when source is a git work-tree. Runtime path unchanged — still reads
 the file. Stage-a smoke + ad-hoc install dry-run both green.
 
+**Post-v1.2 hotfix — global Claude hooks (2026-05-04):** orchestrator
+now disables Roman's `~/.claude/settings.json` hooks (PreToolUse +
+UserPromptSubmit) for the duration of an engine run; `cc-autopipe stop`
+restores them. Backup preserved at
+`~/.claude/settings.json.cc-autopipe-bak`, idempotent across crashes.
+New module `src/lib/claude_settings.py`. Tactical deviation from
+instruction-hotfix.md: it referenced `src/cli/start.py` which doesn't
+exist in this repo (`start` dispatches to `src/orchestrator`); wired
+into the orchestrator startup sequence after singleton-lock acquire.
+Test counts: 378+1 → **396 passed, 1 skipped** (+18: 14 unit + 4
+integration). Awaiting Roman manual smoke test (see
+HOTFIX_HOOKS_DONE.md) before tagging.
+
 ## v1.2 BUILD — final state
 
 **8 bugs landed across 3 batches. ~30 atomic commits. Engine grew
