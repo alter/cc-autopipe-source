@@ -1,11 +1,17 @@
 # Build Status
 
-**Updated:** 2026-05-03T13:30:00Z
+**Updated:** 2026-05-04T00:00:00Z
 **Current branch:** main
 **Current stage:** **v1.2 BUILD COMPLETE.** All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk). Awaiting Roman
 validation + tag v1.2.
+
+**Post-v1.2 patch (2026-05-04):** `src/VERSION` synced from stale
+`0.5.0` to `1.2` (matched latest tag); `src/install.sh` now bakes
+`git describe --tags --dirty` into `$PREFIX/VERSION` at install time
+when source is a git work-tree. Runtime path unchanged — still reads
+the file. Stage-a smoke + ad-hoc install dry-run both green.
 
 ## v1.2 BUILD — final state
 

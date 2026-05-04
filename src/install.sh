@@ -93,6 +93,13 @@ if [ "$DO_COPY" -eq 1 ]; then
     find "$PREFIX/helpers" -type f -exec chmod +x {} \; 2>/dev/null || true
     find "$PREFIX/hooks"   -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
     find "$PREFIX/lib"     -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    # If installing from a git work-tree, freeze version from latest tag —
+    # keeps PREFIX/VERSION accurate even when src/VERSION lags behind tags.
+    if BAKED_VER=$(git -C "$SRC_DIR/.." describe --tags --dirty 2>/dev/null); then
+        BAKED_VER=${BAKED_VER#v}
+        printf '%s\n' "$BAKED_VER" > "$PREFIX/VERSION"
+        echo "    version:   $BAKED_VER (from git tag)"
+    fi
     echo "==> engine copied to $PREFIX"
 else
     echo "==> skipping copy (--no-copy)"
