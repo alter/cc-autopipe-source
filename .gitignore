@@ -46,3 +46,4 @@ logs/
 # Temporary
 *.tmp
 *.bak
+PROMPT*.md
