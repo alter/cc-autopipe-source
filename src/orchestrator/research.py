@@ -103,7 +103,7 @@ def _research_plan_target_path(project_path: Path, ts: str) -> Path:
     return project_path / "data" / "debug" / f"RESEARCH_PLAN_{safe_ts}.md"
 
 
-def activate_research_mode(project_path: Path, s: state.State) -> str:
+def activate_research_mode(project_path: Path | str, s: state.State) -> str:
     """Decide whether to activate research mode this cycle.
 
     Returns one of:
@@ -111,6 +111,7 @@ def activate_research_mode(project_path: Path, s: state.State) -> str:
       "suspended_quota"  — quota >70%, research deferred
       "capped"           — already 3 iterations in 7d window
     """
+    project_path = Path(project_path)
     iterations = _prune_iteration_window(s)
     if len(iterations) >= MAX_RESEARCH_ITERS_PER_WINDOW:
         state.write(project_path, s)
@@ -200,7 +201,7 @@ def _backlog_path(project_path: Path) -> Path | None:
 
 
 def validate_research_plan(
-    project_path: Path,
+    project_path: Path | str,
     s: state.State,
     cycle_started_iso: str | None,
     pre_open_lines: list[str] | None = None,
@@ -225,6 +226,7 @@ def validate_research_plan(
       "violation"   — new lines quarantined
       "no_plan_required" — backlog mutated but plan not required
     """
+    project_path = Path(project_path)
     if not s.research_plan_required:
         return "no_plan_required"
 

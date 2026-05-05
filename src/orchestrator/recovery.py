@@ -192,7 +192,7 @@ def evaluate_stuck(s: state.State) -> str:
     return "ok"
 
 
-def maybe_auto_recover(project_path: Path) -> bool:
+def maybe_auto_recover(project_path: Path | str) -> bool:
     """v1.3 B3: scan a single project's state and revive it from 'failed'
     if at least RECOVERY_AGE_SEC have passed since the last activity.
 
@@ -200,6 +200,7 @@ def maybe_auto_recover(project_path: Path) -> bool:
     (main.py) invokes this from a periodic background sweep across all
     projects.
     """
+    project_path = Path(project_path)
     s = state.read(project_path)
     if s.phase != "failed":
         return False

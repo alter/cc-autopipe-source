@@ -265,7 +265,7 @@ def apply_meta_decision(
 
 
 def trigger_meta_reflect(
-    project_path: Path,
+    project_path: Path | str,
     s: state.State,
     failures: list[dict[str, Any]],
 ) -> tuple[str, Path | None]:
@@ -276,6 +276,7 @@ def trigger_meta_reflect(
       "fallback"    — already attempted twice; caller falls back to HUMAN_NEEDED
       "skipped"     — no current_task or stage to anchor reflection on
     """
+    project_path = Path(project_path)
     if s.current_task is None or not s.current_task.id:
         return "skipped", None
     task_id = s.current_task.id

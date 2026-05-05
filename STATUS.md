@@ -1,11 +1,80 @@
 # Build Status
 
-**Updated:** 2026-05-04T00:00:00Z
+**Updated:** 2026-05-05T17:00:00Z
 **Current branch:** main
-**Current stage:** **v1.2 BUILD COMPLETE.** All 8 bugs (A-H) landed
+**Current stage:** **v1.3 BUILD COMPLETE.** Full 14-day-autonomy
+hardening landed — 9 groups (G refactor + A memory + B recovery +
+C infra + D research + E quota + F ops + H META_REFLECT + I
+knowledge + K WSL2). Schema bumped v3 → v4. Awaiting Roman
+validation + tag v1.3.
+
+**Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
-session, mocked claude — no real quota at risk). Awaiting Roman
-validation + tag v1.2.
+session, mocked claude — no real quota at risk).
+
+## v1.3 BUILD — final state
+
+**9 groups landed across 9 atomic commits. ~5400 new lines src/lib +
+src/orchestrator package + tests. Engine grew from ~7.4K (v1.2) to
+~12K lines.**
+
+| Group | Surface | Tests added |
+|---|---|---|
+| G | orchestrator package refactor (10 modules ≤350 lines) | 0 (mechanical) |
+| A | src/lib/findings.py + knowledge.py + Stop hook + SessionStart | +32 |
+| B | src/lib/activity.py + activity-based stuck + auto-recovery | +18 |
+| C | deploy/systemd/* + disk.py + state.json.bak + watchdog | +30 |
+| D | research.py: PRD-complete + research mode + RESEARCH_PLAN enforcement | +17 |
+| E | session_start_helper quota notice (60/80/95 bands) | +7 |
+| F | daily_report.py + health.py + cli/health.py + bypass logging | +13 |
+| H | reflection.py: META_REFLECT replaces verify-pattern HUMAN_NEEDED | +16 |
+| I | knowledge.md mtime sentinel + mandatory injection | +10 |
+| K | doctor.check_wsl_systemd + deploy/WSL2.md (Path A + Path B) | +6 |
+
+**Test counts (v1.3 final):**
+- pytest: 397 (v1.2 baseline) → **548 passed** (+151 new tests)
+- 4 new smokes all green: run-autonomy-smoke.sh,
+  run-meta-reflect-smoke.sh, run-knowledge-enforce-smoke.sh,
+  run-research-plan-smoke.sh
+
+**Schema bump:** state.json schema_version 3 → 4. Pre-v4 state files
+auto-migrate on first read+write. New fields preserve defaults for
+backward compat.
+
+**Module split (G):**
+
+```
+src/orchestrator/
+  __init__.py                empty
+  __main__.py                python3 path/to/orchestrator entry
+  _runtime.py                shared logger / clock / shutdown flag
+  main.py                    main loop + signal handlers + sweeps
+  cycle.py                   process_project (one cycle)
+  preflight.py               quota + disk preflights
+  prompt.py                  build_prompt + build_claude_cmd
+  phase.py                   DETACHED state-machine + PRD phase advance
+  recovery.py                smart-escalation + auto-recovery + META_REFLECT trigger
+  research.py                D1+D2+D3 (full research mode + anti-dup)
+  reflection.py              H META_REFLECT helpers
+  daily_report.py            F1 daily summary
+  subprocess_runner.py       _run_claude + stash
+  alerts.py                  TG fire-and-forget + dedup
+```
+
+Bash dispatcher (`src/helpers/cc-autopipe`) unchanged — `python3
+$CC_AUTOPIPE_HOME/orchestrator` works on both file (pre-v1.3) and
+package (v1.3+) layouts via Python's `__main__.py` auto-detection.
+
+### Currently working on
+
+**v1.3 build done.** All gates + smokes green; awaiting Roman validation.
+
+### Next
+
+Roman validates manually + tags `v1.3` per AGENTS.md §13. See
+`V13_BUILD_DONE.md` for the full smoke test plan.
+
+---
 
 **Post-v1.2 patch (2026-05-04):** `src/VERSION` synced from stale
 `0.5.0` to `1.2` (matched latest tag); `src/install.sh` now bakes
