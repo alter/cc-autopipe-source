@@ -48,6 +48,34 @@ in prod), large file downloads, multi-period backtests, simulation
 runs. Each second you wait synchronously is a second of cycle budget
 burned for every other project on this orchestrator.
 
+### Long-running ML training (>4h)
+
+The default `--max-wait 14400` (4h) is INSUFFICIENT for typical ML
+R&D pipelines. When detaching for training that exceeds 4 hours:
+
+1. Set per-project defaults in `.cc-autopipe/config.yaml`:
+   ```yaml
+   detach_defaults:
+     check_every_sec: 600
+     max_wait_sec: 43200   # 12h
+   ```
+2. OR override per-call: `cc-autopipe-detach --max-wait 86400 ...`
+
+Reference values:
+- single-model training:        28800  (8h)
+- 5-period OOS multi-stage:     43200  (12h)
+- ensemble of 5 models × 5 OOS: 86400  (24h)
+- large fine-tune / HP search: 172800  (48h)
+
+When writing `--check-cmd`:
+- Prefer `find -name '*.pt' -not -name 'checkpoint_*' -size +1c -print -quit | grep -q .`
+  over `test -f *.pt && ls *.pt | grep -v checkpoint_`. The first
+  pattern handles multiple matches; bash `test -f` with a glob
+  breaks once more than one file matches.
+- Verify the check-cmd's expected file path matches what the training
+  script ACTUALLY writes (not what you think it writes — common
+  cause of timeout-to-failed transitions).
+
 ## Workflow discipline
 
 - After each implemented component (single file or tightly-related

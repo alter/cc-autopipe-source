@@ -40,6 +40,27 @@ improver:
   enabled: true
   trigger_every_n_successes: 5
 
+# v1.3.1 DETACH-CONFIG: defaults for cc-autopipe-detach. Resolution
+# chain (highest priority first):
+#   1. CLI arg               --check-every / --max-wait
+#   2. Env var               CC_AUTOPIPE_DEFAULT_CHECK_EVERY /
+#                            CC_AUTOPIPE_DEFAULT_MAX_WAIT
+#   3. This block            detach_defaults
+#   4. Hardcoded fallback    600 / 14400 (4h)
+#
+# Tune for your workload:
+#   4h  (14400):   typical SaaS pytest+npm build (default fallback)
+#   8h  (28800):   single-model ML training
+#   12h (43200):   multi-period (5 OOS) ML training
+#   24h (86400):   ensemble training, large models
+#   48h (172800):  large-scale fine-tuning, hyperparameter search
+#
+# The 4h fallback is INSUFFICIENT for typical ML R&D pipelines.
+# If verify.sh expects multi-stage outputs, set max_wait_sec accordingly.
+detach_defaults:
+  check_every_sec: 600
+  max_wait_sec: 14400
+
 paths:
   src: "."
   tests: "."
