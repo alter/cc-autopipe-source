@@ -193,6 +193,43 @@ def evaluate_stuck(s: state.State) -> str:
     return "ok"
 
 
+def _should_recover(s: state.State) -> tuple[bool, str]:
+    """v1.3.2 RECOVERY-SAFE: gate `maybe_auto_recover` against active
+    enforcement state.
+
+    Returns (should_recover, skip_reason). When should_recover is False
+    the caller emits an `auto_recovery_skipped` event with the given
+    reason so Roman can `grep aggregate.jsonl` and see which enforcement
+    loop kept the sweep from clobbering state.
+
+    A FAILED project with `meta_reflect_pending`, `knowledge_update_pending`,
+    or `research_plan_required` is sitting in an in-flight enforcement
+    loop — the sweep MUST NOT reset state.json or it will clear the
+    pending flag and the engine forgets why it triggered. Same logic
+    for non-failed phases (paused/detached/done) which have their own
+    lifecycles and never need recovery.
+    """
+    if s.phase != "failed":
+        return False, f"phase={s.phase}_not_failed"
+    if s.meta_reflect_pending:
+        return False, "meta_reflect_in_progress"
+    if s.knowledge_update_pending:
+        return False, "knowledge_update_in_progress"
+    if s.research_plan_required:
+        return False, "research_plan_pending"
+    last = _parse_iso_utc(s.last_activity_at)
+    if last is None:
+        # Pre-v1.3 failed project (never had activity tracking) —
+        # leave alone to preserve v1.2 manual-resume contract. Only
+        # revive projects we know fell into failed under v1.3
+        # supervision.
+        return False, "no_activity_history"
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+    if elapsed < RECOVERY_AGE_SEC:
+        return False, "recent_activity"
+    return True, ""
+
+
 def maybe_auto_recover(project_path: Path | str) -> bool:
     """v1.3 B3: scan a single project's state and revive it from 'failed'
     if at least RECOVERY_AGE_SEC have passed since the last activity.
@@ -203,6 +240,11 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
     state.read/write window — if another process holds it (in-flight
     cycle from another orchestrator, or a stale fcntl), we skip rather
     than race.
+
+    v1.3.2 RECOVERY-SAFE: defers the should-recover decision to
+    `_should_recover` so projects with active enforcement state
+    (meta_reflect / knowledge_update / research_plan) are skipped
+    rather than blindly reset.
     """
     project_path = Path(project_path)
     if not (project_path / ".cc-autopipe").exists():
@@ -215,18 +257,23 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
         return False
     try:
         s = state.read(project_path)
-        if s.phase != "failed":
+        should, reason = _should_recover(s)
+        if not should:
+            # Only emit the skip event for projects that ARE in `failed`
+            # phase — emitting one for every healthy project on every
+            # 30-min sweep would flood aggregate.jsonl. The phase=*_not_failed
+            # case is the boring default.
+            if s.phase == "failed":
+                state.log_event(
+                    project_path, "auto_recovery_skipped", reason=reason
+                )
+                _log(
+                    f"{project_path.name}: auto-recovery skipped — {reason}"
+                )
             return False
         last = _parse_iso_utc(s.last_activity_at)
-        if last is None:
-            # Pre-v1.3 failed project (never had activity tracking) —
-            # leave alone to preserve v1.2 manual-resume contract. Only
-            # revive projects we know fell into failed under v1.3
-            # supervision.
-            return False
+        # _should_recover already verified last is not None.
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
-        if elapsed < RECOVERY_AGE_SEC:
-            return False
 
         s.phase = "active"
         s.consecutive_failures = 0
