@@ -35,13 +35,28 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import current_task  # noqa: E402
+import findings as findings_lib  # noqa: E402
 import state  # noqa: E402
+
+
+def _diff_new_stages(prev: list[str], new: list[str]) -> list[str]:
+    """Return entries in `new` that aren't in `prev`, preserving order."""
+    seen = set(prev)
+    out: list[str] = []
+    for s in new:
+        if s and s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out
 
 
 def sync_current_task_from_md(project_path: str | Path) -> bool:
     """Read CURRENT_TASK.md, update state.json.current_task.
 
     Returns True if state was modified (and written), False otherwise.
+    Side effect (v1.3 A1): for every NEW entry in stages_completed, append
+    a corresponding finding to .cc-autopipe/findings_index.md so the
+    SessionStart hook can re-inject it after a context compaction.
     """
     project = Path(project_path)
     md_path = project / ".cc-autopipe" / "CURRENT_TASK.md"
@@ -53,12 +68,34 @@ def sync_current_task_from_md(project_path: str | Path) -> bool:
         return False
 
     s = state.read(project)
+    prev_stages: list[str] = []
+    if s.current_task is not None:
+        prev_stages = list(s.current_task.stages_completed)
+
     new_task = state.CurrentTask.from_dict(md_data)
     # Claude is authoritative — overwrite state.current_task. Preserves
     # stages_completed exactly as Claude listed them (so a stage that
     # disappears from CURRENT_TASK.md is intentionally dropped).
     s.current_task = new_task
     state.write(project, s)
+
+    # v1.3 A1 — auto-append findings for stage_completed transitions.
+    new_stages = _diff_new_stages(prev_stages, new_task.stages_completed)
+    if new_stages and new_task.id:
+        for stage in new_stages:
+            try:
+                findings_lib.append_finding(
+                    project_dir=project,
+                    task_id=new_task.id,
+                    stage=stage,
+                    notes=new_task.claude_notes or "",
+                    artifact_paths=list(new_task.artifact_paths),
+                )
+            except Exception as exc:  # noqa: BLE001 — hook contract
+                print(
+                    f"[stop_helper] findings append failed: {exc}",
+                    file=sys.stderr,
+                )
     return True
 
 

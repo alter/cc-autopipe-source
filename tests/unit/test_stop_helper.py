@@ -17,6 +17,7 @@ SRC_LIB = REPO_ROOT / "src" / "lib"
 sys.path.insert(0, str(SRC_LIB))
 
 import current_task  # noqa: E402
+import findings as findings_lib  # noqa: E402
 import state  # noqa: E402
 import stop_helper  # noqa: E402
 
@@ -164,6 +165,56 @@ def test_sync_swallows_parser_exceptions(tmp_path: Path, monkeypatch) -> None:
     )
     # CLI must exit 0 regardless of internal failure.
     assert cp.returncode == 0
+
+
+def test_sync_appends_finding_on_new_stage(tmp_path: Path, monkeypatch) -> None:
+    """v1.3 A1: when stages_completed grows in CURRENT_TASK.md, sync
+    appends a corresponding entry to findings_index.md."""
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    project = _make_project(tmp_path)
+    s = state.State.fresh(project.name)
+    s.current_task = state.CurrentTask(
+        id="vec_meta",
+        stage="stage_a_hypothesis",
+        stages_completed=["stage_a_hypothesis"],
+    )
+    state.write(project, s)
+
+    (project / ".cc-autopipe" / "CURRENT_TASK.md").write_text(
+        "task: vec_meta\n"
+        "stage: stage_b_train\n"
+        "stages_completed: stage_a_hypothesis, stage_b_train\n"
+        "artifact: data/models/vec_meta/\n"
+        "notes: Training kicked off, GAP=18.2pp\n"
+    )
+
+    stop_helper.sync_current_task_from_md(project)
+
+    items = findings_lib.read_findings(project)
+    assert any(
+        it["task_id"] == "vec_meta" and it["stage"] == "stage_b_train"
+        for it in items
+    )
+
+
+def test_sync_does_not_append_when_no_new_stage(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    project = _make_project(tmp_path)
+    s = state.State.fresh(project.name)
+    s.current_task = state.CurrentTask(
+        id="vec_a",
+        stage="s1",
+        stages_completed=["s1"],
+    )
+    state.write(project, s)
+
+    (project / ".cc-autopipe" / "CURRENT_TASK.md").write_text(
+        "task: vec_a\nstage: s1\nstages_completed: s1\n"
+    )
+    stop_helper.sync_current_task_from_md(project)
+
+    items = findings_lib.read_findings(project)
+    assert items == []
 
 
 def test_cli_sync_invokes_helper(tmp_path: Path) -> None:

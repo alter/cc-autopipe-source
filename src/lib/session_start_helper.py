@@ -37,6 +37,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import backlog as backlog_lib  # noqa: E402
+import findings as findings_lib  # noqa: E402
+import knowledge as knowledge_lib  # noqa: E402
 import state  # noqa: E402
 
 
@@ -220,9 +222,34 @@ def build_long_op_block() -> str:
     )
 
 
+def build_findings_block(project_path: str | Path, top_n: int = 20) -> str:
+    """v1.3 A3: top-N most recent findings_index entries (newest first)."""
+    try:
+        items = findings_lib.read_findings(Path(project_path), top_n=top_n)
+    except Exception:  # noqa: BLE001 — hook contract
+        return ""
+    return findings_lib.format_findings_for_injection(items)
+
+
+def build_knowledge_block(project_path: str | Path) -> str:
+    """v1.3 A3: full knowledge.md (or last 5KB tail if larger)."""
+    try:
+        text = knowledge_lib.read_knowledge(Path(project_path))
+    except Exception:  # noqa: BLE001 — hook contract
+        return ""
+    return knowledge_lib.format_for_injection(text)
+
+
 def build_full_block(project_path: str | Path) -> str:
-    """All four v1.2 SessionStart blocks composed in one call. Empty
-    sub-blocks (no backlog, no current_task) are omitted cleanly."""
+    """All v1.2 + v1.3 SessionStart blocks composed in one call. Empty
+    sub-blocks (no backlog, no current_task, no findings, no knowledge)
+    are omitted cleanly.
+
+    Order (per PROMPT_v1.3-FULL.md A3 "after existing context, before
+    long-op guidance"):
+
+        current_task → backlog → findings → knowledge → long-op
+    """
     parts: list[str] = []
     ct_block = build_current_task_block(project_path)
     if ct_block:
@@ -230,6 +257,12 @@ def build_full_block(project_path: str | Path) -> str:
     bl_block = build_backlog_top3_block(project_path)
     if bl_block:
         parts.append(bl_block)
+    fb = build_findings_block(project_path)
+    if fb:
+        parts.append(fb)
+    kb = build_knowledge_block(project_path)
+    if kb:
+        parts.append(kb)
     parts.append(build_long_op_block())
     return "\n\n".join(parts)
 
@@ -255,9 +288,22 @@ def main(argv: list[str]) -> int:
         help="Print long-operation guidance block (Bug C).",
     )
 
+    p_findings = sub.add_parser(
+        "findings",
+        help="Print recent findings injection block (v1.3 A3).",
+    )
+    p_findings.add_argument("project")
+    p_findings.add_argument("--top-n", type=int, default=20)
+
+    p_kn = sub.add_parser(
+        "knowledge",
+        help="Print knowledge.md injection block (v1.3 A3).",
+    )
+    p_kn.add_argument("project")
+
     p_all = sub.add_parser(
         "all",
-        help="Print all v1.2 blocks (current_task + backlog + long-op).",
+        help="Print all v1.2 + v1.3 SessionStart blocks.",
     )
     p_all.add_argument("project")
 
@@ -270,6 +316,14 @@ def main(argv: list[str]) -> int:
             print(build_backlog_top3_block(args.project))
         elif args.cmd == "long-op":
             print(build_long_op_block())
+        elif args.cmd == "findings":
+            out = build_findings_block(args.project, top_n=args.top_n)
+            if out:
+                print(out)
+        elif args.cmd == "knowledge":
+            out = build_knowledge_block(args.project)
+            if out:
+                print(out)
         elif args.cmd == "all":
             print(build_full_block(args.project))
         else:

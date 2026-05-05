@@ -19,6 +19,7 @@ SRC_LIB = REPO_ROOT / "src" / "lib"
 
 sys.path.insert(0, str(SRC_LIB))
 
+import findings as findings_lib  # noqa: E402
 import session_start_helper  # noqa: E402
 import state  # noqa: E402
 
@@ -388,3 +389,94 @@ def test_full_block_cli_smoke(tmp_path: Path) -> None:
         text=True,
     )
     assert "=== Long operation guidance ===" in cp.stdout
+
+
+# ---------------------------------------------------------------------------
+# build_findings_block + build_knowledge_block (v1.3 A3)
+# ---------------------------------------------------------------------------
+
+
+def test_findings_block_empty_when_no_findings(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    assert session_start_helper.build_findings_block(project) == ""
+
+
+def test_findings_block_renders_recent(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    findings_lib.append_finding(project, "vec_a", "stage_x", "REJECT")
+    findings_lib.append_finding(project, "vec_b", "stage_y", "PROMOTED")
+    out = session_start_helper.build_findings_block(project)
+    assert "Recent findings" in out
+    assert "vec_a | stage_x" in out
+    assert "vec_b | stage_y" in out
+
+
+def test_knowledge_block_empty_when_no_file(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    assert session_start_helper.build_knowledge_block(project) == ""
+
+
+def test_knowledge_block_renders_file(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / ".cc-autopipe" / "knowledge.md").write_text(
+        "# Knowledge\n## Architectures\n- alpha\n"
+    )
+    out = session_start_helper.build_knowledge_block(project)
+    assert "Project knowledge" in out
+    assert "Architectures" in out
+
+
+def test_full_block_includes_findings_and_knowledge(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    project = _make_project(tmp_path)
+    findings_lib.append_finding(project, "vec_x", "stage_e_verdict", "REJECT")
+    (project / ".cc-autopipe" / "knowledge.md").write_text(
+        "## Architectures\n- something — 2026-05-04\n"
+    )
+    block = session_start_helper.build_full_block(project)
+    assert "=== Recent findings" in block
+    assert "vec_x | stage_e_verdict" in block
+    assert "=== Project knowledge ===" in block
+    # Long-op guidance comes AFTER findings + knowledge.
+    assert block.index("Recent findings") < block.index("Long operation guidance")
+
+
+def test_full_block_omits_findings_when_empty(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    block = session_start_helper.build_full_block(project)
+    assert "Recent findings" not in block
+    assert "Project knowledge" not in block
+
+
+def test_cli_findings_subcommand(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    findings_lib.append_finding(project, "v", "s", "x")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "session_start_helper.py"),
+            "findings",
+            str(project),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Recent findings" in cp.stdout
+
+
+def test_cli_knowledge_subcommand(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / ".cc-autopipe" / "knowledge.md").write_text("# k\n- x\n")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SRC_LIB / "session_start_helper.py"),
+            "knowledge",
+            str(project),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Project knowledge" in cp.stdout

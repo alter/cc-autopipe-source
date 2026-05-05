@@ -65,6 +65,22 @@ burned for every other project on this orchestrator.
 - `git reset --hard` to undo recent commits without explicit justification
 - `git commit --amend` after the commit was made (create a new commit instead)
 
+## Knowledge accumulation (v1.3 A2 — mandatory)
+
+After every REJECTED or PROMOTED verdict (any stage_completed event
+whose stage name contains `verdict`, `rejected`, `promoted`, `accepted`,
+or `shipped`), append 1-3 lessons to `.cc-autopipe/knowledge.md`. Use
+sections: Architectures / Baselines / Diagnostics rules / Other.
+
+Format:
+```
+- <one-line lesson> — <YYYY-MM-DD>
+```
+
+Don't duplicate existing lessons. The engine watches `knowledge.md`
+mtime and re-injects a mandatory reminder block until the file is
+updated after a verdict.
+
 ## Project-specific guidance
 
 (Add what's specific to this project. Stack idioms, files Claude
