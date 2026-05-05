@@ -56,32 +56,43 @@ def _handle_smart_escalation(
     _log(f"{project_path.name}: failure category — {cat['reason']}")
 
     if cat["recommend_human_needed"]:
-        # Verify pattern dominates → don't escalate. Mark failed
-        # and tell the operator escalation was SKIPPED on purpose.
-        s.phase = "failed"
-        state.write(project_path, s)
-        state.log_event(
-            project_path,
-            "escalation_skipped",
-            iteration=s.iteration,
-            consecutive_failures=s.consecutive_failures,
-            crash_count=cat["crash_count"],
-            verify_count=cat["verify_count"],
-            reason=cat["reason"],
+        # v1.3 H3: replace v1.2's blind verify-pattern HUMAN_NEEDED with
+        # an enforced META_REFLECT loop. After 2 failed reflection
+        # attempts, fall back to HUMAN_NEEDED (safety net for when
+        # Roman returns and the engine genuinely needs a human).
+        from orchestrator import reflection as reflection_mod
+
+        action, _target = reflection_mod.trigger_meta_reflect(
+            project_path, s, recent
         )
-        state.log_event(
-            project_path,
-            "failed",
-            iteration=s.iteration,
-            consecutive_failures=s.consecutive_failures,
-            pattern="verify",
-        )
-        human_needed_lib.write_verify_pattern(project_path, recent)
-        _notify_tg(
-            f"[{project_path.name}] needs human attention — "
-            f"verify failing {cat['verify_count']}/{cat['total']} "
-            "cycles, no escalation"
-        )
+        if action == "triggered":
+            # Engine continues; next cycle injects the mandatory block.
+            return
+        if action == "fallback" or action == "skipped":
+            s.phase = "failed"
+            state.write(project_path, s)
+            state.log_event(
+                project_path,
+                "escalation_skipped",
+                iteration=s.iteration,
+                consecutive_failures=s.consecutive_failures,
+                crash_count=cat["crash_count"],
+                verify_count=cat["verify_count"],
+                reason=cat["reason"] + f" (meta_reflect_{action})",
+            )
+            state.log_event(
+                project_path,
+                "failed",
+                iteration=s.iteration,
+                consecutive_failures=s.consecutive_failures,
+                pattern="verify",
+            )
+            human_needed_lib.write_verify_pattern(project_path, recent)
+            _notify_tg(
+                f"[{project_path.name}] needs human attention — "
+                f"verify failing {cat['verify_count']}/{cat['total']} "
+                f"cycles, meta_reflect_{action}"
+            )
     elif (
         cat["recommend_escalation"]
         and esc_cfg.get("enabled")

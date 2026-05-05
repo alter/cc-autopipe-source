@@ -314,6 +314,27 @@ def build_quota_notice_block(_project_path: str | Path | None = None) -> str:
     )
 
 
+def build_meta_reflect_block(project_path: str | Path) -> str:
+    """v1.3 H4: mandatory META_REFLECT block injected at SessionStart.
+
+    Lazy-imports orchestrator.reflection so this stays usable in test
+    environments that don't have the orchestrator package on PYTHONPATH.
+    """
+    try:
+        _SRC = Path(__file__).resolve().parent.parent
+        if str(_SRC) not in sys.path:
+            sys.path.insert(0, str(_SRC))
+        import importlib  # noqa: WPS433
+
+        reflection_mod = importlib.import_module("orchestrator.reflection")
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return reflection_mod.build_meta_reflect_block(Path(project_path))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_research_mode_block(project_path: str | Path) -> str:
     """v1.3 D2: mandatory research-mode + plan-required block.
 
@@ -348,6 +369,11 @@ def build_full_block(project_path: str | Path) -> str:
         → long-op
     """
     parts: list[str] = []
+    # H4: meta-reflect first when pending (highest priority — Claude must
+    # write META_DECISION before doing anything else).
+    mr = build_meta_reflect_block(project_path)
+    if mr:
+        parts.append(mr)
     rm = build_research_mode_block(project_path)
     if rm:
         parts.append(rm)

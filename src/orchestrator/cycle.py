@@ -29,6 +29,7 @@ from orchestrator.recovery import (
     _write_in_progress_cap_human_needed,
     evaluate_stuck,
 )
+from orchestrator.reflection import detect_and_apply_decision
 from orchestrator.research import (
     maybe_activate_after_cycle,
     validate_research_plan,
@@ -419,6 +420,14 @@ def process_project(project_path: Path) -> str:
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"{project_path.name}: health emit error: {exc!r}")
+
+        # v1.3 H5: detect META_DECISION written this cycle and apply.
+        if s.meta_reflect_pending:
+            try:
+                if detect_and_apply_decision(project_path, s):
+                    s = state.read(project_path)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{project_path.name}: meta_decision error: {exc!r}")
 
         # v1.3 D3: enforce research plan if required this cycle.
         if s.research_plan_required:
