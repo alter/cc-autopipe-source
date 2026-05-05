@@ -38,6 +38,7 @@ from orchestrator.subprocess_runner import _run_claude, _stash_stream
 import activity as activity_lib  # noqa: E402
 import disk as disk_lib  # noqa: E402
 import health as health_lib  # noqa: E402
+import knowledge as knowledge_lib  # noqa: E402
 import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
@@ -215,6 +216,22 @@ def process_project(project_path: Path) -> str:
                     stage=st,
                     stages_total=len(s.current_task.stages_completed),
                 )
+                # v1.3 I2: verdict-stage transitions arm the knowledge.md
+                # update sentinel. SessionStart hook will keep injecting
+                # a mandatory reminder until knowledge.md mtime advances.
+                if knowledge_lib.is_verdict_stage(st):
+                    s.knowledge_update_pending = True
+                    s.knowledge_baseline_mtime = (
+                        knowledge_lib.get_mtime_or_zero(project_path)
+                    )
+                    s.knowledge_pending_reason = f"{st} on {post_task_id}"
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "knowledge_update_required",
+                        stage=st,
+                        task_id=post_task_id,
+                    )
 
         # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
         # when prd.md declares `### Phase N:` headers AND the current

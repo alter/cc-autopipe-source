@@ -314,6 +314,50 @@ def build_quota_notice_block(_project_path: str | Path | None = None) -> str:
     )
 
 
+def build_knowledge_update_block(project_path: str | Path) -> str:
+    """v1.3 I3: mandatory injection block when knowledge.md needs an
+    update (a verdict completed since last update).
+
+    Returns "" when:
+      - knowledge_update_pending is False
+      - knowledge.md mtime is already past baseline (Stop hook will
+        clear the flag — but we don't emit while the clear is pending
+        to avoid duplicate inject)
+    """
+    try:
+        s = state.read(project_path)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not s.knowledge_update_pending:
+        return ""
+    baseline = s.knowledge_baseline_mtime
+    if baseline is None:
+        return ""
+    current = knowledge_lib.get_mtime_or_zero(Path(project_path))
+    if current > baseline:
+        # Update detected — Stop hook will clear next; suppress inject.
+        return ""
+    reason = s.knowledge_pending_reason or "(unspecified verdict)"
+    return "\n".join(
+        [
+            "=== MANDATORY KNOWLEDGE UPDATE ===",
+            "",
+            f"A verdict completed ({reason}). Before starting any new",
+            "work, append a lesson to .cc-autopipe/knowledge.md. Use the",
+            "appropriate section (Architectures / Baselines / Diagnostics",
+            "rules / Other).",
+            "",
+            "Format:",
+            "- <one-line lesson> — <YYYY-MM-DD>",
+            "",
+            "Do not duplicate existing lessons. Do not skip this. Engine",
+            "keeps re-injecting this block every cycle until knowledge.md",
+            "mtime advances.",
+            "===",
+        ]
+    )
+
+
 def build_meta_reflect_block(project_path: str | Path) -> str:
     """v1.3 H4: mandatory META_REFLECT block injected at SessionStart.
 
@@ -374,6 +418,10 @@ def build_full_block(project_path: str | Path) -> str:
     mr = build_meta_reflect_block(project_path)
     if mr:
         parts.append(mr)
+    # I3: knowledge update block second.
+    ku = build_knowledge_update_block(project_path)
+    if ku:
+        parts.append(ku)
     rm = build_research_mode_block(project_path)
     if rm:
         parts.append(rm)

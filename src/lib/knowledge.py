@@ -32,6 +32,40 @@ from pathlib import Path
 KNOWLEDGE_REL = ".cc-autopipe/knowledge.md"
 DEFAULT_MAX_BYTES = 5 * 1024  # 5KB tail per the prompt spec
 
+_VERDICT_PATTERNS = (
+    "verdict",
+    "rejected",
+    "promoted",
+    "accepted",
+    "shipped",
+)
+
+
+def is_verdict_stage(stage_name: str) -> bool:
+    """v1.3 I2 heuristic: stage name indicates a verdict completion.
+
+    True for any case-insensitive substring match against the
+    _VERDICT_PATTERNS tuple. Conservative — adding a new pattern
+    requires editing this list (so unrelated stages don't trigger
+    knowledge update enforcement by accident).
+    """
+    if not stage_name:
+        return False
+    s = stage_name.lower()
+    return any(p in s for p in _VERDICT_PATTERNS)
+
+
+def knowledge_path(project_dir: Path) -> Path:
+    return _knowledge_path(project_dir)
+
+
+def get_mtime_or_zero(project_dir: Path) -> float:
+    p = _knowledge_path(project_dir)
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
 
 def _knowledge_path(project_dir: Path) -> Path:
     return project_dir / KNOWLEDGE_REL

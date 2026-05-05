@@ -36,7 +36,31 @@ sys.path.insert(0, str(_HERE))
 
 import current_task  # noqa: E402
 import findings as findings_lib  # noqa: E402
+import knowledge as knowledge_lib  # noqa: E402
 import state  # noqa: E402
+
+
+def maybe_clear_knowledge_update_flag(project_path: str | Path) -> bool:
+    """v1.3 I4: clear knowledge_update_pending if knowledge.md mtime
+    has moved past the recorded baseline since the verdict was emitted.
+
+    Returns True iff the flag was cleared this call.
+    """
+    project = Path(project_path)
+    s = state.read(project)
+    if not s.knowledge_update_pending:
+        return False
+    if s.knowledge_baseline_mtime is None:
+        return False
+    current_mtime = knowledge_lib.get_mtime_or_zero(project)
+    if current_mtime <= s.knowledge_baseline_mtime:
+        return False
+    s.knowledge_update_pending = False
+    s.knowledge_baseline_mtime = None
+    s.knowledge_pending_reason = None
+    state.write(project, s)
+    state.log_event(project, "knowledge_updated_detected")
+    return True
 
 
 def _diff_new_stages(prev: list[str], new: list[str]) -> list[str]:
@@ -96,6 +120,16 @@ def sync_current_task_from_md(project_path: str | Path) -> bool:
                     f"[stop_helper] findings append failed: {exc}",
                     file=sys.stderr,
                 )
+
+    # v1.3 I4: clear the knowledge_update_pending flag if Claude has
+    # touched knowledge.md since the last verdict. Best-effort.
+    try:
+        maybe_clear_knowledge_update_flag(project)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[stop_helper] knowledge clear failed: {exc}",
+            file=sys.stderr,
+        )
     return True
 
 
