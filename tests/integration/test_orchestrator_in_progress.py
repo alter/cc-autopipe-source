@@ -10,27 +10,30 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
+import importlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC = REPO_ROOT / "src"
-ORCHESTRATOR = SRC / "orchestrator"
+LIB = SRC / "lib"
 
 
 @pytest.fixture(scope="module")
 def orch_mod() -> object:
-    spec = importlib.util.spec_from_loader(
-        "orchestrator_mod_b",
-        importlib.machinery.SourceFileLoader("orchestrator_mod_b", str(ORCHESTRATOR)),
+    """Compatibility fixture against the v1.3 package layout."""
+    for p in (str(SRC), str(LIB)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    prompt = importlib.import_module("orchestrator.prompt")
+    recovery = importlib.import_module("orchestrator.recovery")
+    return SimpleNamespace(
+        _read_config_in_progress=prompt._read_config_in_progress,
+        _write_in_progress_cap_human_needed=recovery._write_in_progress_cap_human_needed,
     )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _seed_project(base: Path, in_progress_block: str | None = None) -> Path:

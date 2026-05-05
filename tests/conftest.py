@@ -31,8 +31,19 @@ caused real-bot TG spam claiming 95% quota during pytest runs.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
+
+# Make `from orchestrator.cycle import process_project` resolve when tests
+# import the orchestrator package directly. The package lives at src/orchestrator/.
+_REPO = Path(__file__).resolve().parent.parent
+_SRC = _REPO / "src"
+_LIB = _SRC / "lib"
+for p in (str(_SRC), str(_LIB)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 
 @pytest.fixture(scope="session", autouse=True)

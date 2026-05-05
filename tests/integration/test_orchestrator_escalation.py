@@ -17,29 +17,41 @@ test_orchestrator_claude.py::test_three_consecutive_failures... test.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
+import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC = REPO_ROOT / "src"
+LIB = SRC / "lib"
+# Path to the orchestrator package dir; `python3 <dir>` runs __main__.py.
 ORCHESTRATOR = SRC / "orchestrator"
 
 
 @pytest.fixture(scope="module")
 def orch_mod() -> object:
-    spec = importlib.util.spec_from_loader(
-        "orchestrator_mod_l",
-        importlib.machinery.SourceFileLoader("orchestrator_mod_l", str(ORCHESTRATOR)),
+    """Compatibility fixture that exposes the v1.2 orchestrator surface
+    against the v1.3 package layout. Returns a SimpleNamespace with the
+    helpers the tests reach into directly."""
+    for p in (str(SRC), str(LIB)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    prompt = importlib.import_module("orchestrator.prompt")
+    cycle = importlib.import_module("orchestrator.cycle")
+    state_mod = importlib.import_module("state")
+    return SimpleNamespace(
+        _read_config_auto_escalation=prompt._read_config_auto_escalation,
+        _read_config_in_progress=prompt._read_config_in_progress,
+        _read_config_improver=prompt._read_config_improver,
+        _build_claude_cmd=prompt._build_claude_cmd,
+        _build_prompt=prompt._build_prompt,
+        process_project=cycle.process_project,
+        state=state_mod,
     )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _seed_project(

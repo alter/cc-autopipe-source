@@ -22,31 +22,37 @@ dir prep + prompt hint.
 from __future__ import annotations
 
 import importlib.machinery
-import importlib.util
+import importlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC = REPO_ROOT / "src"
-ORCHESTRATOR = SRC / "orchestrator"
+LIB = SRC / "lib"
 DISPATCHER = SRC / "helpers" / "cc-autopipe"
+# Path to the orchestrator package dir; `python3 <dir>` runs __main__.py.
+ORCHESTRATOR = SRC / "orchestrator"
 
 
 @pytest.fixture(scope="module")
 def orch_mod() -> object:
-    spec = importlib.util.spec_from_loader(
-        "orchestrator_mod_n",
-        importlib.machinery.SourceFileLoader("orchestrator_mod_n", str(ORCHESTRATOR)),
+    """Compatibility fixture against the v1.3 package layout."""
+    for p in (str(SRC), str(LIB)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    prompt = importlib.import_module("orchestrator.prompt")
+    state_mod = importlib.import_module("state")
+    return SimpleNamespace(
+        _read_config_improver=prompt._read_config_improver,
+        _build_prompt=prompt._build_prompt,
+        state=state_mod,
     )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _real_init(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:

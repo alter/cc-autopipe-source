@@ -350,20 +350,19 @@ def test_prompt_carries_current_phase_block(env_paths: tuple[Path, Path]) -> Non
         current_phase=2,
         phases_completed=[1],
     )
-    # Import the orchestrator's _build_prompt via the same SourceFileLoader
-    # idiom run.py uses, since `orchestrator` is extension-less.
-    import importlib.util
+    # v1.3: orchestrator is now a package; import the prompt submodule.
+    import importlib
+    import sys
 
-    spec = importlib.util.spec_from_loader(
-        "orchestrator_mod",
-        importlib.machinery.SourceFileLoader("orchestrator_mod", str(ORCHESTRATOR)),
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    LIB = SRC / "lib"
+    for path in (str(SRC), str(LIB)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    prompt_mod = importlib.import_module("orchestrator.prompt")
+    state_mod = importlib.import_module("state")
 
-    s_obj = mod.state.read(p)
-    prompt = mod._build_prompt(p, s_obj)
+    s_obj = state_mod.read(p)
+    prompt = prompt_mod._build_prompt(p, s_obj)
     assert "Current PRD phase: **2 — API**" in prompt
     assert "## Current phase (2: API)" in prompt
     assert "Item 2.1" in prompt

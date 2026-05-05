@@ -25,28 +25,23 @@ Refs: SPEC.md §12.6, §6.1
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import importlib
 import sys
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent
-_ORCHESTRATOR_PATH = _SRC / "orchestrator"
+_LIB = _SRC / "lib"
 
 
-def _import_orchestrator():
-    """Load the executable orchestrator script as a module.
-
-    The file has no .py extension, so importlib's default extension-based
-    finder doesn't recognize it. Pass an explicit SourceFileLoader.
+def _import_orchestrator_cycle():
+    """Import orchestrator.cycle. Requires src/ on sys.path so the package
+    resolves; we add it (and src/lib for bare imports) defensively before
+    importing in case the caller didn't already.
     """
-    loader = SourceFileLoader("orchestrator", str(_ORCHESTRATOR_PATH))
-    spec = importlib.util.spec_from_loader("orchestrator", loader)
-    if spec is None:
-        raise RuntimeError(f"could not import orchestrator from {_ORCHESTRATOR_PATH}")
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    for p in (str(_SRC), str(_LIB)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    return importlib.import_module("orchestrator.cycle")
 
 
 def main(argv: list[str]) -> int:
@@ -74,8 +69,8 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"run: project path does not exist: {project}\n")
         return 1
 
-    orch = _import_orchestrator()
-    phase = orch.process_project(project)
+    orch_cycle = _import_orchestrator_cycle()
+    phase = orch_cycle.process_project(project)
 
     if phase == "failed":
         return 2
