@@ -144,3 +144,48 @@ def test_cli_missing_project_dir_emits_empty(tmp_path: Path) -> None:
         check=True,
     )
     assert json.loads(result.stdout) == {}
+
+
+def test_cli_key_mode_emits_value(tmp_path: Path) -> None:
+    """--key NAME emits just the int value (so the bash helper can use
+    `$(... --key max_wait_sec)` without jq)."""
+    p = _project(
+        tmp_path,
+        "detach_defaults:\n"
+        "  check_every_sec: 900\n"
+        "  max_wait_sec: 43200\n",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(LIB / "detach_defaults.py"),
+            str(p),
+            "--key",
+            "max_wait_sec",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "43200"
+
+
+def test_cli_key_mode_missing_key_emits_nothing(tmp_path: Path) -> None:
+    """Missing key → empty stdout (so bash $(... --key X) yields '')."""
+    p = _project(
+        tmp_path,
+        "detach_defaults:\n  check_every_sec: 900\n",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(LIB / "detach_defaults.py"),
+            str(p),
+            "--key",
+            "max_wait_sec",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == ""

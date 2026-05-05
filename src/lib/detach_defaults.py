@@ -16,13 +16,19 @@ src/orchestrator/prompt.py:_read_yaml_top_block so behaviour stays
 consistent across config blocks (no PyYAML dependency).
 
 CLI:
-    python3 detach_defaults.py <project_path>
+    python3 detach_defaults.py <project_path>            # JSON dict
+    python3 detach_defaults.py <project_path> --key NAME # single value
 
-Output: JSON dict with check_every_sec and max_wait_sec, only those
-that are present + parseable in config. Empty {} on missing file,
-missing block, or unparseable values. Always exits 0 (the bash helper
-runs `... 2>/dev/null || echo '{}'` so a hard failure here would mask
-the env/CLI overrides).
+Output (JSON mode): dict with check_every_sec and max_wait_sec, only
+those that are present + parseable in config. Empty {} on missing
+file, missing block, or unparseable values.
+
+Output (--key mode): emit just the int value on a line, or no output
+if the key is missing. Lets the bash helper pick a single field
+without needing jq.
+
+Always exits 0 (the bash helper runs `... 2>/dev/null || echo ''`,
+so a hard failure here would mask env/CLI overrides).
 """
 
 from __future__ import annotations
@@ -81,7 +87,16 @@ def main(argv: list[str]) -> int:
         json.dump({}, sys.stdout)
         return 0
     project = Path(argv[0])
-    json.dump(read_detach_defaults(project), sys.stdout)
+    out = read_detach_defaults(project)
+    # `--key NAME` mode: emit just that field's int value (or nothing).
+    # Lets cc-autopipe-detach do `$(python3 ... --key check_every_sec)`
+    # without depending on jq.
+    if len(argv) >= 3 and argv[1] == "--key":
+        v = out.get(argv[2])
+        if v is not None:
+            print(v)
+        return 0
+    json.dump(out, sys.stdout)
     return 0
 
 

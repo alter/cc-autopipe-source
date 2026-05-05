@@ -25,9 +25,9 @@ set -euo pipefail
 PROG=$(basename "$0")
 
 REASON=""
-CHECK_EVERY="${CC_AUTOPIPE_DEFAULT_CHECK_EVERY:-600}"
+CHECK_EVERY=""
 CHECK_CMD=""
-MAX_WAIT="${CC_AUTOPIPE_DEFAULT_MAX_WAIT:-14400}"
+MAX_WAIT=""
 PROJECT=""
 
 usage() {
@@ -42,8 +42,14 @@ Options:
   --reason TEXT       Why we're detaching (logged + visible in status).
   --check-cmd CMD     Cheap bash that exits 0 once the task is done.
                       Engine runs this every --check-every seconds.
-  --check-every SEC   Poll cadence (default: 600).
-  --max-wait SEC      Hard deadline; FAILED on timeout (default: 14400).
+  --check-every SEC   Poll cadence. Resolution chain (highest first):
+                        --check-every arg
+                        \$CC_AUTOPIPE_DEFAULT_CHECK_EVERY
+                        config.yaml detach_defaults.check_every_sec
+                        600 (hardcoded fallback)
+  --max-wait SEC      Hard deadline; FAILED on timeout. Same chain as
+                      --check-every, but for max_wait_sec; hardcoded
+                      fallback is 14400 (4h).
   --project PATH      Project dir (default: cwd).
   -h, --help          Show this help.
 
@@ -55,6 +61,10 @@ past the 30s engine-side cap.
 After detach, your nohup'd background task can run independently —
 the engine will not spawn another claude session for this project
 until check_cmd succeeds or max-wait elapses.
+
+For ML R&D defaults longer than 4h, set per-project values in
+.cc-autopipe/config.yaml under detach_defaults:. See the v1.3.1
+template for tuning guidance.
 EOF
 }
 
@@ -123,6 +133,26 @@ if [ -z "${CC_AUTOPIPE_HOME:-}" ]; then
     CC_AUTOPIPE_HOME="$(cd "$(dirname "$SELF")/.." && pwd)"
     export CC_AUTOPIPE_HOME
 fi
+
+# v1.3.1 DETACH-CONFIG: read per-project config.yaml detach_defaults
+# block. detach_defaults.py emits a single int (or empty string) per
+# --key invocation, so we don't need jq. Failures here are silent —
+# the resolution chain still falls through to env / hardcoded.
+DD_PY="$CC_AUTOPIPE_HOME/lib/detach_defaults.py"
+CFG_CHECK_EVERY=""
+CFG_MAX_WAIT=""
+if [ -f "$DD_PY" ]; then
+    CFG_CHECK_EVERY="$(python3 "$DD_PY" "$PROJECT" --key check_every_sec 2>/dev/null || true)"
+    CFG_MAX_WAIT="$(python3 "$DD_PY" "$PROJECT" --key max_wait_sec 2>/dev/null || true)"
+fi
+
+# Resolution chain (highest priority wins):
+#   1. CLI arg --check-every / --max-wait      (set above; non-empty)
+#   2. Env var CC_AUTOPIPE_DEFAULT_*           (already-exported)
+#   3. Project config detach_defaults block    (CFG_*)
+#   4. Hardcoded fallback                      (600 / 14400)
+[ -z "$CHECK_EVERY" ] && CHECK_EVERY="${CC_AUTOPIPE_DEFAULT_CHECK_EVERY:-${CFG_CHECK_EVERY:-600}}"
+[ -z "$MAX_WAIT" ]    && MAX_WAIT="${CC_AUTOPIPE_DEFAULT_MAX_WAIT:-${CFG_MAX_WAIT:-14400}}"
 
 python3 "$CC_AUTOPIPE_HOME/lib/state.py" set-detached "$PROJECT" \
     --reason "$REASON" \
