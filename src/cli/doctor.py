@@ -341,6 +341,55 @@ def check_quota_endpoint(offline: bool) -> Check:
     )
 
 
+def check_wsl_systemd() -> Check:
+    """v1.3 K1: verify WSL2 systemd is functional, with a remediation
+    hint for both enable-systemd and Windows Task Scheduler paths.
+
+    Skips on non-WSL hosts. Skips silently when /proc/sys/kernel/osrelease
+    can't be read (test envs, containers).
+    """
+    osrel_path = Path("/proc/sys/kernel/osrelease")
+    if not osrel_path.exists():
+        return Check(name="wsl-systemd", status=SKIP, detail="not Linux kernel")
+    try:
+        osrel = osrel_path.read_text().lower()
+    except OSError:
+        return Check(name="wsl-systemd", status=SKIP, detail="osrelease unreadable")
+    if "microsoft" not in osrel and "wsl" not in osrel:
+        return Check(name="wsl-systemd", status=SKIP, detail="not running on WSL")
+    # We're in WSL. Probe systemctl --user.
+    try:
+        cp = subprocess.run(
+            ["systemctl", "--user", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return Check(
+            name="wsl-systemd",
+            status=FAIL,
+            detail="systemctl not available in WSL",
+            hint=(
+                "WSL2 systemd is opt-in. Enable: "
+                'echo -e "[boot]\\nsystemd=true" | sudo tee /etc/wsl.conf; '
+                "then in Windows: wsl --shutdown; restart your WSL distro. "
+                "OR use Windows Task Scheduler — see deploy/WSL2.md."
+            ),
+        )
+    if cp.returncode != 0:
+        return Check(
+            name="wsl-systemd",
+            status=FAIL,
+            detail=f"systemctl --user rc={cp.returncode}",
+            hint=(
+                "systemd installed but user mode not active. "
+                "See deploy/WSL2.md."
+            ),
+        )
+    return Check(name="wsl-systemd", status=OK, detail="WSL systemd functional")
+
+
 def run_all(offline: bool) -> list[Check]:
     return [
         check_claude_binary(),
@@ -353,6 +402,7 @@ def run_all(offline: bool) -> list[Check]:
         check_oauth_token(),
         check_tg(offline),
         check_quota_endpoint(offline),
+        check_wsl_systemd(),
     ]
 
 
