@@ -130,7 +130,7 @@ def test_sync_migrates_v2_state_in_place(tmp_path: Path, monkeypatch) -> None:
     stop_helper.sync_current_task_from_md(project)
 
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert raw["iteration"] == 7  # preserved
     assert raw["session_id"] == "v2-sid"  # preserved
     assert raw["current_phase"] == 2  # preserved

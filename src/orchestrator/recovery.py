@@ -13,11 +13,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orchestrator._runtime import _log
+from datetime import datetime, timezone
+from typing import Iterable
+
+from orchestrator._runtime import _log, _now_iso, _parse_iso_utc
 from orchestrator.alerts import _notify_tg
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
 import state  # noqa: E402
+
+# v1.3 B2: stuck-detection thresholds. Activity-based: a project that
+# shows no filesystem / process / stage activity for STUCK_FAIL_SEC is
+# marked failed; the warning band fires earlier so the operator can see
+# the burn early.
+STUCK_WARN_SEC = 30 * 60  # 30 min
+STUCK_FAIL_SEC = 60 * 60  # 60 min
+# v1.3 B3: auto-recovery cadence + threshold.
+RECOVERY_INTERVAL_SEC = 30 * 60  # scan failed projects every 30 min
+RECOVERY_AGE_SEC = 60 * 60  # only recover after 1h of inactivity
 
 
 def _handle_smart_escalation(
@@ -144,6 +157,86 @@ def _handle_smart_escalation(
                 escalation_attempted=bool(s.escalated_next_cycle),
             )
             _write_human_needed(project_path, stderr)
+
+
+def evaluate_stuck(s: state.State) -> str:
+    """Return one of: 'ok', 'warn', 'fail' based on time since last_activity_at.
+
+    Caller (cycle.py) updates `state.last_activity_at` whenever
+    activity.detect_activity returns is_active=True. Engine flags the
+    project warned at 30min and fails at 60min — long-running training
+    that touches checkpoints does not trigger because filesystem changes
+    keep resetting the timer.
+    """
+    if not s.last_activity_at:
+        return "ok"
+    last = _parse_iso_utc(s.last_activity_at)
+    if last is None:
+        return "ok"
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+    if elapsed >= STUCK_FAIL_SEC:
+        return "fail"
+    if elapsed >= STUCK_WARN_SEC:
+        return "warn"
+    return "ok"
+
+
+def maybe_auto_recover(project_path: Path) -> bool:
+    """v1.3 B3: scan a single project's state and revive it from 'failed'
+    if at least RECOVERY_AGE_SEC have passed since the last activity.
+
+    Returns True iff the project was actually transitioned. Caller
+    (main.py) invokes this from a periodic background sweep across all
+    projects.
+    """
+    s = state.read(project_path)
+    if s.phase != "failed":
+        return False
+    last = _parse_iso_utc(s.last_activity_at)
+    if last is None:
+        # Pre-v1.3 failed project (never had activity tracking) — leave
+        # alone to preserve v1.2 manual-resume contract. Only revive
+        # projects we know fell into failed under v1.3 supervision.
+        return False
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+    if elapsed < RECOVERY_AGE_SEC:
+        return False
+
+    s.phase = "active"
+    s.consecutive_failures = 0
+    s.consecutive_in_progress = 0
+    s.last_in_progress = False
+    s.session_id = None
+    s.recovery_attempts += 1
+    s.last_activity_at = _now_iso()
+    state.write(project_path, s)
+    state.log_event(
+        project_path,
+        "auto_recovery_attempted",
+        attempts=s.recovery_attempts,
+        elapsed_sec=int(elapsed),
+    )
+    _log(
+        f"{project_path.name}: auto-recovery attempt {s.recovery_attempts} "
+        f"(elapsed={int(elapsed)}s)"
+    )
+    _notify_tg(
+        f"auto_recovery {project_path.name} attempt {s.recovery_attempts}"
+    )
+    return True
+
+
+def auto_recover_failed_projects(projects: Iterable[Path]) -> int:
+    """Sweep helper: invoke maybe_auto_recover for each project, return
+    count revived. Used by main.py's periodic background sweep."""
+    n = 0
+    for p in projects:
+        try:
+            if maybe_auto_recover(p):
+                n += 1
+        except Exception as exc:  # noqa: BLE001 — sweep must continue
+            _log(f"{p}: auto-recovery error: {exc!r}")
+    return n
 
 
 def _write_human_needed(project_path: Path, last_stderr: str) -> None:

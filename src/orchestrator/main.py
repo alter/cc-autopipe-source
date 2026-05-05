@@ -28,6 +28,8 @@ import signal
 import sys
 from pathlib import Path
 
+import time
+
 from orchestrator._runtime import (
     _interruptible_sleep,
     _log,
@@ -38,6 +40,10 @@ from orchestrator._runtime import (
 from orchestrator.alerts import _notify_tg
 from orchestrator.cycle import process_project
 from orchestrator.prompt import _read_config_in_progress
+from orchestrator.recovery import (
+    RECOVERY_INTERVAL_SEC,
+    auto_recover_failed_projects,
+)
 import claude_settings  # noqa: E402
 import locking  # noqa: E402
 import quota_monitor as quota_monitor_lib  # noqa: E402
@@ -162,8 +168,22 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         loops = 0
+        last_recovery_sweep_at = 0.0
         while not is_shutdown():
             projects = _read_projects_list(user_home)
+            # v1.3 B3: periodic auto-recovery sweep — revive any
+            # project that has been `phase=failed` for >1h with no
+            # activity. Bounded by RECOVERY_INTERVAL_SEC across the
+            # full projects list (cheap: state.read per project).
+            if time.time() - last_recovery_sweep_at >= RECOVERY_INTERVAL_SEC:
+                try:
+                    revived = auto_recover_failed_projects(projects)
+                    if revived:
+                        _log(f"auto-recovery sweep revived {revived} project(s)")
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"auto-recovery sweep error: {exc!r}")
+                last_recovery_sweep_at = time.time()
+
             active_count = 0
             for project in projects:
                 if is_shutdown():

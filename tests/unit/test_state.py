@@ -362,7 +362,7 @@ def test_cli_set_paused(project: Path, tmp_path: Path) -> None:
 def test_schema_version_is_current_for_fresh_state(project: Path) -> None:
     state.write(project, state.State.fresh(project.name))
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     # v1.0 fields still present.
     assert raw["detached"] is None
     assert raw["current_phase"] == 1
@@ -406,11 +406,11 @@ def test_v1_state_file_migrates_to_current_on_read(project: Path) -> None:
     assert s.phases_completed == []
     assert s.escalated_next_cycle is False
     # schema_version forced to current on read so write() persists v3.
-    assert s.schema_version == 3
+    assert s.schema_version == state.SCHEMA_VERSION
 
     state.write(project, s)
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert "detached" in raw
     assert "current_phase" in raw
     assert "phases_completed" in raw
@@ -592,11 +592,11 @@ def test_v2_state_file_migrates_to_v3_on_read(project: Path) -> None:
     assert s.last_in_progress is False
     assert s.consecutive_in_progress == 0
     # schema_version forced to current on read.
-    assert s.schema_version == 3
+    assert s.schema_version == state.SCHEMA_VERSION
 
     state.write(project, s)
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert "current_task" in raw
     assert raw["current_task"] is None
     assert "last_in_progress" in raw

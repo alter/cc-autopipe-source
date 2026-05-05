@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
@@ -175,6 +175,23 @@ class State:
     current_task: Optional[CurrentTask] = None
     last_in_progress: bool = False
     consecutive_in_progress: int = 0
+    # v1.3 additions (PROMPT_v1.3-FULL.md). Defaults preserve backward
+    # compat: any pre-v3 / pre-v4 state file missing these gets defaults.
+    last_observed_stage: Optional[str] = None
+    last_activity_at: Optional[str] = None
+    recovery_attempts: int = 0
+    research_mode_active: bool = False
+    research_plan_required: bool = False
+    research_plan_target: Optional[str] = None
+    research_iterations_this_window: list[str] = field(default_factory=list)
+    prd_complete_detected: bool = False
+    knowledge_update_pending: bool = False
+    knowledge_baseline_mtime: Optional[float] = None
+    knowledge_pending_reason: Optional[str] = None
+    meta_reflect_pending: bool = False
+    meta_reflect_target: Optional[str] = None
+    meta_reflect_started_at: Optional[str] = None
+    meta_reflect_attempts: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -201,6 +218,23 @@ class State:
             "current_task": asdict(self.current_task) if self.current_task else None,
             "last_in_progress": self.last_in_progress,
             "consecutive_in_progress": self.consecutive_in_progress,
+            "last_observed_stage": self.last_observed_stage,
+            "last_activity_at": self.last_activity_at,
+            "recovery_attempts": self.recovery_attempts,
+            "research_mode_active": self.research_mode_active,
+            "research_plan_required": self.research_plan_required,
+            "research_plan_target": self.research_plan_target,
+            "research_iterations_this_window": list(
+                self.research_iterations_this_window
+            ),
+            "prd_complete_detected": self.prd_complete_detected,
+            "knowledge_update_pending": self.knowledge_update_pending,
+            "knowledge_baseline_mtime": self.knowledge_baseline_mtime,
+            "knowledge_pending_reason": self.knowledge_pending_reason,
+            "meta_reflect_pending": self.meta_reflect_pending,
+            "meta_reflect_target": self.meta_reflect_target,
+            "meta_reflect_started_at": self.meta_reflect_started_at,
+            "meta_reflect_attempts": self.meta_reflect_attempts,
         }
         d.update(self.extras)
         return d

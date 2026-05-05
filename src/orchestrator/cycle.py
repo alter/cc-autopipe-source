@@ -18,14 +18,15 @@ from orchestrator.prompt import (
     _build_claude_cmd,
     _read_config_auto_escalation,
     _read_config_improver,
-    _read_config_in_progress,
 )
 from orchestrator.phase import _maybe_transition_phase, _process_detached
 from orchestrator.recovery import (
     _handle_smart_escalation,
     _write_in_progress_cap_human_needed,
+    evaluate_stuck,
 )
 from orchestrator.subprocess_runner import _run_claude, _stash_stream
+import activity as activity_lib  # noqa: E402
 import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
 import state  # noqa: E402
@@ -302,32 +303,62 @@ def process_project(project_path: Path) -> str:
                     rc=rc,
                 )
 
-        # v1.2 Bug B: in_progress streak cap. If verify keeps reporting
-        # in_progress=true forever, the project is structurally stuck —
-        # escalating to opus won't help (verify-side issue, not
-        # capability). Mark failed + HUMAN_NEEDED so the operator
-        # adjusts verify.sh expectations or breaks the task into
-        # smaller pieces.
-        ip_cfg = _read_config_in_progress(project_path)
-        max_in_progress = int(ip_cfg.get("max_in_progress_cycles") or 12)
-        if s.consecutive_in_progress >= max_in_progress and s.phase == "active":
-            s.phase = "failed"
-            state.write(project_path, s)
-            state.log_event(
+        # v1.3 B2: replace v1.2's blind consecutive_in_progress cap with
+        # activity-based stuck detection. consecutive_in_progress stays
+        # for telemetry but no longer auto-fails — instead, if there's
+        # been NO activity (no fs changes, no running processes, no
+        # stage transition) for 60 minutes, the project is stuck for
+        # real and we mark it failed. Long training (multi-hour) keeps
+        # touching checkpoints, which resets the stuck timer cleanly.
+        try:
+            current_stage = (
+                s.current_task.stage if s.current_task is not None else None
+            )
+            act = activity_lib.detect_activity(
                 project_path,
-                "in_progress_cap_hit",
-                iteration=s.iteration,
-                consecutive_in_progress=s.consecutive_in_progress,
-                max=max_in_progress,
+                project_path.name,
+                last_observed_stage=s.last_observed_stage,
+                current_stage=current_stage,
             )
-            _write_in_progress_cap_human_needed(
-                project_path, s.consecutive_in_progress, max_in_progress
-            )
-            _notify_tg(
-                f"[{project_path.name}] in_progress for "
-                f"{s.consecutive_in_progress} cycles (cap={max_in_progress}); "
-                f"phase=failed — verify likely stuck, see HUMAN_NEEDED.md"
-            )
+            if act["is_active"]:
+                s.last_activity_at = _now_iso()
+                state.write(project_path, s)
+            # Always update last_observed_stage so the next cycle compares
+            # against this cycle's snapshot.
+            if current_stage != s.last_observed_stage:
+                s.last_observed_stage = current_stage
+                state.write(project_path, s)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not crash
+            _log(f"{project_path.name}: activity probe error: {exc!r}")
+
+        if s.phase == "active":
+            stuck = evaluate_stuck(s)
+            if stuck == "warn":
+                state.log_event(
+                    project_path,
+                    "stuck_warning",
+                    iteration=s.iteration,
+                    last_activity_at=s.last_activity_at,
+                )
+            elif stuck == "fail":
+                s.phase = "failed"
+                state.write(project_path, s)
+                state.log_event(
+                    project_path,
+                    "stuck_failed",
+                    iteration=s.iteration,
+                    last_activity_at=s.last_activity_at,
+                    consecutive_in_progress=s.consecutive_in_progress,
+                )
+                _write_in_progress_cap_human_needed(
+                    project_path,
+                    s.consecutive_in_progress,
+                    s.consecutive_in_progress,
+                )
+                _notify_tg(
+                    f"[{project_path.name}] no activity for >60 min — "
+                    f"phase=failed (stuck), see HUMAN_NEEDED.md"
+                )
 
         state.log_event(
             project_path,
