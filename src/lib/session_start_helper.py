@@ -240,17 +240,43 @@ def build_knowledge_block(project_path: str | Path) -> str:
     return knowledge_lib.format_for_injection(text)
 
 
+def build_research_mode_block(project_path: str | Path) -> str:
+    """v1.3 D2: mandatory research-mode + plan-required block.
+
+    Lazy import so a project without orchestrator package on PYTHONPATH
+    (e.g. minimal hook test fixtures) still produces the other blocks
+    without ImportError.
+    """
+    try:
+        # Re-add src/ to sys.path so `import orchestrator.research` resolves.
+        _SRC = Path(__file__).resolve().parent.parent
+        if str(_SRC) not in sys.path:
+            sys.path.insert(0, str(_SRC))
+        import importlib  # noqa: WPS433
+
+        research_mod = importlib.import_module("orchestrator.research")
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return research_mod.build_research_mode_block(Path(project_path))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_full_block(project_path: str | Path) -> str:
     """All v1.2 + v1.3 SessionStart blocks composed in one call. Empty
-    sub-blocks (no backlog, no current_task, no findings, no knowledge)
-    are omitted cleanly.
+    sub-blocks are omitted cleanly.
 
-    Order (per PROMPT_v1.3-FULL.md A3 "after existing context, before
-    long-op guidance"):
+    Order (research_mode block first when active so Claude can't miss
+    it; long-op guidance always last):
 
-        current_task → backlog → findings → knowledge → long-op
+        research_mode? → current_task → backlog → findings → knowledge
+        → long-op
     """
     parts: list[str] = []
+    rm = build_research_mode_block(project_path)
+    if rm:
+        parts.append(rm)
     ct_block = build_current_task_block(project_path)
     if ct_block:
         parts.append(ct_block)

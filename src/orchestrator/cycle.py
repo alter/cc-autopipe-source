@@ -29,6 +29,10 @@ from orchestrator.recovery import (
     _write_in_progress_cap_human_needed,
     evaluate_stuck,
 )
+from orchestrator.research import (
+    maybe_activate_after_cycle,
+    validate_research_plan,
+)
 from orchestrator.subprocess_runner import _run_claude, _stash_stream
 import activity as activity_lib  # noqa: E402
 import locking  # noqa: E402
@@ -148,6 +152,17 @@ def process_project(project_path: Path) -> str:
         # stage_completed events after the cycle's Stop hook runs.
         pre_task_id = s.current_task.id if s.current_task else None
         pre_stages = list(s.current_task.stages_completed) if s.current_task else []
+
+        # v1.3 D3: snapshot open backlog lines BEFORE the cycle so we
+        # can spot lines Claude ADDED during the cycle (used for
+        # research-plan enforcement).
+        from orchestrator.research import _list_open_backlog_lines, _backlog_path
+        _bl_path = _backlog_path(project_path)
+        pre_open_lines: list[str] = (
+            [ln for _, ln in _list_open_backlog_lines(_bl_path)]
+            if _bl_path is not None
+            else []
+        )
 
         rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
 
@@ -371,6 +386,30 @@ def process_project(project_path: Path) -> str:
                     f"[{project_path.name}] no activity for >60 min — "
                     f"phase=failed (stuck), see HUMAN_NEEDED.md"
                 )
+
+        # v1.3 D3: enforce research plan if required this cycle.
+        if s.research_plan_required:
+            try:
+                validate_research_plan(
+                    project_path,
+                    s,
+                    cycle_started_iso=s.last_cycle_started_at,
+                    pre_open_lines=pre_open_lines,
+                )
+                # Re-read because validate_research_plan may have written.
+                s = state.read(project_path)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{project_path.name}: research-plan validate error: {exc!r}")
+
+        # v1.3 D1+D2: detect PRD-complete + activate research mode.
+        # Runs at end of every cycle so a backlog that just became
+        # empty (last [x] / [~] in this cycle) flips the flag immediately.
+        if s.phase == "active":
+            try:
+                maybe_activate_after_cycle(project_path, s)
+                s = state.read(project_path)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{project_path.name}: research mode error: {exc!r}")
 
         state.log_event(
             project_path,
