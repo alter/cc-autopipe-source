@@ -240,6 +240,80 @@ def build_knowledge_block(project_path: str | Path) -> str:
     return knowledge_lib.format_for_injection(text)
 
 
+def _read_quota_pct() -> tuple[float | None, str | None]:
+    """Best-effort read of cached 7d quota fraction + resets_at.
+
+    Returns (None, None) on any failure — caller treats that as "no
+    quota notice to inject". Lazy import so a SessionStart hook in an
+    environment without curl / token still produces other blocks.
+    """
+    try:
+        import quota as quota_lib  # noqa: WPS433
+    except Exception:  # noqa: BLE001
+        return None, None
+    try:
+        q = quota_lib.read_cached()
+    except Exception:  # noqa: BLE001
+        return None, None
+    if q is None:
+        return None, None
+    try:
+        seven_day_pct = float(q.seven_day_pct)
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+    resets_at = None
+    if getattr(q, "seven_day_resets_at", None) is not None:
+        resets_at = q.seven_day_resets_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return seven_day_pct, resets_at
+
+
+def build_quota_notice_block(_project_path: str | Path | None = None) -> str:
+    """v1.3 E1: inject a quota notice based on cached 7d %.
+
+    Tiers (per PROMPT_v1.3-FULL.md GROUP E):
+      <60%   → no block
+      60-80% → QUOTA NOTICE (cheaper actions)
+      80-95% → QUOTA HIGH (avoid starting new training)
+      >=95%  → QUOTA CRITICAL (verdict-only mode)
+    """
+    pct, resets_at = _read_quota_pct()
+    if pct is None or pct < 0.60:
+        return ""
+    pct_int = int(pct * 100)
+    resets_str = resets_at or "(unknown)"
+    if pct >= 0.95:
+        return "\n".join(
+            [
+                "=== QUOTA CRITICAL ===",
+                f"7-day quota at {pct_int}% (resets at {resets_str}).",
+                "VERDICT MODE ONLY:",
+                "- Write PROMOTION.md verdicts for any candidates with",
+                "  completed Stage C-D",
+                "- Do NOT start training, backtests, or new candidates",
+                "- Keep CURRENT_TASK.md updated with what's blocked on quota",
+                "===",
+            ]
+        )
+    if pct >= 0.80:
+        return "\n".join(
+            [
+                "=== QUOTA HIGH ===",
+                f"7-day quota at {pct_int}% (resets at {resets_str}).",
+                "Focus on completing in-progress work; avoid starting new",
+                "training jobs. If a task requires new training, defer.",
+                "===",
+            ]
+        )
+    return "\n".join(
+        [
+            "=== QUOTA NOTICE ===",
+            f"7-day quota at {pct_int}%. Continue normally but prefer",
+            "cheaper actions.",
+            "===",
+        ]
+    )
+
+
 def build_research_mode_block(project_path: str | Path) -> str:
     """v1.3 D2: mandatory research-mode + plan-required block.
 
@@ -289,6 +363,9 @@ def build_full_block(project_path: str | Path) -> str:
     kb = build_knowledge_block(project_path)
     if kb:
         parts.append(kb)
+    qn = build_quota_notice_block(project_path)
+    if qn:
+        parts.append(qn)
     parts.append(build_long_op_block())
     return "\n\n".join(parts)
 
@@ -327,6 +404,18 @@ def main(argv: list[str]) -> int:
     )
     p_kn.add_argument("project")
 
+    p_qn = sub.add_parser(
+        "quota-notice",
+        help="Print quota notice injection block (v1.3 E1).",
+    )
+    p_qn.add_argument("project", nargs="?", default=".")
+
+    p_rm = sub.add_parser(
+        "research-mode",
+        help="Print research-mode injection block (v1.3 D2).",
+    )
+    p_rm.add_argument("project")
+
     p_all = sub.add_parser(
         "all",
         help="Print all v1.2 + v1.3 SessionStart blocks.",
@@ -348,6 +437,14 @@ def main(argv: list[str]) -> int:
                 print(out)
         elif args.cmd == "knowledge":
             out = build_knowledge_block(args.project)
+            if out:
+                print(out)
+        elif args.cmd == "quota-notice":
+            out = build_quota_notice_block(args.project)
+            if out:
+                print(out)
+        elif args.cmd == "research-mode":
+            out = build_research_mode_block(args.project)
             if out:
                 print(out)
         elif args.cmd == "all":
