@@ -96,6 +96,25 @@ def disable_global_hooks_with_backup(home: Path | None = None) -> dict:
                 "backup_path": None,
                 "original_had_hooks": had_hooks,
             }
+    else:
+        # v1.3 F3: surface stale-bypass-backup warning when an old backup
+        # is still on disk from a previous unclean shutdown. >24h is
+        # suspicious — likely the engine has been crashing / never
+        # cleanly stopping. Don't overwrite (the OLD backup is the real
+        # operator settings).
+        try:
+            import time
+
+            age_sec = time.time() - backup_path.stat().st_mtime
+            if age_sec > 24 * 3600:
+                print(
+                    f"claude_settings: stale bypass backup detected at "
+                    f"{backup_path} ({int(age_sec / 3600)}h old) — "
+                    "preserving as-is",
+                    file=sys.stderr,
+                )
+        except OSError:
+            pass
 
     cleaned = {k: v for k, v in data.items() if k != "hooks"}
     try:

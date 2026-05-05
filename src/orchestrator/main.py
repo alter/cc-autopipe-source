@@ -40,6 +40,7 @@ from orchestrator._runtime import (
 from orchestrator.alerts import _notify_tg
 from orchestrator.cycle import process_project
 from orchestrator.prompt import _read_config_in_progress
+from orchestrator.daily_report import maybe_write_for_all
 from orchestrator.recovery import (
     RECOVERY_INTERVAL_SEC,
     auto_recover_failed_projects,
@@ -169,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 
         loops = 0
         last_recovery_sweep_at = 0.0
+        last_daily_report_at = 0.0
         while not is_shutdown():
             projects = _read_projects_list(user_home)
             # v1.3 B3: periodic auto-recovery sweep — revive any
@@ -183,6 +185,17 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001
                     _log(f"auto-recovery sweep error: {exc!r}")
                 last_recovery_sweep_at = time.time()
+
+            # v1.3 F1: write per-project daily summary every 24h.
+            # Best-effort, capped to one write per project per day.
+            try:
+                last_daily_report_at, written = maybe_write_for_all(
+                    list(projects), last_daily_report_at, time.time()
+                )
+                if written:
+                    _log(f"daily report wrote {len(written)} summary file(s)")
+            except Exception as exc:  # noqa: BLE001
+                _log(f"daily report error: {exc!r}")
 
             active_count = 0
             for project in projects:

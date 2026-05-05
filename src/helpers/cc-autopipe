@@ -37,6 +37,7 @@ Project lifecycle:
   run <project> [--once]       Run a single cycle for one project      [stage F]
   tail                         Follow aggregate.jsonl                  [stage F]
   doctor                       Verify prerequisites and config         [stage F]
+  health [--24h] [--json]      Show recent health metrics              [v1.3]
 
 Helpers (called from inside Claude sessions):
   checkpoint <text>            Save .cc-autopipe/checkpoint.md         [stage F]
@@ -103,6 +104,9 @@ case "$CMD" in
         ;;
     doctor)
         exec python3 "$CC_AUTOPIPE_HOME/cli/doctor.py" "$@"
+        ;;
+    health)
+        exec python3 "$CC_AUTOPIPE_HOME/cli/health.py" "$@"
         ;;
     checkpoint)
         exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-checkpoint" "$@"

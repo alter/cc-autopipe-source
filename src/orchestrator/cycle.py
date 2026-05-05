@@ -35,8 +35,11 @@ from orchestrator.research import (
 )
 from orchestrator.subprocess_runner import _run_claude, _stash_stream
 import activity as activity_lib  # noqa: E402
+import disk as disk_lib  # noqa: E402
+import health as health_lib  # noqa: E402
 import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
+import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
 
 DEFAULT_CYCLE_TIMEOUT_SEC = 3600
@@ -386,6 +389,36 @@ def process_project(project_path: Path) -> str:
                     f"[{project_path.name}] no activity for >60 min — "
                     f"phase=failed (stuck), see HUMAN_NEEDED.md"
                 )
+
+        # v1.3 F2: emit a health record for this cycle. Best-effort —
+        # never blocks the cycle. Quota cache may be unavailable
+        # (CC_AUTOPIPE_QUOTA_DISABLED, mock-claude tests) → omit fields.
+        try:
+            five_pct = None
+            seven_pct = None
+            try:
+                q = quota_lib.read_cached()
+                if q is not None:
+                    five_pct = float(q.five_hour_pct)
+                    seven_pct = float(q.seven_day_pct)
+            except Exception:  # noqa: BLE001
+                pass
+            disk_free = None
+            try:
+                probe = disk_lib.check_disk_space(project_path, min_free_gb=0.0)
+                disk_free = probe.get("free_gb")
+            except Exception:  # noqa: BLE001
+                pass
+            health_lib.emit_cycle_health(
+                project_name=project_path.name,
+                iteration=s.iteration,
+                phase=s.phase,
+                five_hour_pct=five_pct,
+                seven_day_pct=seven_pct,
+                disk_free_gb=disk_free,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"{project_path.name}: health emit error: {exc!r}")
 
         # v1.3 D3: enforce research plan if required this cycle.
         if s.research_plan_required:
