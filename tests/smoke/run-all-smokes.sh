@@ -8,6 +8,10 @@
 #   - v0.5 baseline: a, b, c, d, e, f
 #   - v1.0 additions: h, i, j, k, l, m, n
 #   - v1.2 additions (added by their respective batches): none yet
+#   - v1.3 / v1.3.1 / v1.3.2 hotfix smokes (run-*.sh, no stage letter):
+#     autonomy, meta-reflect, knowledge-enforce, research-plan,
+#     stuck-detection, recovery-sweep, detach-defaults,
+#     meta-reflect-trigger, research-mode-trigger, knowledge-mtime
 #
 # Each individual stage smoke internally re-runs lint + targeted pytest;
 # total wall time on a clean tree is ~25 minutes. Runs are sequential so
@@ -31,6 +35,21 @@ ok()   { printf '\033[32mOK \033[0m %s\n' "$*"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$*" >&2; }
 
 ALL_STAGES=(a b c d e f h i j k l m n)
+# v1.3+ hotfix smokes don't fit the stage-letter scheme — they live as
+# `run-<name>-smoke.sh` siblings. Listed here so a full smoke run
+# covers everything that pins a hotfix invariant.
+HOTFIX_SMOKES=(
+    autonomy
+    meta-reflect
+    knowledge-enforce
+    research-plan
+    stuck-detection
+    recovery-sweep
+    detach-defaults
+    meta-reflect-trigger
+    research-mode-trigger
+    knowledge-mtime
+)
 
 FAST=0
 REQUESTED=()
@@ -45,7 +64,7 @@ for arg in "$@"; do
 done
 
 if [ "${#REQUESTED[@]}" -eq 0 ]; then
-    STAGES=("${ALL_STAGES[@]}")
+    STAGES=("${ALL_STAGES[@]}" "${HOTFIX_SMOKES[@]}")
 else
     STAGES=("${REQUESTED[@]}")
 fi
@@ -54,24 +73,42 @@ PASS_LIST=()
 FAIL_LIST=()
 START_TS=$(date +%s)
 
+# A stage name matches one of two conventions:
+#   - single-letter / short token  → tests/smoke/stage-<name>.sh
+#   - hotfix smoke name            → tests/smoke/run-<name>-smoke.sh
+# We pick whichever exists; older stage scripts win when both happen
+# to exist (shouldn't happen in practice).
+_resolve_smoke_script() {
+    local name="$1"
+    local stage_path="tests/smoke/stage-${name}.sh"
+    local hotfix_path="tests/smoke/run-${name}-smoke.sh"
+    if [ -f "$stage_path" ]; then
+        echo "$stage_path"
+    elif [ -f "$hotfix_path" ]; then
+        echo "$hotfix_path"
+    else
+        echo ""
+    fi
+}
+
 for stage in "${STAGES[@]}"; do
-    SCRIPT="tests/smoke/stage-${stage}.sh"
-    if [ ! -x "$SCRIPT" ] && [ ! -f "$SCRIPT" ]; then
-        fail "stage-${stage}: smoke script missing at $SCRIPT"
+    SCRIPT="$(_resolve_smoke_script "$stage")"
+    if [ -z "$SCRIPT" ]; then
+        fail "smoke ${stage}: script missing (tried stage-${stage}.sh and run-${stage}-smoke.sh)"
         FAIL_LIST+=("$stage:missing")
         if [ "$FAST" = "1" ]; then break; fi
         continue
     fi
-    log "stage-${stage} starting"
+    log "${stage} starting"
     STAGE_START=$(date +%s)
-    LOG="/tmp/run-all-smokes.stage-${stage}.log"
+    LOG="/tmp/run-all-smokes.${stage}.log"
     if bash "$SCRIPT" >"$LOG" 2>&1; then
         STAGE_DUR=$(( $(date +%s) - STAGE_START ))
-        ok "stage-${stage} (${STAGE_DUR}s)"
+        ok "${stage} (${STAGE_DUR}s)"
         PASS_LIST+=("$stage")
     else
         STAGE_DUR=$(( $(date +%s) - STAGE_START ))
-        fail "stage-${stage} (${STAGE_DUR}s) — last 20 lines of $LOG:"
+        fail "${stage} (${STAGE_DUR}s) — last 20 lines of $LOG:"
         tail -n 20 "$LOG" | sed 's/^/    | /' >&2
         FAIL_LIST+=("$stage")
         if [ "$FAST" = "1" ]; then
