@@ -211,3 +211,87 @@ def test_sweep_continues_on_per_project_error(
     revived = recovery.auto_recover_failed_projects([p_bad, p_good])
     assert revived == 1
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# v1.3.1 B3-FIX: shutdown safety + per-project lock awareness
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_aborts_on_shutdown(tmp_path: Path, monkeypatch) -> None:
+    """A SIGTERM mid-sweep flips the shutdown flag — the inner loop
+    must stop iterating projects so state.json mutations don't keep
+    happening after the operator asked us to stop."""
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    p1 = tmp_path / "p1"
+    p2 = tmp_path / "p2"
+    for p in (p1, p2):
+        (p / ".cc-autopipe").mkdir(parents=True)
+        s = state.State.fresh(p.name)
+        s.phase = "failed"
+        s.last_activity_at = _ts_offset_min(75)
+        state.write(p, s)
+
+    calls: list[Path] = []
+    original = recovery.maybe_auto_recover
+
+    def stop_after_first(p: Path) -> bool:
+        calls.append(p)
+        # Flip shutdown after the first project is processed.
+        from orchestrator import _runtime
+        _runtime.set_shutdown(True)
+        return original(p)
+
+    monkeypatch.setattr(recovery, "maybe_auto_recover", stop_after_first)
+    try:
+        recovery.auto_recover_failed_projects([p1, p2])
+        # Only p1 was visited; p2 was skipped because the shutdown flag
+        # tripped before it was reached.
+        assert calls == [p1]
+        assert state.read(p1).phase == "active"
+        assert state.read(p2).phase == "failed"
+    finally:
+        from orchestrator import _runtime
+        _runtime.set_shutdown(False)
+
+
+def test_auto_recover_skips_when_lock_held(tmp_path: Path, monkeypatch) -> None:
+    """Race protection: if another process holds the per-project lock
+    (in-flight cycle from another orchestrator, or stale fcntl handoff),
+    auto-recovery must skip rather than clobber that process's state."""
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    p = _project(tmp_path)
+    s = state.State.fresh(p.name)
+    s.phase = "failed"
+    s.last_activity_at = _ts_offset_min(75)
+    state.write(p, s)
+
+    import locking
+    other = locking.acquire_project(p)
+    assert other is not None  # we hold it now
+    try:
+        # Recovery sees the lock held, skips, returns False.
+        assert recovery.maybe_auto_recover(p) is False
+        assert state.read(p).phase == "failed"
+    finally:
+        other.release()
+
+
+def test_auto_recover_releases_lock_on_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """After a successful recovery, the per-project lock must be released
+    so the next cycle's process_project can acquire it normally."""
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(tmp_path / "uhome"))
+    p = _project(tmp_path)
+    s = state.State.fresh(p.name)
+    s.phase = "failed"
+    s.last_activity_at = _ts_offset_min(75)
+    state.write(p, s)
+
+    assert recovery.maybe_auto_recover(p) is True
+    # Now the next cycle should be able to acquire the lock.
+    import locking
+    again = locking.acquire_project(p)
+    assert again is not None
+    again.release()

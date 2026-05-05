@@ -16,10 +16,11 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Iterable
 
-from orchestrator._runtime import _log, _now_iso, _parse_iso_utc
+from orchestrator._runtime import _log, _now_iso, _parse_iso_utc, is_shutdown
 from orchestrator.alerts import _notify_tg
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
+import locking  # noqa: E402
 import state  # noqa: E402
 
 # v1.3 B2: stuck-detection thresholds. Activity-based: a project that
@@ -198,51 +199,74 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
 
     Returns True iff the project was actually transitioned. Caller
     (main.py) invokes this from a periodic background sweep across all
-    projects.
+    projects. Per-project lock is acquired non-blocking for the
+    state.read/write window — if another process holds it (in-flight
+    cycle from another orchestrator, or a stale fcntl), we skip rather
+    than race.
     """
     project_path = Path(project_path)
-    s = state.read(project_path)
-    if s.phase != "failed":
+    if not (project_path / ".cc-autopipe").exists():
         return False
-    last = _parse_iso_utc(s.last_activity_at)
-    if last is None:
-        # Pre-v1.3 failed project (never had activity tracking) — leave
-        # alone to preserve v1.2 manual-resume contract. Only revive
-        # projects we know fell into failed under v1.3 supervision.
+    proj_lock = locking.acquire_project(project_path)
+    if proj_lock is None:
+        _log(
+            f"{project_path.name}: skip auto-recovery (per-project lock held)"
+        )
         return False
-    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
-    if elapsed < RECOVERY_AGE_SEC:
-        return False
+    try:
+        s = state.read(project_path)
+        if s.phase != "failed":
+            return False
+        last = _parse_iso_utc(s.last_activity_at)
+        if last is None:
+            # Pre-v1.3 failed project (never had activity tracking) —
+            # leave alone to preserve v1.2 manual-resume contract. Only
+            # revive projects we know fell into failed under v1.3
+            # supervision.
+            return False
+        elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+        if elapsed < RECOVERY_AGE_SEC:
+            return False
 
-    s.phase = "active"
-    s.consecutive_failures = 0
-    s.consecutive_in_progress = 0
-    s.last_in_progress = False
-    s.session_id = None
-    s.recovery_attempts += 1
-    s.last_activity_at = _now_iso()
-    state.write(project_path, s)
-    state.log_event(
-        project_path,
-        "auto_recovery_attempted",
-        attempts=s.recovery_attempts,
-        elapsed_sec=int(elapsed),
-    )
-    _log(
-        f"{project_path.name}: auto-recovery attempt {s.recovery_attempts} "
-        f"(elapsed={int(elapsed)}s)"
-    )
-    _notify_tg(
-        f"auto_recovery {project_path.name} attempt {s.recovery_attempts}"
-    )
-    return True
+        s.phase = "active"
+        s.consecutive_failures = 0
+        s.consecutive_in_progress = 0
+        s.last_in_progress = False
+        s.session_id = None
+        s.recovery_attempts += 1
+        s.last_activity_at = _now_iso()
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "auto_recovery_attempted",
+            attempts=s.recovery_attempts,
+            elapsed_sec=int(elapsed),
+        )
+        _log(
+            f"{project_path.name}: auto-recovery attempt {s.recovery_attempts} "
+            f"(elapsed={int(elapsed)}s)"
+        )
+        _notify_tg(
+            f"auto_recovery {project_path.name} attempt {s.recovery_attempts}"
+        )
+        return True
+    finally:
+        proj_lock.release()
 
 
 def auto_recover_failed_projects(projects: Iterable[Path]) -> int:
     """Sweep helper: invoke maybe_auto_recover for each project, return
-    count revived. Used by main.py's periodic background sweep."""
+    count revived. Used by main.py's periodic background sweep.
+
+    Aborts the inner loop if the orchestrator's shutdown flag flips
+    mid-sweep, so a SIGTERM during a long projects.list scan doesn't
+    keep mutating state.json after the operator asked us to stop.
+    """
     n = 0
     for p in projects:
+        if is_shutdown():
+            _log("auto-recovery sweep: shutdown flag set, aborting")
+            break
         try:
             if maybe_auto_recover(p):
                 n += 1
