@@ -274,12 +274,31 @@ def _state_path(project_path: str | os.PathLike[str]) -> Path:
     return Path(project_path) / ".cc-autopipe" / STATE_FILENAME
 
 
-def read(project_path: str | os.PathLike[str]) -> State:
-    """Read state.json. On corruption or absence: retry once, then reset.
+def _bak_path(state_path: Path) -> Path:
+    return state_path.with_suffix(state_path.suffix + ".bak")
 
-    Returns a freshly-initialised State if the file is missing or
-    unrecoverably corrupt. The caller can persist that fresh state
-    immediately by calling write().
+
+def _try_load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        return None
+
+
+def read(project_path: str | os.PathLike[str]) -> State:
+    """Read state.json with v1.3 corruption recovery.
+
+    Order of operations:
+      1. Try state.json. If valid → return. (Successful load triggers a
+         best-effort copy to state.json.bak.)
+      2. If state.json is corrupt → retry once after 0.5s (mid-write
+         race protection). If still corrupt → fall through.
+      3. Try state.json.bak. If valid → return (with warning log).
+      4. Otherwise → return fresh State.
+
+    Returns a freshly-initialised State if both files are missing or
+    unrecoverably corrupt.
     """
     path = _state_path(project_path)
     name = Path(project_path).name
@@ -288,29 +307,71 @@ def read(project_path: str | os.PathLike[str]) -> State:
         try:
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            return State.from_dict(data)
+            s = State.from_dict(data)
+            # Best-effort: keep .bak in sync with last successful read.
+            try:
+                _refresh_bak(path)
+            except OSError:
+                pass
+            return s
         except FileNotFoundError:
             return State.fresh(name)
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             if attempt == 1:
-                # Possibly mid-write — the writer renames atomically, but a
-                # reader could in theory see a stale transient. Retry once.
                 _log(f"state.json read attempt 1 failed: {exc}; retrying")
                 time.sleep(0.5)
                 continue
-            _log(f"state.json unrecoverable at {path}: {exc}; resetting")
-            return State.fresh(name)
+            _log(f"state.json unrecoverable at {path}: {exc}; trying .bak")
 
-    # Unreachable, but keeps type checkers happy.
+    # Both attempts on state.json failed → try .bak.
+    bak = _bak_path(path)
+    bak_data = _try_load_json(bak) if bak.exists() else None
+    if isinstance(bak_data, dict):
+        try:
+            s = State.from_dict(bak_data)
+            _log(f"state.json restored from {bak}")
+            # Promote .bak back to state.json so subsequent reads succeed.
+            try:
+                bak.replace(path)
+            except OSError:
+                pass
+            return s
+        except (KeyError, TypeError, ValueError) as exc:
+            _log(f"state.json.bak unparseable at {bak}: {exc}; resetting")
+
     return State.fresh(name)
 
 
+def _refresh_bak(state_path: Path) -> None:
+    """Copy current state.json to state.json.bak. Best-effort."""
+    if not state_path.exists():
+        return
+    bak = _bak_path(state_path)
+    try:
+        # Read+write rather than os.replace to keep the original in place.
+        contents = state_path.read_bytes()
+        tmp = bak.with_suffix(bak.suffix + f".tmp.{os.getpid()}")
+        tmp.write_bytes(contents)
+        os.replace(tmp, bak)
+    except OSError:
+        # Bak refresh is best-effort; never fatal.
+        try:
+            tmp = bak.with_suffix(bak.suffix + f".tmp.{os.getpid()}")
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def write(project_path: str | os.PathLike[str], state: State) -> None:
-    """Atomic write via tmpfile + os.replace.
+    """Atomic write via tmpfile + os.replace, refresh .bak after.
 
     Single-writer model: orchestrator + hooks coordinate via the
     per-project lock (Stage D). Within that, write() is safe under
     concurrent processes — os.replace is atomic on POSIX.
+
+    v1.3 C3: after the atomic rename succeeds, copy the new state.json
+    to state.json.bak so a future corruption can be recovered.
     """
     path = _state_path(project_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,6 +388,10 @@ def write(project_path: str | os.PathLike[str], state: State) -> None:
                 tmp.unlink()
             except OSError:
                 pass
+    try:
+        _refresh_bak(path)
+    except OSError:
+        pass
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:

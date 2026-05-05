@@ -1,0 +1,19 @@
+[Unit]
+Description=cc-autopipe orchestrator
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=alter
+WorkingDirectory=/home/alter
+Environment="PATH=/home/alter/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/mnt/c/claude/artifacts/repos/cc-autopipe-source/src/helpers/cc-autopipe start --foreground
+ExecStop=/mnt/c/claude/artifacts/repos/cc-autopipe-source/src/helpers/cc-autopipe stop
+Restart=always
+RestartSec=30
+StartLimitInterval=600
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

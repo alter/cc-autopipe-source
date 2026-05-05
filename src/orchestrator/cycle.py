@@ -13,7 +13,11 @@ from pathlib import Path
 
 from orchestrator._runtime import _log, _now_iso, _user_home
 from orchestrator.alerts import _notify_tg
-from orchestrator.preflight import _preflight_quota, _resume_paused_if_due
+from orchestrator.preflight import (
+    _preflight_disk,
+    _preflight_quota,
+    _resume_paused_if_due,
+)
 from orchestrator.prompt import (
     _build_claude_cmd,
     _read_config_auto_escalation,
@@ -86,6 +90,14 @@ def process_project(project_path: Path) -> str:
         # repeat cycles within a minute share the same quota read.
         preflight = _preflight_quota(project_path, s)
         if preflight in ("paused_5h", "paused_7d"):
+            return "paused"
+
+        # v1.3 C2: pre-cycle disk check + auto-cleanup. Only runs after
+        # quota cleared (so a paused-on-quota project doesn't burn disk
+        # cleanup work). Pauses the project on disk_full when cleanup
+        # cannot recover enough space.
+        disk_status = _preflight_disk(project_path, s)
+        if disk_status == "paused":
             return "paused"
 
         s.iteration += 1

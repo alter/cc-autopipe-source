@@ -13,8 +13,16 @@ from pathlib import Path
 
 from orchestrator._runtime import _log
 from orchestrator.alerts import _notify_tg, _should_send_7d_alert
+from orchestrator.prompt import _coerce_yaml_value
+import disk as disk_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
+
+DISK_CONFIG_DEFAULTS: dict[str, object] = {
+    "disk_auto_cleanup": True,
+    "disk_min_free_gb": 5.0,
+    "disk_keep_checkpoints_per_dir": 3,
+}
 
 # Pre-flight thresholds. Deviates from SPEC §9.2 — see OPEN_QUESTIONS.md Q14.
 # Engine pauses only when quota is dangerously close to exhaustion; 90% 7d
@@ -122,3 +130,119 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
         return "warn_5h"
 
     return "ok"
+
+
+def _read_disk_config(project_path: Path) -> dict[str, object]:
+    """Parse top-level disk_* keys from .cc-autopipe/config.yaml.
+
+    Defaults to DISK_CONFIG_DEFAULTS. Tolerates missing file / missing
+    keys / malformed YAML scalars (falls back to default for the bad key).
+    """
+    out = dict(DISK_CONFIG_DEFAULTS)
+    cfg = project_path / ".cc-autopipe" / "config.yaml"
+    if not cfg.exists():
+        return out
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped.startswith(" ") or ":" not in stripped:
+            continue
+        key, _, raw = stripped.partition(":")
+        key = key.strip()
+        if key in DISK_CONFIG_DEFAULTS:
+            out[key] = _coerce_yaml_value(raw)
+    try:
+        out["disk_min_free_gb"] = float(out["disk_min_free_gb"])
+    except (TypeError, ValueError):
+        out["disk_min_free_gb"] = float(DISK_CONFIG_DEFAULTS["disk_min_free_gb"])
+    try:
+        out["disk_keep_checkpoints_per_dir"] = int(
+            out["disk_keep_checkpoints_per_dir"]
+        )
+    except (TypeError, ValueError):
+        out["disk_keep_checkpoints_per_dir"] = int(
+            DISK_CONFIG_DEFAULTS["disk_keep_checkpoints_per_dir"]
+        )
+    return out
+
+
+def _preflight_disk(project_path: Path, s: state.State) -> str:
+    """v1.3 C2: pre-cycle disk check with auto-cleanup.
+
+    Returns:
+      "ok"        — disk fine, or cleanup recovered enough space
+      "cleaned"   — was low, ran cleanup, now ok
+      "paused"    — still under threshold after cleanup; phase=paused
+    """
+    cfg = _read_disk_config(project_path)
+    min_free = float(cfg.get("disk_min_free_gb") or 5.0)
+    probe = disk_lib.check_disk_space(project_path, min_free_gb=min_free)
+    if probe["ok"]:
+        return "ok"
+
+    if not bool(cfg.get("disk_auto_cleanup", True)):
+        from datetime import datetime, timedelta, timezone
+
+        s.phase = "paused"
+        s.paused = state.Paused(
+            resume_at=(
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            reason="disk_full",
+        )
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "paused",
+            reason="disk_full",
+            free_gb=probe["free_gb"],
+        )
+        _notify_tg(
+            f"[{project_path.name}] disk full "
+            f"({probe['free_gb']:.1f} GB free, threshold {min_free} GB) "
+            "— project paused"
+        )
+        return "paused"
+
+    keep = int(cfg.get("disk_keep_checkpoints_per_dir") or 3)
+    removed = disk_lib.cleanup_old_checkpoints(project_path, keep_per_dir=keep)
+    state.log_event(
+        project_path,
+        "disk_cleanup",
+        removed_count=len(removed),
+        free_gb_before=probe["free_gb"],
+    )
+    _log(
+        f"{project_path.name}: disk cleanup removed {len(removed)} "
+        f"checkpoints (free was {probe['free_gb']} GB)"
+    )
+
+    probe2 = disk_lib.check_disk_space(project_path, min_free_gb=min_free)
+    if probe2["ok"]:
+        return "cleaned"
+
+    from datetime import datetime, timedelta, timezone
+
+    s.phase = "paused"
+    s.paused = state.Paused(
+        resume_at=(
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        reason="disk_full",
+    )
+    state.write(project_path, s)
+    state.log_event(
+        project_path,
+        "paused",
+        reason="disk_full",
+        free_gb=probe2["free_gb"],
+        cleanup_removed=len(removed),
+    )
+    _notify_tg(
+        f"[{project_path.name}] disk_full {probe2['free_gb']:.1f} GB free "
+        f"after cleanup of {len(removed)} ckpts — project paused"
+    )
+    return "paused"

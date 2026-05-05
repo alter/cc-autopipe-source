@@ -1,0 +1,13 @@
+[Unit]
+Description=cc-autopipe watchdog
+After=cc-autopipe.service
+
+[Service]
+Type=simple
+User=alter
+ExecStart=/usr/bin/python3 /mnt/c/claude/artifacts/repos/cc-autopipe-source/src/watchdog/watchdog.py
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
