@@ -277,6 +277,33 @@ def test_auto_recover_skips_when_lock_held(tmp_path: Path, monkeypatch) -> None:
         other.release()
 
 
+# ---------------------------------------------------------------------------
+# v1.3.1 B-FIX: long-running training scenario (AI-trade regression)
+# ---------------------------------------------------------------------------
+
+
+def test_15_active_cycles_never_fail() -> None:
+    """AI-trade regression: 7 in_progress cycles of legitimate ML
+    training tripped v1.2's `consecutive_in_progress >= max` cap and
+    sent the project to phase=failed. v1.3 B2 replaced the cap with
+    activity-based stuck detection — as long as detect_activity keeps
+    returning is_active=True (touched checkpoints, running processes,
+    stage transitions), last_activity_at stays current and
+    evaluate_stuck returns 'ok' regardless of cycle count.
+    """
+    s = state.State.fresh("ai-trade")
+    s.last_in_progress = True
+    for _ in range(15):
+        s.consecutive_in_progress += 1
+        # Simulates cycle.py:372 — any activity signal updates timestamp.
+        s.last_activity_at = _ts_offset_min(0)
+        assert recovery.evaluate_stuck(s) == "ok"
+    assert s.consecutive_in_progress == 15  # telemetry preserved
+    # Now stop activity entirely — 65 min later, evaluate_stuck flips.
+    s.last_activity_at = _ts_offset_min(65)
+    assert recovery.evaluate_stuck(s) == "fail"
+
+
 def test_auto_recover_releases_lock_on_success(
     tmp_path: Path, monkeypatch
 ) -> None:
