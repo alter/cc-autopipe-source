@@ -1,12 +1,17 @@
 # Build Status
 
-**Updated:** 2026-05-05T20:30:00Z
+**Updated:** 2026-05-06T00:00:00Z
 **Current branch:** main
-**Current stage:** **v1.3.1 HOTFIX COMPLETE.** Three groups landed
-on top of v1.3 (B-FIX regression test + B3-FIX shutdown/lock
-awareness + DETACH-CONFIG per-project defaults). 548 → 573 tests
-passing. 4 v1.3 smokes + 3 new v1.3.1 smokes all green. Awaiting
-Roman validation + tag v1.3.1.
+**Current stage:** **v1.3.2 HOTFIX COMPLETE.** Three groups landed
+on top of v1.3.1 (RECOVERY-SAFE: skip enforcement-state phases +
+STDERR-LOGGING: daemon stderr capture with 50MB rotation +
+TRIGGER-SMOKES: synthetic enforcement-loop validation). 573 → 599
+tests passing. 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 smokes all green.
+Awaiting Roman validation + tag v1.3.2.
+
+**Earlier stage:** v1.3.1 HOTFIX COMPLETE. Three groups (B-FIX
+regression test + B3-FIX shutdown/lock awareness + DETACH-CONFIG
+per-project defaults). 548 → 573. See `V131_BUILD_DONE.md`.
 
 **Earlier stage:** v1.3 BUILD COMPLETE. Full 14-day-autonomy
 hardening landed — 9 groups (G refactor + A memory + B recovery +
@@ -16,6 +21,40 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.2 HOTFIX — final state
+
+**3 groups landed across 4 atomic commits.** See `V132_BUILD_DONE.md`
+for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| RECOVERY-SAFE | recovery.py `_should_recover` gate skips meta_reflect / knowledge_update / research_plan pending + non-failed phases | +15 |
+| STDERR-LOGGING | main.py `_redirect_streams_for_daemon` + `_rotate_log` (50MB×3) | +10 |
+| TRIGGER-SMOKES | 3 new run-*-smoke.sh scripts + run-all-smokes.sh updated to discover them | +0 (smokes) |
+
+**Test counts (v1.3.2):**
+- pytest: 573 (v1.3.1 baseline) → **599 passed** (+26 new tests)
+- 10 hotfix smokes all green: 4 v1.3 (autonomy, meta-reflect,
+  knowledge-enforce, research-plan) + 3 v1.3.1 (stuck-detection,
+  recovery-sweep, detach-defaults) + 3 v1.3.2 (meta-reflect-trigger,
+  research-mode-trigger, knowledge-mtime)
+- KILL-9 acceptance gate: confirmed orchestrator-stderr.log captures
+  the startup line after SIGKILL
+
+**Schema:** unchanged (v4).
+
+### Currently working on
+
+**v1.3.2 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.2`. See `V132_BUILD_DONE.md` for
+the full smoke test plan.
+
+---
 
 ## v1.3.1 HOTFIX — final state
 
@@ -35,16 +74,6 @@ for the full summary.
 - 4 v1.3 smokes still green
 
 **Schema:** unchanged (v4).
-
-### Currently working on
-
-**v1.3.1 build done.** All gates + smokes green; awaiting Roman
-validation + manual smoke against AI-trade after deploying.
-
-### Next
-
-Roman validates + tags `v1.3.1`. See `V131_BUILD_DONE.md` for
-the full smoke test plan.
 
 ---
 
