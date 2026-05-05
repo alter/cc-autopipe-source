@@ -1,16 +1,52 @@
 # Build Status
 
-**Updated:** 2026-05-05T17:00:00Z
+**Updated:** 2026-05-05T20:30:00Z
 **Current branch:** main
-**Current stage:** **v1.3 BUILD COMPLETE.** Full 14-day-autonomy
+**Current stage:** **v1.3.1 HOTFIX COMPLETE.** Three groups landed
+on top of v1.3 (B-FIX regression test + B3-FIX shutdown/lock
+awareness + DETACH-CONFIG per-project defaults). 548 → 573 tests
+passing. 4 v1.3 smokes + 3 new v1.3.1 smokes all green. Awaiting
+Roman validation + tag v1.3.1.
+
+**Earlier stage:** v1.3 BUILD COMPLETE. Full 14-day-autonomy
 hardening landed — 9 groups (G refactor + A memory + B recovery +
 C infra + D research + E quota + F ops + H META_REFLECT + I
-knowledge + K WSL2). Schema bumped v3 → v4. Awaiting Roman
-validation + tag v1.3.
+knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.1 HOTFIX — final state
+
+**3 groups landed across 6 atomic commits.** See `V131_BUILD_DONE.md`
+for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| B-FIX | regression test for v1.3's already-removed cap-hit trigger | +1 |
+| B3-FIX | recovery.py shutdown safety + per-project lock awareness | +3 |
+| DETACH-CONFIG | new module + helper rewrite + templates | +21 |
+
+**Test counts (v1.3.1):**
+- pytest: 548 (v1.3 baseline) → **573 passed** (+25 new tests)
+- 3 new smokes all green: run-stuck-detection-smoke.sh,
+  run-recovery-sweep-smoke.sh, run-detach-defaults-smoke.sh
+- 4 v1.3 smokes still green
+
+**Schema:** unchanged (v4).
+
+### Currently working on
+
+**v1.3.1 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.1`. See `V131_BUILD_DONE.md` for
+the full smoke test plan.
+
+---
 
 ## v1.3 BUILD — final state
 
