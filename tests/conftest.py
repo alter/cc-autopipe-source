@@ -57,10 +57,17 @@ def _isolate_user_state(
 
     prior_secrets = os.environ.get("CC_AUTOPIPE_SECRETS_FILE")
     prior_user_home = os.environ.get("CC_AUTOPIPE_USER_HOME")
+    prior_no_redirect = os.environ.get("CC_AUTOPIPE_NO_REDIRECT")
 
     os.environ["CC_AUTOPIPE_SECRETS_FILE"] = str(secrets)
     if prior_user_home is None:
         os.environ["CC_AUTOPIPE_USER_HOME"] = str(user_home)
+    # v1.3.2 STDERR-LOGGING: subprocess-based tests assert against
+    # captured stdout/stderr from `subprocess.run(..., capture_output)`.
+    # Without this opt-out, the orchestrator redirects its own streams
+    # to log files inside user_home/log and capture_output gets nothing.
+    # Tests that specifically exercise the redirect path unset this var.
+    os.environ["CC_AUTOPIPE_NO_REDIRECT"] = "1"
 
     try:
         yield
@@ -71,3 +78,7 @@ def _isolate_user_state(
             os.environ["CC_AUTOPIPE_SECRETS_FILE"] = prior_secrets
         if prior_user_home is None:
             os.environ.pop("CC_AUTOPIPE_USER_HOME", None)
+        if prior_no_redirect is None:
+            os.environ.pop("CC_AUTOPIPE_NO_REDIRECT", None)
+        else:
+            os.environ["CC_AUTOPIPE_NO_REDIRECT"] = prior_no_redirect

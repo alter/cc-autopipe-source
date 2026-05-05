@@ -16,6 +16,11 @@ Test escape hatches (env vars):
                                    Tests point this at tools/mock-claude.sh.
   CC_AUTOPIPE_CYCLE_TIMEOUT_SEC    wall-clock cap on a claude subprocess
                                    (default 3600s)
+  CC_AUTOPIPE_NO_REDIRECT          when set (any non-empty), disables the
+                                   v1.3.2 stderr/stdout redirect even
+                                   without --foreground. Used by tests
+                                   that need to capture subprocess output
+                                   directly via subprocess.run.
 
 Refs: SPEC.md §6.1, §8.3, §8.4, §15.1
 """
@@ -52,6 +57,87 @@ import state  # noqa: E402
 
 DEFAULT_COOLDOWN_SEC = 30
 DEFAULT_IDLE_SLEEP_SEC = 60
+# v1.3.2 STDERR-LOGGING: rotation thresholds for daemonized log capture.
+LOG_ROTATE_BYTES = 50 * 1024 * 1024  # 50 MB
+LOG_ROTATE_KEEP = 3                  # keep .1, .2, .3 (drop older)
+
+
+def _rotate_log(path: Path, keep: int = LOG_ROTATE_KEEP) -> None:
+    """Shift path → path.1, path.1 → path.2, ... oldest beyond keep dropped.
+
+    Called from `_redirect_streams_for_daemon` when a log exceeds
+    LOG_ROTATE_BYTES. Best-effort: any individual rename failure is
+    swallowed so a transient OS error doesn't take down the engine.
+    """
+    drop = Path(f"{path}.{keep}")
+    if drop.exists():
+        try:
+            drop.unlink()
+        except OSError:
+            pass
+    for i in range(keep - 1, 0, -1):
+        src = Path(f"{path}.{i}")
+        dst = Path(f"{path}.{i + 1}")
+        if src.exists():
+            try:
+                os.replace(src, dst)
+            except OSError:
+                pass
+    if path.exists():
+        try:
+            os.replace(path, Path(f"{path}.1"))
+        except OSError:
+            pass
+
+
+def _redirect_streams_for_daemon(user_home: Path) -> None:
+    """Redirect Python + OS-level stderr/stdout to rotating log files.
+
+    Called when the orchestrator is invoked without --foreground (and
+    without CC_AUTOPIPE_NO_REDIRECT). Without this, daemonized
+    invocations (`cc-autopipe start` from a shell, nohup'd in the
+    background, etc.) lose all stderr — including tracebacks from a
+    silent crash. Real-world: 4-5 May AI-trade run died twice with no
+    diagnostic.
+
+    Implementation:
+      - stderr → user_home/log/orchestrator-stderr.log
+      - stdout → user_home/log/orchestrator-stdout.log
+      - Append-mode, line-buffered.
+      - Pre-rotate when the existing file exceeds LOG_ROTATE_BYTES so
+        long-lived autonomy doesn't accumulate hundreds of MB.
+      - os.dup2 replaces the OS-level fds so subprocess children
+        (claude, etc.) inherit the redirected streams too.
+    """
+    log_dir = user_home / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    stderr_path = log_dir / "orchestrator-stderr.log"
+    stdout_path = log_dir / "orchestrator-stdout.log"
+
+    for path in (stderr_path, stdout_path):
+        if path.exists() and path.stat().st_size > LOG_ROTATE_BYTES:
+            _rotate_log(path)
+
+    stderr_f = open(stderr_path, "a", buffering=1, encoding="utf-8")
+    stdout_f = open(stdout_path, "a", buffering=1, encoding="utf-8")
+
+    # Flush whatever was already buffered on the original streams before
+    # we swap them out.
+    try:
+        sys.stderr.flush()
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001 — best effort during startup
+        pass
+
+    sys.stderr = stderr_f
+    sys.stdout = stdout_f
+
+    # OS-level fds: subprocess.Popen children inherit fds 1/2 from the
+    # parent, so dup2 ensures any spawned process (claude, helper hooks)
+    # writes into the same log files instead of the original console.
+    os.dup2(stderr_f.fileno(), 2)
+    os.dup2(stdout_f.fileno(), 1)
 
 
 def _read_projects_list(user_home: Path) -> list[Path]:
@@ -101,7 +187,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     # Tolerate unknown flags gracefully — the dispatcher passes any
     # `cc-autopipe start <flag>` straight through.
-    _parse_args(argv if argv is not None else [])
+    args = _parse_args(argv if argv is not None else [])
+
+    user_home = _user_home()
+
+    # v1.3.2 STDERR-LOGGING: redirect stderr/stdout to rotating log
+    # files unless --foreground (systemd service, terminal session)
+    # or CC_AUTOPIPE_NO_REDIRECT (test harness) is set. Must happen
+    # before _install_signal_handlers so any traceback from a signal
+    # received during startup lands in the log file.
+    if not args.foreground and not os.environ.get("CC_AUTOPIPE_NO_REDIRECT"):
+        _redirect_streams_for_daemon(user_home)
 
     _install_signal_handlers()
     cooldown = float(os.environ.get("CC_AUTOPIPE_COOLDOWN_SEC", DEFAULT_COOLDOWN_SEC))
@@ -111,8 +207,6 @@ def main(argv: list[str] | None = None) -> int:
     # Test escape hatch: stop after N outer passes (a "pass" is one full
     # walk over projects.list). 0 means run forever.
     max_loops = int(os.environ.get("CC_AUTOPIPE_MAX_LOOPS", "0"))
-
-    user_home = _user_home()
 
     # Acquire the singleton orchestrator lock per SPEC §8.3. fcntl
     # auto-releases on process death, so a previous orchestrator killed
