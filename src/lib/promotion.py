@@ -45,8 +45,21 @@ VERDICT_RE = re.compile(
 )
 
 
+def _promotion_basename(task_id: str) -> str:
+    """AI-trade convention: PROMOTION files drop 'vec_long_' / 'vec_' prefix.
+    'vec_long_only_baseline' -> 'long_only_baseline'
+    'vec_meta'               -> 'meta'
+    """
+    base = task_id
+    for pfx in ('vec_long_', 'vec_'):
+        if base.startswith(pfx):
+            base = base[len(pfx):]
+            break
+    return base
+
+
 def promotion_path(project: Path, task_id: str) -> Path:
-    return project / "data" / "debug" / f"CAND_{task_id}_PROMOTION.md"
+    return project / 'data' / 'debug' / f'CAND_{_promotion_basename(task_id)}_PROMOTION.md'
 
 
 def parse_verdict(path: Path) -> str | None:
