@@ -124,6 +124,27 @@ def parse_open_tasks(backlog_path: str | Path) -> list[BacklogItem]:
     return out
 
 
+def parse_all_tasks(backlog_path: str | Path) -> list[BacklogItem]:
+    """Return EVERY parsed task line (open + done) in file order.
+
+    Used by v1.3.5 promotion validation, which compares pre-cycle open
+    items against post-cycle [x] items to detect verdict transitions.
+    """
+    p = Path(backlog_path)
+    if not p.exists():
+        return []
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[BacklogItem] = []
+    for line in text.splitlines():
+        item = _parse_line(line)
+        if item is not None:
+            out.append(item)
+    return out
+
+
 def top_n(items: list[BacklogItem], n: int = 3) -> list[BacklogItem]:
     """Sort OPEN items by priority (lower first), preserving file order
     as the secondary key. Returns the first n.
