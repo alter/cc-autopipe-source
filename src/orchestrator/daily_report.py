@@ -95,6 +95,13 @@ def render_daily_report(
     auto_recoveries = _count_events(events, "auto_recovery_attempted")
     meta_reflects = _count_events(events, "meta_reflect_triggered")
     research_iters = _count_events(events, "research_mode_active")
+    # v1.3.4 R6: connectivity events. network_probe_failed fires once
+    # per gate-deferral cycle; transient_invocations counts every claude
+    # rc!=0 with transient stderr; retry_exhausted captures cycles where
+    # we gave up and fell through to structural failure.
+    network_probe_failures = _count_events(events, "network_probe_failed")
+    transient_invocations = _count_events(events, "claude_invocation_transient")
+    retry_exhausted = _count_events(events, "claude_invocation_retry_exhausted")
     closed_today = [
         e
         for e in events
@@ -142,6 +149,13 @@ def render_daily_report(
     lines.append("")
     lines.append("## Quota")
     lines.append(quota_pct.rstrip())
+    lines.append("")
+    lines.append("## Connectivity")
+    lines.append(f"- Network probe failures: {network_probe_failures}")
+    lines.append(f"- Transient claude failures: {transient_invocations}")
+    lines.append(
+        f"- Retries exhausted (escalated to structural): {retry_exhausted}"
+    )
     lines.append("")
     lines.append("## Health")
     lines.append(f"- Recovery attempts (lifetime): {s.recovery_attempts}")

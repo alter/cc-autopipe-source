@@ -145,3 +145,64 @@ def test_maybe_write_runs_when_24h_elapsed(tmp_path: Path, monkeypatch) -> None:
     last, written = daily_report.maybe_write_for_all([p], 0, now)
     assert len(written) == 1
     assert last == now
+
+
+def test_connectivity_section_counts_v134_events(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """v1.3.4 R6: daily report aggregates network probe + transient events
+    so an operator can see at a glance whether autonomy is fighting
+    network noise vs. structural failures."""
+    user_home = tmp_path / "uhome"
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
+    p = _project(tmp_path)
+    s = state.State.fresh(p.name)
+    state.write(p, s)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    _seed_aggregate(
+        user_home,
+        p.name,
+        [
+            {
+                "ts": f"{today}T05:00:00Z",
+                "project": p.name,
+                "event": "network_probe_failed",
+            },
+            {
+                "ts": f"{today}T05:30:00Z",
+                "project": p.name,
+                "event": "network_probe_failed",
+            },
+            {
+                "ts": f"{today}T06:00:00Z",
+                "project": p.name,
+                "event": "claude_invocation_transient",
+                "attempt": 1,
+            },
+            {
+                "ts": f"{today}T06:01:00Z",
+                "project": p.name,
+                "event": "claude_invocation_transient",
+                "attempt": 2,
+            },
+            {
+                "ts": f"{today}T06:02:00Z",
+                "project": p.name,
+                "event": "claude_invocation_transient",
+                "attempt": 3,
+            },
+            {
+                "ts": f"{today}T06:03:00Z",
+                "project": p.name,
+                "event": "claude_invocation_retry_exhausted",
+                "attempts": 5,
+            },
+        ],
+    )
+
+    body = daily_report.render_daily_report(p)
+    assert "## Connectivity" in body
+    assert "Network probe failures: 2" in body
+    assert "Transient claude failures: 3" in body
+    assert "Retries exhausted (escalated to structural): 1" in body
