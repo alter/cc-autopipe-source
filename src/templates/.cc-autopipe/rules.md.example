@@ -109,6 +109,91 @@ Don't duplicate existing lessons. The engine watches `knowledge.md`
 mtime and re-injects a mandatory reminder block until the file is
 updated after a verdict.
 
+## Knowledge discipline (v1.3.3 — engine-enforced)
+
+After ANY verdict on a task (REJECT, ACCEPT, INFRA_FAILED), BEFORE
+moving to the next task or calling `cc-autopipe-detach`:
+
+1. Append an entry to `.cc-autopipe/knowledge.md` following the
+   template format (see the file header — fresh `cc-autopipe init`
+   seeds it).
+2. The engine WILL block your next `cc-autopipe-detach` call (exit
+   code 3) if `knowledge.md` mtime is older than the verdict event.
+   This is intentional. Do not work around it — write the entry.
+3. The lesson must be actionable. "vec_rl rejected" is not a lesson.
+   "PPO 1M steps with current reward function = mean_reward -0.68;
+   reward design needs revision before retry" is a lesson.
+
+This rule is enforced by the engine. Skipping it = next detach fails
+with `BLOCKED: detach rejected. knowledge.md (mtime ...) is older
+than last verdict event (...)`. Append the entry and retry.
+
+## Pipeline script discipline (v1.3.3 — mandatory before detach)
+
+Whenever you create or modify a pipeline script (e.g.
+`scripts/run_*.sh`) intended for detached execution:
+
+1. **Smoke-validate before detach.** Run `cc-autopipe-smoke
+   <script_path>` from the project root. Required outcomes:
+   - `SMOKE_OK` (exit 0) → proceed with detach.
+   - `SMOKE_FAIL` (exit 1) → read the stderr dump, fix the script,
+     smoke again. Do NOT call `cc-autopipe-detach` until smoke passes.
+
+2. **Common failure classes to verify in your script before smoke:**
+   - Docker volume mounts: every output path the script writes to
+     must be bind-mounted with correct ownership. Test with
+     `docker compose run --rm <service> ls -la <output_path>` before
+     running the real workload.
+   - Environment variables: `.env` file present and loaded?
+     `env | grep <KEY>` inside the container.
+   - Permissions: scripts executable (`chmod +x`)? Output directories
+     created with the right owner?
+   - Path correctness: relative vs absolute paths inside the container
+     vs on the host.
+
+3. **For multi-stage pipelines (Stage A → B → C → D):** smoke at
+   minimum the launcher (Stage A start) and verify all stage
+   transitions are wired (e.g. Stage A success file is the trigger
+   for Stage B). Pipeline-level `set -e` means the first error halts
+   everything — silent stages are not acceptable.
+
+4. **After smoke passes, when calling `cc-autopipe-detach`, ALWAYS
+   pass `--pipeline-log <abs_path>`** and let the default
+   `--stale-after-sec=1800` apply. This enables engine-side liveness
+   monitoring: if your pipeline silently dies (Docker permission
+   error, OOM kill, crashed worker), the engine forces a recovery
+   cycle within 30 minutes instead of waiting the full `--max-wait`
+   window.
+
+## check_cmd composition (v1.3.3 guidance)
+
+The `--check-cmd` you pass to `cc-autopipe-detach` answers "is the
+work done?". It returns rc=0 when the success condition is met,
+rc!=0 otherwise. Prefer composite checks robust to ambiguous
+filesystem states:
+
+GOOD: `find /abs/path -maxdepth 1 -name "PROMOTION.md" -size +1c -print -quit | grep -q .`
+- Handles missing file, zero-byte placeholder, multiple matches.
+
+BAD:  `test -f /abs/path/PROMOTION.md`
+- Returns rc=0 even if the file is an empty placeholder accidentally
+  created by another process.
+
+GOOD: composite success — `(test -s /abs/path/PROMOTION.md && grep -qE "VERDICT:" /abs/path/PROMOTION.md)`
+- Requires non-empty AND containing the expected marker. Avoids false
+  success on partial writes.
+
+For pipelines with explicit failure markers, use OR composition:
+`test -s SUCCESS_FILE || test -f FAILED_MARKER`
+- rc=0 means "pipeline reached terminal state, success or failure".
+  Engine then resumes the cycle and Claude inspects which marker
+  exists.
+
+The engine's liveness check (Group L) is a safety net for the case
+where `check_cmd` only sees the success path — it forces a recovery
+cycle when the pipeline log mtime stalls. But a well-composed
+`check_cmd` that detects FAILED states up front is faster.
+
 ## Project-specific guidance
 
 (Add what's specific to this project. Stack idioms, files Claude

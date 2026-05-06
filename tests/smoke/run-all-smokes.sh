@@ -50,6 +50,16 @@ HOTFIX_SMOKES=(
     research-mode-trigger
     knowledge-mtime
 )
+# v1.3.3 smokes use real CLI commands (no Python heredoc) and live
+# under tests/smoke/v133/test_<name>.sh. Stage names start with `v133-`
+# to make their location obvious and keep the resolver tidy.
+V133_SMOKES=(
+    v133-liveness-stale-detection
+    v133-knowledge-gate-blocks-detach
+    v133-smoke-helper-command
+    v133-detach-with-liveness-flags
+    v133-v132-backward-compat
+)
 
 FAST=0
 REQUESTED=()
@@ -64,7 +74,7 @@ for arg in "$@"; do
 done
 
 if [ "${#REQUESTED[@]}" -eq 0 ]; then
-    STAGES=("${ALL_STAGES[@]}" "${HOTFIX_SMOKES[@]}")
+    STAGES=("${ALL_STAGES[@]}" "${HOTFIX_SMOKES[@]}" "${V133_SMOKES[@]}")
 else
     STAGES=("${REQUESTED[@]}")
 fi
@@ -73,22 +83,34 @@ PASS_LIST=()
 FAIL_LIST=()
 START_TS=$(date +%s)
 
-# A stage name matches one of two conventions:
+# A stage name matches one of three conventions:
 #   - single-letter / short token  → tests/smoke/stage-<name>.sh
 #   - hotfix smoke name            → tests/smoke/run-<name>-smoke.sh
-# We pick whichever exists; older stage scripts win when both happen
-# to exist (shouldn't happen in practice).
+#   - v1.3.3+ real-CLI smoke       → tests/smoke/v133/test_<rest>.sh
+#                                    (stage name format: "v133-<rest>")
+# Older stage scripts win when both happen to exist (shouldn't happen
+# in practice).
 _resolve_smoke_script() {
     local name="$1"
     local stage_path="tests/smoke/stage-${name}.sh"
     local hotfix_path="tests/smoke/run-${name}-smoke.sh"
     if [ -f "$stage_path" ]; then
         echo "$stage_path"
-    elif [ -f "$hotfix_path" ]; then
-        echo "$hotfix_path"
-    else
-        echo ""
+        return
     fi
+    if [ -f "$hotfix_path" ]; then
+        echo "$hotfix_path"
+        return
+    fi
+    if [[ "$name" == v133-* ]]; then
+        local rest="${name#v133-}"
+        local v133_path="tests/smoke/v133/test_${rest//-/_}.sh"
+        if [ -f "$v133_path" ]; then
+            echo "$v133_path"
+            return
+        fi
+    fi
+    echo ""
 }
 
 for stage in "${STAGES[@]}"; do
