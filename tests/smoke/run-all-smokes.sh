@@ -60,6 +60,13 @@ V133_SMOKES=(
     v133-detach-with-liveness-flags
     v133-v132-backward-compat
 )
+# v1.3.4 hotfix smokes — same `v134-<rest>` convention, located under
+# tests/smoke/v134/test_<rest>.sh. R8 covers the transient-retry path;
+# R9 covers the network probe gate via a swap-and-restore stub.
+V134_SMOKES=(
+    v134-transient-retry
+    v134-network-probe
+)
 
 FAST=0
 REQUESTED=()
@@ -74,7 +81,12 @@ for arg in "$@"; do
 done
 
 if [ "${#REQUESTED[@]}" -eq 0 ]; then
-    STAGES=("${ALL_STAGES[@]}" "${HOTFIX_SMOKES[@]}" "${V133_SMOKES[@]}")
+    STAGES=(
+        "${ALL_STAGES[@]}"
+        "${HOTFIX_SMOKES[@]}"
+        "${V133_SMOKES[@]}"
+        "${V134_SMOKES[@]}"
+    )
 else
     STAGES=("${REQUESTED[@]}")
 fi
@@ -107,6 +119,14 @@ _resolve_smoke_script() {
         local v133_path="tests/smoke/v133/test_${rest//-/_}.sh"
         if [ -f "$v133_path" ]; then
             echo "$v133_path"
+            return
+        fi
+    fi
+    if [[ "$name" == v134-* ]]; then
+        local rest="${name#v134-}"
+        local v134_path="tests/smoke/v134/test_${rest//-/_}.sh"
+        if [ -f "$v134_path" ]; then
+            echo "$v134_path"
             return
         fi
     fi

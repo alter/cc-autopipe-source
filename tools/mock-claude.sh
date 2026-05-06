@@ -90,6 +90,24 @@ fi
 
 SESSION_ID="mock-session-$(date +%s)-$$"
 
+# v1.3.4 R8: transient-then-OK mode for real-CLI smoke. When
+# CC_AUTOPIPE_MOCK_TRANSIENT_THEN_OK=N is set, the first N invocations
+# exit 1 with a transient stderr signature ("Server is temporarily
+# limiting requests"); invocation N+1 onwards behaves normally. The
+# counter is persisted to CC_AUTOPIPE_MOCK_COUNTER_FILE (defaults to
+# /tmp/cc-autopipe-mock-counter.$$ which dies with the test).
+if [ -n "${CC_AUTOPIPE_MOCK_TRANSIENT_THEN_OK:-}" ] && [ "$STYLE" = "popen" ]; then
+    COUNTER_FILE="${CC_AUTOPIPE_MOCK_COUNTER_FILE:-/tmp/cc-autopipe-mock-counter.$$}"
+    current=0
+    [ -f "$COUNTER_FILE" ] && current=$(cat "$COUNTER_FILE")
+    current=$((current + 1))
+    echo "$current" > "$COUNTER_FILE"
+    if [ "$current" -le "$CC_AUTOPIPE_MOCK_TRANSIENT_THEN_OK" ]; then
+        echo "Error: Server is temporarily limiting requests" >&2
+        exit 1
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Hooks directory resolution
 # ---------------------------------------------------------------------------
