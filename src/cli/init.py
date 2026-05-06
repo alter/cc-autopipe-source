@@ -161,6 +161,41 @@ def _seed_state_json(project: Path) -> None:
     state.write(project, s)
 
 
+# v1.3.3 Group N: knowledge.md is enforced by `cc-autopipe-detach`. Seed
+# the file with a structured header so Claude has a clear template to
+# append to. Existing files are left alone — operators with curated
+# notes don't get clobbered.
+KNOWLEDGE_HEADER = """# Project Knowledge
+
+Append entries chronologically. Each entry MUST follow this format:
+
+## YYYY-MM-DD HH:MM UTC — <task_id> — <REJECT|ACCEPT|INFRA_FAILED>
+
+**What was tested:** <one-line summary>
+
+**Outcome:** <metric or failure mode>
+
+**Lesson:** <what to do/avoid in future tasks>
+
+**Artifacts:** <paths to relevant logs/models/reports>
+
+"""
+
+
+def _seed_knowledge_md(project: Path) -> bool:
+    """Create .cc-autopipe/knowledge.md with the v1.3.3 header if missing.
+
+    Returns True iff a new file was written. Existing files are not
+    overwritten — operators may have curated notes.
+    """
+    knowledge = project / ".cc-autopipe" / "knowledge.md"
+    if knowledge.exists():
+        return False
+    knowledge.parent.mkdir(parents=True, exist_ok=True)
+    knowledge.write_text(KNOWLEDGE_HEADER, encoding="utf-8")
+    return True
+
+
 def init(project: Path, force: bool = False) -> int:
     project = project.resolve()
     cca = project / ".cc-autopipe"
@@ -201,6 +236,7 @@ def init(project: Path, force: bool = False) -> int:
     )
 
     _seed_state_json(project)
+    knowledge_seeded = _seed_knowledge_md(project)
 
     user_home = _user_home()
     added_to_list = _append_to_projects_list(user_home, project)
@@ -219,6 +255,11 @@ def init(project: Path, force: bool = False) -> int:
         f"  .gitignore:     {len(gitignore_added)} entries added"
         if gitignore_added
         else "  .gitignore:     already up to date"
+    )
+    print(
+        "  knowledge.md:   seeded with v1.3.3 header"
+        if knowledge_seeded
+        else "  knowledge.md:   already present"
     )
     print()
     print("Next steps:")
