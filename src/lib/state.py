@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
@@ -53,6 +53,13 @@ FAILURES_FILENAME = "failures.jsonl"
 #   - Detached.stale_after_sec:          Optional[int]   (Group L liveness)
 #   - State.last_verdict_event_at:       Optional[str]   (Group N gate)
 #   - State.last_verdict_task_id:        Optional[str]   (Group N gate)
+#
+# v1.3.3 → v1.3.4 schema bump (PROMPT_v1.3.4-hotfix.md). Additive only:
+#   - State.consecutive_transient_failures: int          (Group R counter)
+#   - State.last_transient_at:              Optional[str] (Group R audit ts)
+# (PROMPT_v1.3.4 §R2 said 4→5 but v1.3.3 already shipped at 5; we bump
+# 5→6 here so old v1.3.3 state files migrate via the same dataclass-
+# defaults path used everywhere else.)
 #
 # Pre-v3 state files migrate transparently — `read()` fills defaults via
 # the dataclass field defaults; `write()` then persists schema_version=
@@ -216,6 +223,11 @@ class State:
     # next cycle's prompt can tell Claude it was woken up to investigate
     # a silent pipeline death. _build_prompt clears this after one bake.
     last_detach_resume_reason: Optional[str] = None
+    # v1.3.4 Group R: transient failure tracking, distinct from
+    # consecutive_failures so smart escalation (which targets structural
+    # problems) doesn't fire on network blips.
+    consecutive_transient_failures: int = 0
+    last_transient_at: Optional[str] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -262,6 +274,8 @@ class State:
             "last_verdict_event_at": self.last_verdict_event_at,
             "last_verdict_task_id": self.last_verdict_task_id,
             "last_detach_resume_reason": self.last_detach_resume_reason,
+            "consecutive_transient_failures": self.consecutive_transient_failures,
+            "last_transient_at": self.last_transient_at,
         }
         d.update(self.extras)
         return d

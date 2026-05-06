@@ -141,8 +141,10 @@ def test_v4_state_migrates_to_v5_on_read(tmp_path: Path) -> None:
     (project / ".cc-autopipe" / "state.json").write_text(json.dumps(legacy))
     s = state.read(project)
 
-    # Migrated cleanly with defaults.
-    assert s.schema_version == state.SCHEMA_VERSION == 5
+    # Migrated cleanly with defaults. Schema bump tracks the latest engine
+    # version (v1.3.4 lifted it to 6); test pins behaviour, not the integer.
+    assert s.schema_version == state.SCHEMA_VERSION
+    assert s.schema_version >= 5
     assert s.detached is not None
     assert s.detached.pipeline_log_path is None
     assert s.detached.stale_after_sec is None
@@ -153,9 +155,9 @@ def test_v4_state_migrates_to_v5_on_read(tmp_path: Path) -> None:
     assert s.detached.reason == "v1.3.2 detached state"
     assert s.detached.checks_count == 3
 
-    # Persists schema_version=5 on write.
+    # Persists current schema_version on write.
     state.write(project, s)
     raw = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert raw["schema_version"] == 5
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert raw["detached"]["pipeline_log_path"] is None
     assert raw["detached"]["stale_after_sec"] is None
