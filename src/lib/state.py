@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
@@ -48,8 +48,15 @@ FAILURES_FILENAME = "failures.jsonl"
 #   - last_in_progress:        bool                   per Bug B (False)
 #   - consecutive_in_progress: int                    per Bug B (0)
 #
+# v1.3.2 → v1.3.3 schema bump (PROMPT_v1.3.3-hotfix.md). Additive only:
+#   - Detached.pipeline_log_path:        Optional[str]   (Group L liveness)
+#   - Detached.stale_after_sec:          Optional[int]   (Group L liveness)
+#   - State.last_verdict_event_at:       Optional[str]   (Group N gate)
+#   - State.last_verdict_task_id:        Optional[str]   (Group N gate)
+#
 # Pre-v3 state files migrate transparently — `read()` fills defaults via
-# the dataclass field defaults; `write()` then persists schema_version=3.
+# the dataclass field defaults; `write()` then persists schema_version=
+# SCHEMA_VERSION (current).
 
 
 def _user_home() -> Path:
@@ -95,9 +102,14 @@ class Detached:
     max_wait_sec: int
     last_check_at: Optional[str] = None
     checks_count: int = 0
+    # v1.3.3 Group L liveness check. Both default None → stale detection
+    # disabled, behaviour identical to v1.3.2.
+    pipeline_log_path: Optional[str] = None
+    stale_after_sec: Optional[int] = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Detached":
+        stale = d.get("stale_after_sec")
         return cls(
             reason=str(d.get("reason", "")),
             started_at=str(d.get("started_at", "")),
@@ -106,6 +118,8 @@ class Detached:
             max_wait_sec=int(d.get("max_wait_sec", 14400)),
             last_check_at=d.get("last_check_at"),
             checks_count=int(d.get("checks_count", 0)),
+            pipeline_log_path=d.get("pipeline_log_path"),
+            stale_after_sec=int(stale) if stale is not None else None,
         )
 
 
@@ -192,6 +206,16 @@ class State:
     meta_reflect_target: Optional[str] = None
     meta_reflect_started_at: Optional[str] = None
     meta_reflect_attempts: int = 0
+    # v1.3.3 Group N knowledge gate. Last verdict event tracked here so
+    # cc-autopipe-detach can refuse to detach until knowledge.md mtime
+    # advances past the verdict timestamp.
+    last_verdict_event_at: Optional[str] = None
+    last_verdict_task_id: Optional[str] = None
+    # v1.3.3 Group L: when a stale-pipeline detection auto-resumes a
+    # detached project, the transient reason is stashed here so the
+    # next cycle's prompt can tell Claude it was woken up to investigate
+    # a silent pipeline death. _build_prompt clears this after one bake.
+    last_detach_resume_reason: Optional[str] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -235,6 +259,9 @@ class State:
             "meta_reflect_target": self.meta_reflect_target,
             "meta_reflect_started_at": self.meta_reflect_started_at,
             "meta_reflect_attempts": self.meta_reflect_attempts,
+            "last_verdict_event_at": self.last_verdict_event_at,
+            "last_verdict_task_id": self.last_verdict_task_id,
+            "last_detach_resume_reason": self.last_detach_resume_reason,
         }
         d.update(self.extras)
         return d
@@ -510,12 +537,23 @@ def set_detached(
     check_cmd: str,
     check_every_sec: int,
     max_wait_sec: int,
+    pipeline_log_path: Optional[str] = None,
+    stale_after_sec: Optional[int] = None,
 ) -> None:
     """Transition a project to phase=detached with the given check_cmd.
 
     Called by `cc-autopipe-detach` from inside a claude session before
     nohup-ing a long task. Engine releases the slot until check_cmd
     succeeds (poll cadence: check_every_sec) or max_wait_sec elapses.
+
+    v1.3.3 Group L: optional `pipeline_log_path` + `stale_after_sec`
+    enable liveness detection — the engine forces a recovery cycle if
+    the pipeline log mtime gap exceeds the threshold while check_cmd
+    is still failing. Both default None (liveness disabled).
+
+    v1.3.3 Group N: clears `last_verdict_event_at` / `last_verdict_task_id`
+    on success — the knowledge gate fires once per verdict, not on every
+    subsequent detach.
     """
     s = read(project_path)
     s.phase = "detached"
@@ -527,7 +565,11 @@ def set_detached(
         max_wait_sec=int(max_wait_sec),
         last_check_at=None,
         checks_count=0,
+        pipeline_log_path=pipeline_log_path,
+        stale_after_sec=int(stale_after_sec) if stale_after_sec is not None else None,
     )
+    s.last_verdict_event_at = None
+    s.last_verdict_task_id = None
     s.last_progress_at = _now_iso()
     write(project_path, s)
 
@@ -608,6 +650,17 @@ def main(argv: list[str]) -> int:
     p_detached.add_argument("--check-cmd", required=True)
     p_detached.add_argument("--check-every", type=int, default=600)
     p_detached.add_argument("--max-wait", type=int, default=14400)
+    p_detached.add_argument(
+        "--pipeline-log",
+        default=None,
+        help="absolute path to pipeline log for liveness monitoring (Group L)",
+    )
+    p_detached.add_argument(
+        "--stale-after-sec",
+        type=int,
+        default=None,
+        help="trigger detach_pipeline_stale if log mtime gap exceeds this",
+    )
 
     sub.add_parser("complete-phase").add_argument("project")
 
@@ -660,6 +713,8 @@ def main(argv: list[str]) -> int:
             check_cmd=args.check_cmd,
             check_every_sec=args.check_every,
             max_wait_sec=args.max_wait,
+            pipeline_log_path=args.pipeline_log,
+            stale_after_sec=args.stale_after_sec,
         )
         return 0
 
