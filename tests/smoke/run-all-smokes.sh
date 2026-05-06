@@ -49,6 +49,9 @@ HOTFIX_SMOKES=(
     meta-reflect-trigger
     research-mode-trigger
     knowledge-mtime
+    research-task-completion
+    promotion-validation
+    leaderboard-elo
 )
 # v1.3.3 smokes use real CLI commands (no Python heredoc) and live
 # under tests/smoke/v133/test_<name>.sh. Stage names start with `v133-`
