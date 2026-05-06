@@ -175,3 +175,33 @@ def test_parse_top_open_end_to_end(tmp_path: Path) -> None:
     # All three are non-done.
     for it in top3:
         assert it.is_open
+
+
+# ---------------------------------------------------------------------------
+# v1.3.5: task_type property
+# ---------------------------------------------------------------------------
+
+
+def test_task_type_research(tmp_path: Path) -> None:
+    items = backlog.parse_open_tasks(_write(tmp_path))
+    by_id = {it.id: it for it in items}
+    assert by_id["cand_explorer"].task_type == "research"
+
+
+def test_task_type_implement(tmp_path: Path) -> None:
+    items = backlog.parse_open_tasks(_write(tmp_path))
+    by_id = {it.id: it for it in items}
+    assert by_id["cand_imbloss_v2"].task_type == "implement"
+
+
+def test_task_type_defaults_to_implement_when_absent(tmp_path: Path) -> None:
+    p = _write(tmp_path, "- [ ] [P1] no_role_tag — desc\n")
+    items = backlog.parse_open_tasks(p)
+    assert items[0].task_type == "implement"
+
+
+def test_task_type_skips_priority_tag(tmp_path: Path) -> None:
+    """[P1] is a priority tag, not a role tag — task_type must not return 'p1'."""
+    p = _write(tmp_path, "- [ ] [P1] [implement] swapped_order — desc\n")
+    items = backlog.parse_open_tasks(p)
+    assert items[0].task_type == "implement"

@@ -59,6 +59,23 @@ class BacklogItem:
     def is_open(self) -> bool:
         return self.status in (" ", "~")
 
+    @property
+    def task_type(self) -> str:
+        """Role tag — first bracketed tag that is not a priority tag.
+
+        v1.3.5: distinguishes `[research]` (artifact-only) from `[implement]`
+        (verify.sh-driven). Defaults to "implement" so untagged tasks go
+        through the existing path.
+        """
+        for tag in self.tags:
+            inner = tag.strip("[]").strip()
+            if not inner:
+                continue
+            if PRIORITY_RE.fullmatch(tag):
+                continue
+            return inner.lower()
+        return "implement"
+
 
 def _parse_line(line: str) -> BacklogItem | None:
     m = TASK_LINE_RE.match(line)
