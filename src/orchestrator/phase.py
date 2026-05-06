@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -230,4 +231,89 @@ def _process_detached(project_path: Path, s: state.State) -> str:
         elapsed_sec=int(elapsed),
         stderr_tail=check_stderr_tail,
     )
+
+    # v1.3.3 Group L: liveness check. If --pipeline-log + --stale-after-sec
+    # were configured at detach time, treat a stalled log mtime as a
+    # silent pipeline death — emit detach_pipeline_stale and force a
+    # recovery cycle so Claude can investigate (instead of waiting the
+    # full max_wait_sec on a dead pipeline).
+    stale = _maybe_resume_on_stale_pipeline(project_path, s, elapsed)
+    if stale:
+        return "active"
+
     return "detached"
+
+
+def _maybe_resume_on_stale_pipeline(
+    project_path: Path, s: state.State, elapsed: float
+) -> bool:
+    """Inspect pipeline_log mtime; auto-resume if it has been stale longer
+    than stale_after_sec. Returns True iff the project was transitioned
+    from `detached` back to `active` due to stale liveness signal.
+
+    No-op when either pipeline_log_path or stale_after_sec is unset.
+    """
+    if s.detached is None:
+        return False
+    log_path_str = s.detached.pipeline_log_path
+    threshold = s.detached.stale_after_sec
+    if not log_path_str or threshold is None:
+        return False
+
+    log_path = Path(log_path_str)
+    if not log_path.exists():
+        state.log_event(
+            project_path,
+            "detach_pipeline_log_missing",
+            pipeline_log=str(log_path),
+            checks_count=s.detached.checks_count,
+            elapsed_sec=int(elapsed),
+        )
+        _resume_from_stale(project_path, s, "pipeline_log_missing")
+        return True
+
+    try:
+        mtime = log_path.stat().st_mtime
+    except OSError:
+        return False
+
+    age_sec = int(time.time() - mtime)
+    if age_sec < 0:
+        # Clock skew — log once per detached run, not stale.
+        if s.detached.checks_count == 1:
+            state.log_event(
+                project_path,
+                "detach_pipeline_log_clock_skew",
+                pipeline_log=str(log_path),
+                age_sec=age_sec,
+            )
+        return False
+
+    if age_sec <= threshold:
+        return False
+
+    state.log_event(
+        project_path,
+        "detach_pipeline_stale",
+        pipeline_log=str(log_path),
+        log_age_sec=age_sec,
+        stale_threshold_sec=threshold,
+        checks_count=s.detached.checks_count,
+        elapsed_sec=int(elapsed),
+    )
+    _resume_from_stale(project_path, s, "pipeline_stale")
+    return True
+
+
+def _resume_from_stale(project_path: Path, s: state.State, reason: str) -> None:
+    """Common transition path for stale auto-resume.
+
+    Mirrors the rc==0 branch in _process_detached but tags the next
+    cycle's prompt with `last_detach_resume_reason` so Claude knows it
+    was woken up to investigate (vs. resumed because work succeeded).
+    """
+    s.phase = "active"
+    s.detached = None
+    s.last_detach_resume_reason = reason
+    state.write(project_path, s)
+    _log(f"{project_path.name}: resumed from stale ({reason})")

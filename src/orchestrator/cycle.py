@@ -137,6 +137,13 @@ def process_project(project_path: Path) -> str:
         # subsequent re-read doesn't see stale True.
         if improver_was_due:
             s.improver_due = False
+        # v1.3.3 Group L: clear the one-shot stale-pipeline resume
+        # marker so the notice block fires exactly once per resume
+        # event. Persist immediately — a crashed cycle should not
+        # re-inject the notice on the next attempt.
+        if s.last_detach_resume_reason is not None:
+            s.last_detach_resume_reason = None
+            state.write(project_path, s)
         timeout = float(
             os.environ.get("CC_AUTOPIPE_CYCLE_TIMEOUT_SEC", DEFAULT_CYCLE_TIMEOUT_SEC)
         )
@@ -162,6 +169,7 @@ def process_project(project_path: Path) -> str:
         # can spot lines Claude ADDED during the cycle (used for
         # research-plan enforcement).
         from orchestrator.research import _list_open_backlog_lines, _backlog_path
+
         _bl_path = _backlog_path(project_path)
         pre_open_lines: list[str] = (
             [ln for _, ln in _list_open_backlog_lines(_bl_path)]
@@ -219,18 +227,35 @@ def process_project(project_path: Path) -> str:
                 # v1.3 I2: verdict-stage transitions arm the knowledge.md
                 # update sentinel. SessionStart hook will keep injecting
                 # a mandatory reminder until knowledge.md mtime advances.
+                #
+                # v1.3.3 Group N: also stamp the verdict timestamp so
+                # cc-autopipe-detach's gate (`knowledge_gate.py`) can
+                # refuse to detach until knowledge.md mtime advances
+                # past this point. This is the engine-side enforcement
+                # that catches lessons before they're lost in the next
+                # task switch.
                 if knowledge_lib.is_verdict_stage(st):
+                    verdict_ts = _now_iso()
                     s.knowledge_update_pending = True
-                    s.knowledge_baseline_mtime = (
-                        knowledge_lib.get_mtime_or_zero(project_path)
+                    s.knowledge_baseline_mtime = knowledge_lib.get_mtime_or_zero(
+                        project_path
                     )
                     s.knowledge_pending_reason = f"{st} on {post_task_id}"
+                    s.last_verdict_event_at = verdict_ts
+                    s.last_verdict_task_id = post_task_id
                     state.write(project_path, s)
                     state.log_event(
                         project_path,
                         "knowledge_update_required",
                         stage=st,
                         task_id=post_task_id,
+                    )
+                    state.log_event(
+                        project_path,
+                        "task_verdict",
+                        stage=st,
+                        task_id=post_task_id,
+                        verdict_ts=verdict_ts,
                     )
 
         # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
@@ -314,9 +339,7 @@ def process_project(project_path: Path) -> str:
             # v1.2 Bug H: smart escalation. Routes 3+ consecutive failures
             # by recent-failure category (verify-pattern / crash / mixed /
             # fallback). Implementation in recovery._handle_smart_escalation.
-            _handle_smart_escalation(
-                project_path, s, stderr, esc_cfg, esc_trigger
-            )
+            _handle_smart_escalation(project_path, s, stderr, esc_cfg, esc_trigger)
 
         # Persist claude's stdout/stderr to disk on EVERY cycle (even on
         # empty content) so a fast rc!=0 exit is debuggable. Names are
@@ -359,9 +382,7 @@ def process_project(project_path: Path) -> str:
         # real and we mark it failed. Long training (multi-hour) keeps
         # touching checkpoints, which resets the stuck timer cleanly.
         try:
-            current_stage = (
-                s.current_task.stage if s.current_task is not None else None
-            )
+            current_stage = s.current_task.stage if s.current_task is not None else None
             act = activity_lib.detect_activity(
                 project_path,
                 project_path.name,

@@ -29,6 +29,8 @@ CHECK_EVERY=""
 CHECK_CMD=""
 MAX_WAIT=""
 PROJECT=""
+PIPELINE_LOG=""
+STALE_AFTER_SEC=""
 
 usage() {
     cat <<EOF
@@ -51,7 +53,18 @@ Options:
                       --check-every, but for max_wait_sec; hardcoded
                       fallback is 14400 (4h).
   --project PATH      Project dir (default: cwd).
+  --pipeline-log PATH Absolute path to pipeline log file for liveness
+                      monitoring. When set, engine forces a recovery
+                      cycle if log mtime gap exceeds --stale-after-sec.
+  --stale-after-sec N Threshold for liveness monitoring (default 1800
+                      = 30 min when --pipeline-log is set; ignored
+                      otherwise). Warning: very low values (< check-
+                      every) will fire on the first poll.
   -h, --help          Show this help.
+
+v1.3.3 knowledge gate: detach refuses (exit 3) if knowledge.md is
+older than the latest verdict event for this project. Append a
+knowledge entry summarizing the verdict before retrying.
 
 The check_cmd should be cheap and idempotent — a file existence test,
 a single 'pgrep' lookup, or a quick HTTP probe. Heavy checks waste
@@ -99,6 +112,16 @@ while [ $# -gt 0 ]; do
             [ $# -gt 0 ] || { echo "$PROG: --project needs a path" >&2; exit 64; }
             PROJECT="$1"; shift
             ;;
+        --pipeline-log)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --pipeline-log needs a path" >&2; exit 64; }
+            PIPELINE_LOG="$1"; shift
+            ;;
+        --stale-after-sec)
+            shift
+            [ $# -gt 0 ] || { echo "$PROG: --stale-after-sec needs a value" >&2; exit 64; }
+            STALE_AFTER_SEC="$1"; shift
+            ;;
         *)
             echo "$PROG: unknown argument '$1'" >&2
             echo "Run '$PROG --help' for usage." >&2
@@ -109,6 +132,16 @@ done
 
 [ -z "$REASON" ] && { echo "$PROG: --reason required" >&2; exit 64; }
 [ -z "$CHECK_CMD" ] && { echo "$PROG: --check-cmd required" >&2; exit 64; }
+
+# v1.3.3 Group L: --stale-after-sec without --pipeline-log is a misconfig.
+# The reverse (--pipeline-log without --stale-after-sec) defaults to 1800.
+if [ -n "$STALE_AFTER_SEC" ] && [ -z "$PIPELINE_LOG" ]; then
+    echo "$PROG: --stale-after-sec requires --pipeline-log" >&2
+    exit 64
+fi
+if [ -n "$PIPELINE_LOG" ] && [ -z "$STALE_AFTER_SEC" ]; then
+    STALE_AFTER_SEC="1800"
+fi
 
 if [ -z "$PROJECT" ]; then
     PROJECT="$(pwd)"
@@ -154,10 +187,43 @@ fi
 [ -z "$CHECK_EVERY" ] && CHECK_EVERY="${CC_AUTOPIPE_DEFAULT_CHECK_EVERY:-${CFG_CHECK_EVERY:-600}}"
 [ -z "$MAX_WAIT" ]    && MAX_WAIT="${CC_AUTOPIPE_DEFAULT_MAX_WAIT:-${CFG_MAX_WAIT:-14400}}"
 
+# v1.3.3 Group N: knowledge.md enforcement gate. If a verdict was
+# emitted since the last knowledge.md update, refuse to detach (exit 3)
+# until Claude appends a knowledge entry. Skips silently when no verdict
+# is recorded — gate does not affect projects that have never had one.
+GATE_PY="$CC_AUTOPIPE_HOME/lib/knowledge_gate.py"
+if [ -f "$GATE_PY" ]; then
+    # `set -e` aborts on non-zero by default; allow the gate to fail
+    # so we can act on rc==3 (block) vs other values (log + continue).
+    set +e
+    python3 "$GATE_PY" "$PROJECT"
+    GATE_RC=$?
+    set -e
+    if [ "$GATE_RC" -eq 3 ]; then
+        exit 3
+    fi
+    if [ "$GATE_RC" -ne 0 ]; then
+        # Unexpected rc — do not block the detach silently.
+        echo "$PROG: knowledge gate skipped (rc=$GATE_RC)" >&2
+    fi
+fi
+
+# Pass through liveness flags only when set — keeps state.json clean
+# (pipeline_log_path / stale_after_sec stay null) for projects that
+# don't opt in.
+EXTRA_ARGS=()
+if [ -n "$PIPELINE_LOG" ]; then
+    EXTRA_ARGS+=(--pipeline-log "$PIPELINE_LOG")
+fi
+if [ -n "$STALE_AFTER_SEC" ]; then
+    EXTRA_ARGS+=(--stale-after-sec "$STALE_AFTER_SEC")
+fi
+
 python3 "$CC_AUTOPIPE_HOME/lib/state.py" set-detached "$PROJECT" \
     --reason "$REASON" \
     --check-cmd "$CHECK_CMD" \
     --check-every "$CHECK_EVERY" \
-    --max-wait "$MAX_WAIT"
+    --max-wait "$MAX_WAIT" \
+    "${EXTRA_ARGS[@]}"
 
 echo "✓ detached: $PROJECT (engine resumes when check_cmd succeeds)"

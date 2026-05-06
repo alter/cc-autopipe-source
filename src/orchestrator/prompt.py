@@ -110,6 +110,29 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
             "failure mode before re-attempting.\n\n"
         )
 
+    # v1.3.3 Group L: stale-pipeline resume notice. Engine forced this
+    # cycle because the detached pipeline went silent — direct Claude
+    # at the failure mode instead of moving on to the next backlog task.
+    if s.last_detach_resume_reason == "pipeline_stale":
+        parts.append(
+            "**PIPELINE LIVENESS RESUMED:** The detached pipeline you "
+            "launched stopped writing to its log file. The engine forced "
+            "this recovery cycle (instead of waiting the full --max-wait "
+            "window) so you can diagnose. Steps:\n"
+            "1. Read the pipeline log tail to identify the failure.\n"
+            "2. Inspect any background process that should still be "
+            "running (`pgrep -f`, `ps aux`).\n"
+            "3. Fix the script or environment, smoke-validate with "
+            "`cc-autopipe-smoke`, then re-detach.\n\n"
+        )
+    elif s.last_detach_resume_reason == "pipeline_log_missing":
+        parts.append(
+            "**PIPELINE LOG MISSING:** The detached pipeline's log file "
+            "was deleted or never created. The engine forced this "
+            "recovery cycle to investigate. Verify the log path, fix "
+            "the launcher, smoke-validate, then re-detach.\n\n"
+        )
+
     if s.improver_due:
         parts.append(
             "**IMPROVER TRIGGER:** N successful cycles since the last "
