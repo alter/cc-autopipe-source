@@ -1,8 +1,21 @@
 # Build Status
 
-**Updated:** 2026-05-06T09:50:00Z
+**Updated:** 2026-05-06T17:30:00Z
 **Current branch:** main
-**Current stage:** **v1.3.4 HOTFIX COMPLETE.** One group (Group R:
+**Current stage:** **v1.3.5 HOTFIX COMPLETE.** Three groups (R:
+[research]-task artifact-based completion + Phase 2 verdict-pattern
+stages; P: v2.0 PROMOTION.md parser + atomic 5-child ablation
+auto-spawn + quarantine; L: persistent LEADERBOARD.md with composite
++ ELO + top-20 + archive + knowledge sentinel arming). Schema
+**unchanged at v6** (no new persisted fields, only mtime/flag
+adjustments on existing fields). 685 → **743 tests passing** (+58).
+20/20 hotfix smokes green (4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3 +
+2 v1.3.4 + 3 v1.3.5). Empirical drivers: AI-trade Phase 2 PRD v2.0
+needs three engine-side guardrails (research artifact contract,
+PROMOTION format enforcement, persistent leaderboard) before
+confident 16-week autonomy. Awaiting Roman validation + tag v1.3.5.
+
+**Earlier stage:** v1.3.4 HOTFIX COMPLETE. One group (Group R:
 transient classification + retry + network probe gate) landed on
 top of v1.3.3. Schema bumped v5 → v6 (additive, backward compatible
 — PROMPT_v1.3.4 said 4→5 but v1.3.3 already shipped at 5; coordinated
@@ -12,7 +25,7 @@ passing** (+50). 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3 + 2 v1.3.4
 temporarily limiting requests" stderr from Anthropic during parallel-
 project load, 6:00 MSK router reboot (~5 min outage), and WSL2
 networking hiccups all silently took healthy projects to FAILED in
-v1.3.3. Awaiting Roman validation + tag v1.3.4.
+v1.3.3.
 
 **Earlier stage:** v1.3.3 HOTFIX COMPLETE. Three groups (Group L:
 liveness check + Group M: cc-autopipe-smoke helper + Group N:
@@ -35,6 +48,72 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.5 HOTFIX — final state
+
+**3 groups landed across 10 atomic commits.** See
+`V135_BUILD_DONE.md` for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| R/1 | src/lib/research_completion.py — is_research_task / expected_artifact_glob / completion_satisfied / find_top_research_task; backlog.BacklogItem.task_type; backlog.parse_all_tasks | +15 unit + 4 backlog cases |
+| R/2 | src/orchestrator/prompt.py — RESEARCH-TASK prompt block branches on top item task_type | +3 integration |
+| R/3 | src/orchestrator/cycle.py — pre-cycle [research] snapshot + post-cycle research_task_completed/research_task_pending event with last_passed override on success | (cycle covered by smoke) |
+| R/4 | src/lib/knowledge.py — Phase 2 verdict-pattern stages (phase_gate, selection_complete, research_digest, negative_mining, hypo_filed, track_winner) | (covered by knowledge tests) |
+| P/1 | src/lib/promotion.py — parse_verdict / validate_v2_sections / parse_metrics / on_promotion_success / quarantine_invalid; 5 ablation children template; atomic backlog mutation | +8 unit + 5 integration |
+| P/2 | src/orchestrator/cycle.py — vec_long_* [x] detection + dispatch (PROMOTED-validated, PROMOTED-invalid, REJECTED, missing-verdict) | (cycle covered by smoke) |
+| L/1 | src/lib/state.py — touch_knowledge_baseline_mtime helper | (covered by leaderboard test) |
+| L/2 | src/lib/leaderboard.py — composite scoring + ELO matchups + top-20 retention + archive + sidecar .leaderboard_elo.json | +15 unit |
+| L/3 | tests/smoke/run-{research-task-completion,promotion-validation,leaderboard-elo}-smoke.sh + run-all-smokes wiring | +0 (3 smokes) |
+
+**Test counts (v1.3.5):**
+- pytest: 685 (v1.3.4 baseline) → **743 passed** (+58 new tests)
+- 20 hotfix smokes all green: 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 +
+  5 v1.3.3 + 2 v1.3.4 + 3 v1.3.5
+- Three v1.3.5 smokes (heredoc-driven module exercises) under
+  `tests/smoke/run-{research-task-completion,promotion-validation,leaderboard-elo}-smoke.sh`,
+  each <2s
+
+**Schema:** **unchanged at v6.** No new persisted state fields per
+PROMPT_v1.3.5 §"Don't"; only mtime + flag arming on existing v1.3
+knowledge sentinel fields.
+
+**New events in aggregate.jsonl:** `research_task_completed`,
+`research_task_pending`, `promotion_validated`, `promotion_invalid`,
+`promotion_rejected`, `promotion_verdict_missing`,
+`ablation_children_spawned`, `leaderboard_updated`,
+`leaderboard_append_skipped`, `promotion_children_skipped`.
+
+**New CLI surface:** none.
+
+### Pre-existing baseline observations (NOT v1.3.5)
+
+run-all-smokes.sh had 7 stages red on the `f860073` (v1.3.4 release)
+commit BEFORE any v1.3.5 change:
+
+- stages a-f all chain on the same `ruff check tests/` failure: 5
+  F401 unused-import warnings in test files (not src). v1.3.4's
+  ruff cleanup (`8a7c57c`) ran on `src/` only. Trivially fixable
+  in one hygiene commit; deferred per PROMPT_v1.3.5 §"Don't" ("touch
+  unrelated v1.3 / v1.3.x features").
+- stage-k: orchestrator startup log no longer mentions
+  `quota_monitor_interval`. Predates v1.3.5. The 15 quota_monitor
+  unit tests still pass; only the smoke's stderr-grep predicate is
+  stale.
+
+v1.3.5 introduces no new failures.
+
+### Currently working on
+
+**v1.3.5 build done.** All hotfix smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.5`. See `V135_BUILD_DONE.md` for
+the full smoke test plan.
+
+---
 
 ## v1.3.4 HOTFIX — final state
 
