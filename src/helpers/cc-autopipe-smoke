@@ -1,0 +1,25 @@
+#!/bin/bash
+# cc-autopipe-smoke — v1.3.3 Group M pipeline-script validator.
+#
+# Wrapper around src/cli/smoke.py. Exists as a `helpers/` entry so
+# Claude can call `cc-autopipe-smoke` directly the same way it calls
+# `cc-autopipe-detach` / `cc-autopipe-checkpoint` / `cc-autopipe-block`.
+#
+# See src/cli/smoke.py docstring for full semantics.
+
+set -euo pipefail
+
+if [ -z "${CC_AUTOPIPE_HOME:-}" ]; then
+    SELF="${BASH_SOURCE[0]}"
+    while [ -L "$SELF" ]; do
+        TARGET="$(readlink "$SELF")"
+        case "$TARGET" in
+            /*) SELF="$TARGET" ;;
+            *)  SELF="$(cd "$(dirname "$SELF")" && pwd)/$TARGET" ;;
+        esac
+    done
+    CC_AUTOPIPE_HOME="$(cd "$(dirname "$SELF")/.." && pwd)"
+    export CC_AUTOPIPE_HOME
+fi
+
+exec python3 "$CC_AUTOPIPE_HOME/cli/smoke.py" "$@"
