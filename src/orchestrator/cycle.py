@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from orchestrator._runtime import _log, _now_iso, _user_home
+from orchestrator._runtime import _interruptible_sleep, _log, _now_iso, _user_home, is_shutdown
 from orchestrator.alerts import _notify_tg
 from orchestrator.preflight import (
     _preflight_disk,
@@ -43,8 +43,95 @@ import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
 import state  # noqa: E402
+import transient as transient_lib  # noqa: E402
 
 DEFAULT_CYCLE_TIMEOUT_SEC = 3600
+
+# v1.3.4 R3: probe api.anthropic.com:443 before each cycle. When the
+# probe fails (router reboot, WSL2 networking glitch, DNS hiccup) the
+# engine sleeps with exponential backoff and retries. The cycle is
+# DEFERRED, not failed — consecutive_failures is NOT incremented.
+NETWORK_PROBE_BACKOFF_SEC = (30, 60, 120, 300, 600)  # 30s..10min, ~17min total
+
+# v1.3.4 R4: transient retry schedule. Same shape as the network gate,
+# applied AFTER claude exits with a transient stderr signature. Counter
+# stored in state.consecutive_transient_failures; after MAX_TRANSIENT_
+# RETRIES the failure escalates to the structural path so a genuinely
+# broken state masquerading as transient eventually triggers smart
+# escalation.
+TRANSIENT_BACKOFF_SEC = (30, 60, 120, 300, 600)
+MAX_TRANSIENT_RETRIES = 5
+
+
+def _backoff_override(env_var: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    """Honour CC_AUTOPIPE_*_BACKOFF_OVERRIDE env vars for tests.
+
+    Format: comma-separated seconds, e.g. "1,1,1". Returns `default` on
+    missing or malformed input so production deploys are unaffected.
+    """
+    raw = os.environ.get(env_var)
+    if not raw:
+        return default
+    try:
+        parts = tuple(int(x) for x in raw.split(",") if x.strip())
+    except ValueError:
+        return default
+    return parts or default
+
+
+def _network_gate_ok(project_path: Path, s: state.State) -> bool:
+    """Probe api.anthropic.com:443 before each cycle.
+
+    Returns True if reachable. On unreachability, sleeps with exponential
+    backoff (interruptible by shutdown flag) until probe recovers, then
+    returns True. After exhausting NETWORK_PROBE_BACKOFF_SEC the cycle
+    is deferred — caller returns "deferred_network" without touching
+    consecutive_failures (router reboots are not project-failures).
+
+    Test escape hatches:
+      - CC_AUTOPIPE_NETWORK_PROBE_DISABLED=1 short-circuits to True
+        without consulting the network. Mirrors CC_AUTOPIPE_QUOTA_DISABLED
+        (set by conftest.py for the whole pytest run).
+      - CC_AUTOPIPE_NETWORK_PROBE_BACKOFF_OVERRIDE=1,1,1 collapses the
+        backoff schedule for smoke tests that need to exercise the
+        retry path within a few seconds.
+    """
+    if os.environ.get("CC_AUTOPIPE_NETWORK_PROBE_DISABLED") == "1":
+        return True
+
+    if transient_lib.is_anthropic_reachable():
+        return True
+
+    state.log_event(
+        project_path,
+        "network_probe_failed",
+        target="api.anthropic.com",
+        internet_up=transient_lib.is_internet_reachable(),
+    )
+    _log(f"{project_path.name}: api.anthropic.com unreachable, backing off")
+
+    backoff = _backoff_override(
+        "CC_AUTOPIPE_NETWORK_PROBE_BACKOFF_OVERRIDE", NETWORK_PROBE_BACKOFF_SEC
+    )
+    for delay in backoff:
+        _interruptible_sleep(delay)
+        if is_shutdown():
+            return False
+        if transient_lib.is_anthropic_reachable():
+            state.log_event(
+                project_path,
+                "network_probe_recovered",
+                waited_sec=delay,
+            )
+            _log(f"{project_path.name}: network recovered after {delay}s wait")
+            return True
+
+    state.log_event(
+        project_path,
+        "network_probe_giving_up",
+        total_wait_sec=sum(backoff),
+    )
+    return False
 
 
 def process_project(project_path: Path) -> str:
@@ -92,6 +179,15 @@ def process_project(project_path: Path) -> str:
             if d_result == "failed":
                 return "failed"
             # d_result == "active": fall through to normal cycle.
+
+        # v1.3.4 R3: network probe gate. Runs BEFORE quota pre-flight
+        # because quota.read_cached() may itself burn a network round
+        # trip — pointless to attempt when api.anthropic.com is down.
+        # Detached check_cmd is local (test -f), so the gate sits inside
+        # the active-cycle path only (this branch already cleared
+        # `phase == "detached"` above).
+        if not _network_gate_ok(project_path, s):
+            return "deferred_network"
 
         # Pre-flight quota check per SPEC §9.2. Pauses the project (or
         # all projects, on 7d threshold) BEFORE bumping iteration so
@@ -347,6 +443,69 @@ def process_project(project_path: Path) -> str:
         # tickets.
         _stash_stream(project_path, "claude-last-stdout.log", stdout)
         _stash_stream(project_path, "claude-last-stderr.log", stderr)
+
+        # v1.3.4 R4: transient classification BEFORE structural failure
+        # handling. A claude exit caused by "Server is temporarily
+        # limiting requests" / network blip / 5xx upstream must NOT be
+        # treated as a project-level failure — that path triggers smart
+        # escalation after 3 cycles, ending healthy work in 14-day
+        # autonomy under transient pressure.
+        if rc != 0:
+            failure_class = transient_lib.classify_failure(rc, stderr)
+            if failure_class == "transient":
+                s.consecutive_transient_failures += 1
+                s.last_transient_at = _now_iso()
+                state.write(project_path, s)
+
+                schedule = _backoff_override(
+                    "CC_AUTOPIPE_TRANSIENT_BACKOFF_OVERRIDE", TRANSIENT_BACKOFF_SEC
+                )
+                idx = min(s.consecutive_transient_failures - 1, len(schedule) - 1)
+                wait = schedule[idx]
+                state.log_event(
+                    project_path,
+                    "claude_invocation_transient",
+                    rc=rc,
+                    stderr_tail=(stderr or "")[-300:],
+                    attempt=s.consecutive_transient_failures,
+                    backoff_sec=wait,
+                )
+                _log(
+                    f"{project_path.name}: transient claude failure "
+                    f"(attempt {s.consecutive_transient_failures}, backoff {wait}s)"
+                )
+
+                if s.consecutive_transient_failures >= MAX_TRANSIENT_RETRIES:
+                    # Give up — fall through to the structural-failure
+                    # path so a genuinely broken state masquerading as
+                    # transient still gets smart escalation.
+                    state.log_event(
+                        project_path,
+                        "claude_invocation_retry_exhausted",
+                        attempts=s.consecutive_transient_failures,
+                    )
+                    s.consecutive_transient_failures = 0
+                    state.write(project_path, s)
+                    # Continue down to log_failure / consecutive_failures++.
+                else:
+                    _interruptible_sleep(wait)
+                    state.log_event(
+                        project_path,
+                        "cycle_end",
+                        iteration=s.iteration,
+                        phase=s.phase,
+                        rc=rc,
+                        score=s.last_score,
+                        outcome="transient_retry_scheduled",
+                    )
+                    return s.phase
+
+        # On a successful cycle reset the transient counter so a single
+        # green run forgives the prior pressure. Mirrors the existing
+        # consecutive_failures reset semantics in update_verify.
+        if rc == 0 and s.consecutive_transient_failures != 0:
+            s.consecutive_transient_failures = 0
+            state.write(project_path, s)
 
         if rc != 0:
             state.log_failure(

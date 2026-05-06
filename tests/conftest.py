@@ -68,6 +68,12 @@ def _isolate_user_state(
     # to log files inside user_home/log and capture_output gets nothing.
     # Tests that specifically exercise the redirect path unset this var.
     os.environ["CC_AUTOPIPE_NO_REDIRECT"] = "1"
+    # v1.3.4 R3: disable the network probe gate for the whole test run.
+    # cycle.py now opens TCP 443 to api.anthropic.com before each cycle.
+    # Tests that specifically exercise the gate (tests/smoke/v134/) leave
+    # this var unset and stub the probe instead.
+    prior_net_disabled = os.environ.get("CC_AUTOPIPE_NETWORK_PROBE_DISABLED")
+    os.environ["CC_AUTOPIPE_NETWORK_PROBE_DISABLED"] = "1"
 
     try:
         yield
@@ -82,3 +88,7 @@ def _isolate_user_state(
             os.environ.pop("CC_AUTOPIPE_NO_REDIRECT", None)
         else:
             os.environ["CC_AUTOPIPE_NO_REDIRECT"] = prior_no_redirect
+        if prior_net_disabled is None:
+            os.environ.pop("CC_AUTOPIPE_NETWORK_PROBE_DISABLED", None)
+        else:
+            os.environ["CC_AUTOPIPE_NETWORK_PROBE_DISABLED"] = prior_net_disabled
