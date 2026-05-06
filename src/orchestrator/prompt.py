@@ -15,7 +15,9 @@ from pathlib import Path
 
 # bare-name imports satisfied by _runtime's sys.path setup
 from orchestrator._runtime import _user_home  # noqa: F401  (kept for parity)
+import backlog as backlog_lib  # noqa: E402
 import prd as prd_lib  # noqa: E402
+import research_completion as research_completion_lib  # noqa: E402
 import state  # noqa: E402
 
 DEFAULT_MAX_TURNS = 35
@@ -163,13 +165,52 @@ def _build_prompt(project_path: Path, s: state.State) -> str:
     if s.last_score is not None:
         parts.append(f"\nLast verify: passed={s.last_passed}, score={s.last_score}\n")
 
-    parts.append("\n## Instructions\n")
-    parts.append(
+    # v1.3.5 RESEARCH-COMPLETION: if the topmost open backlog item is a
+    # `[research]` task, inject a distinct instruction block. Research
+    # tasks produce analysis artifacts (no code, no commit, no
+    # verify.sh) and complete via artifact + verdict-stage rather than
+    # the v1.0 verify-passes contract.
+    top_open = backlog_lib.parse_top_open(project_path / "backlog.md", n=1)
+    top_item = top_open[0] if top_open else None
+    if research_completion_lib.is_research_task(top_item):
+        parts.append(_research_task_prompt_block(top_item))
+    else:
+        parts.append(_implement_task_prompt_block())
+    return "".join(parts)
+
+
+def _implement_task_prompt_block() -> str:
+    return (
+        "\n## Instructions\n"
         "Pick the topmost open task. Implement. Run "
         ".cc-autopipe/verify.sh before declaring done. If the task is "
         "large, save progress with cc-autopipe-checkpoint near turn 25.\n"
     )
-    return "".join(parts)
+
+
+def _research_task_prompt_block(item: backlog_lib.BacklogItem) -> str:
+    glob_pat = research_completion_lib.expected_artifact_glob(item)
+    return (
+        "\n## Instructions — RESEARCH TASK\n"
+        f"Task: `{item.id}` — type `[research]`, analysis only. NO code "
+        "changes, NO git commit, NO verify.sh.\n"
+        f"Required artifact: `{glob_pat}` (must exist, non-empty, with "
+        "real substance — not placeholder).\n\n"
+        "Completion criterion (engine):\n"
+        "  1. Write the required artifact above with substantive content.\n"
+        "  2. Update `.cc-autopipe/CURRENT_TASK.md` so "
+        "`stages_completed` includes one of:\n"
+        "       phase_gate_complete, selection_complete,\n"
+        "       research_digest_complete, negative_mining_complete,\n"
+        "       hypo_filed\n"
+        "  3. Append 1-3 lessons to `.cc-autopipe/knowledge.md`.\n"
+        "  4. Mark this task `[x]` in backlog.md.\n"
+        "  5. End your turn — engine treats artifact + verdict-stage as "
+        "completion.\n\n"
+        "Do NOT run verify.sh — it does not apply to [research] tasks.\n"
+        "Do NOT git commit unless you explicitly modified rules/prd "
+        "files (rare).\n"
+    )
 
 
 def _read_config_model(project_path: Path, default: str) -> str:
