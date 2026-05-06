@@ -38,6 +38,16 @@ _VERDICT_PATTERNS = (
     "promoted",
     "accepted",
     "shipped",
+    # v1.3.5: Phase 2 verdict-pattern stages so knowledge.md sentinel
+    # arms after these too. Substrings cover both bare names
+    # (`phase_gate_complete`) and project-specific prefixes
+    # (`synth_track_winner_selected`).
+    "phase_gate",
+    "selection_complete",
+    "research_digest",
+    "negative_mining",
+    "hypo_filed",
+    "track_winner",
 )
 
 
