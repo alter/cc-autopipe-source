@@ -42,11 +42,13 @@ from orchestrator.research import (
 )
 from orchestrator.subprocess_runner import _run_claude, _stash_stream
 import activity as activity_lib  # noqa: E402
+import backlog as backlog_lib  # noqa: E402
 import disk as disk_lib  # noqa: E402
 import health as health_lib  # noqa: E402
 import knowledge as knowledge_lib  # noqa: E402
 import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
+import promotion as promotion_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
 import research_completion as research_completion_lib  # noqa: E402
 import state  # noqa: E402
@@ -288,6 +290,21 @@ def process_project(project_path: Path) -> str:
             project_path
         )
 
+        # v1.3.5 PROMOTION-PARSER: snapshot every open vec_long_*
+        # [implement] task at cycle start. Post-cycle we'll detect
+        # which (if any) transitioned to [x] in this cycle and run
+        # PROMOTION.md validation against them.
+        pre_open_vec_long: list[backlog_lib.BacklogItem] = []
+        try:
+            for it in backlog_lib.parse_open_tasks(project_path / "backlog.md"):
+                if (
+                    it.id.startswith("vec_long_")
+                    and it.task_type == "implement"
+                ):
+                    pre_open_vec_long.append(it)
+        except Exception:  # noqa: BLE001 — telemetry must not crash
+            pre_open_vec_long = []
+
         rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
 
         # Re-read state.json — hooks may have updated it from inside the claude
@@ -326,6 +343,64 @@ def process_project(project_path: Path) -> str:
                     task_id=pre_research_item.id,
                     reason=_research_reason,
                 )
+
+        # v1.3.5 PROMOTION-PARSER: detect vec_long_* tasks that
+        # transitioned to [x] in this cycle. Validate each PROMOTION.md
+        # against the v2.0 section list, fire on_promotion_success on
+        # PROMOTED+complete, quarantine on PROMOTED+missing-sections,
+        # log-only on REJECTED.
+        if pre_open_vec_long:
+            try:
+                bl_items = backlog_lib.parse_all_tasks(
+                    project_path / "backlog.md"
+                )
+                now_done: dict[str, backlog_lib.BacklogItem] = {
+                    bl.id: bl for bl in bl_items if bl.status == "x"
+                }
+                for pre_item in pre_open_vec_long:
+                    after = now_done.get(pre_item.id)
+                    if after is None:
+                        # Task still open or in-progress, no verdict yet.
+                        continue
+                    p_path = promotion_lib.promotion_path(
+                        project_path, pre_item.id
+                    )
+                    verdict = promotion_lib.parse_verdict(p_path)
+                    if verdict == "PROMOTED":
+                        ok, missing = promotion_lib.validate_v2_sections(p_path)
+                        if ok:
+                            metrics = promotion_lib.parse_metrics(p_path)
+                            promotion_lib.on_promotion_success(
+                                project_path, pre_item, metrics
+                            )
+                            state.log_event(
+                                project_path,
+                                "promotion_validated",
+                                task_id=pre_item.id,
+                                **{
+                                    k: v
+                                    for k, v in metrics.items()
+                                    if v is not None
+                                },
+                            )
+                        else:
+                            promotion_lib.quarantine_invalid(
+                                project_path, pre_item, missing
+                            )
+                    elif verdict == "REJECTED":
+                        state.log_event(
+                            project_path,
+                            "promotion_rejected",
+                            task_id=pre_item.id,
+                        )
+                    else:
+                        state.log_event(
+                            project_path,
+                            "promotion_verdict_missing",
+                            task_id=pre_item.id,
+                        )
+            except Exception as exc:  # noqa: BLE001 — telemetry must not crash
+                _log(f"{project_path.name}: promotion validation error: {exc!r}")
 
         # v1.2 Bug D: task_switched event when current_task.id changes
         # cycle-over-cycle. None → non-None is task_started; non-None →
