@@ -588,6 +588,29 @@ def set_detached(
     write(project_path, s)
 
 
+def touch_knowledge_baseline_mtime(project_path: str | os.PathLike[str]) -> None:
+    """v1.3.5: arm the knowledge.md sentinel after a leaderboard update.
+
+    Sets `knowledge_baseline_mtime` to the file's current mtime and
+    flips `knowledge_update_pending=True` so the SessionStart hook's
+    mandatory-update block fires next cycle until knowledge.md mtime
+    advances. Defense-in-depth: every validated promotion must be
+    followed by a lessons append, regardless of whether Claude
+    remembered to do it inline.
+
+    No-op when knowledge.md does not exist — there's nothing to baseline.
+    """
+    project = Path(project_path)
+    knowledge_md = project / ".cc-autopipe" / "knowledge.md"
+    if not knowledge_md.exists():
+        return
+    s = read(project_path)
+    s.knowledge_baseline_mtime = knowledge_md.stat().st_mtime
+    s.knowledge_update_pending = True
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+
+
 def complete_phase(project_path: str | os.PathLike[str]) -> int:
     """Move current_phase to phases_completed and increment.
 
