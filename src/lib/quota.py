@@ -56,6 +56,12 @@ USER_AGENT = "claude-code/2.1.115"
 BETA_HEADER = "oauth-2025-04-20"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 
+# v1.3.4 R5: bounded retry on transient errors. Three attempts spaced
+# by 1s / 3s / 8s (last delay is informational — we give up after the
+# third attempt regardless). 4xx HTTPError stops retries immediately
+# (auth failures aren't transient).
+QUOTA_RETRY_BACKOFF_SEC = (1, 3, 8)
+
 
 def _user_home() -> Path:
     return Path(
@@ -174,7 +180,18 @@ def _extract_access_token(raw: str) -> str | None:
 
 
 def fetch_quota() -> dict[str, Any] | None:
-    """Calls oauth/usage. Returns the raw response dict, or None on failure."""
+    """Calls oauth/usage with bounded retry on transient errors.
+
+    v1.3.4 R5: retry the network round-trip up to 3 times spaced by
+    QUOTA_RETRY_BACKOFF_SEC (1s, 3s, 8s) so a router-reboot or DNS
+    hiccup doesn't make pre-flight quota check return None — that
+    triggers the ratelimit-ladder fallback unnecessarily.
+
+    Auth failures (HTTP 4xx) stop retries immediately — invalid token
+    is not transient. Network errors (URLError, OSError, TimeoutError)
+    do retry. Non-JSON / non-object responses are NOT retried (the
+    server is alive but the contract changed; retrying won't help).
+    """
     token = read_oauth_token()
     if not token:
         return None
@@ -187,21 +204,41 @@ def fetch_quota() -> dict[str, Any] | None:
             "Accept": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
-            body = resp.read()
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        _log(f"endpoint fetch failed: {exc!r}")
-        return None
-    try:
-        data = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        _log(f"endpoint returned non-JSON: {exc!r}")
-        return None
-    if not isinstance(data, dict):
-        _log(f"endpoint returned non-object: {type(data).__name__}")
-        return None
-    return data
+    last_exc: Exception | None = None
+    schedule = QUOTA_RETRY_BACKOFF_SEC
+    for attempt, delay in enumerate(schedule, start=1):
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            # 4xx is structural (bad token, missing endpoint). Skip retries.
+            if 400 <= exc.code < 500:
+                _log(f"quota fetch HTTP {exc.code} (not retrying)")
+                return None
+            last_exc = exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            last_exc = exc
+        else:
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                _log(f"endpoint returned non-JSON: {exc!r}")
+                return None
+            if not isinstance(data, dict):
+                _log(f"endpoint returned non-object: {type(data).__name__}")
+                return None
+            return data
+
+        if attempt < len(schedule):
+            _log(
+                f"quota fetch attempt {attempt} failed: {last_exc!r}; "
+                f"retry in {delay}s"
+            )
+            time.sleep(delay)
+    _log(
+        f"quota fetch giving up after {len(schedule)} attempts: {last_exc!r}"
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
