@@ -1,15 +1,23 @@
 # Build Status
 
-**Updated:** 2026-05-06T09:00:00Z
+**Updated:** 2026-05-06T09:50:00Z
 **Current branch:** main
-**Current stage:** **v1.3.3 HOTFIX COMPLETE.** Three groups landed
-on top of v1.3.2 (Group L: liveness check + Group M: cc-autopipe-smoke
-helper + Group N: knowledge.md detach gate). Schema bumped v4 → v5
-(additive, backward compatible). 599 → **635 tests passing** (+36).
-4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3 = **15/15 hotfix smokes green**.
-Empirical drivers: vec_multihead lost knowledge after REJECT and
-vec_rl silent crash burned 50+ minutes during AI-trade run.
-Awaiting Roman validation + tag v1.3.3.
+**Current stage:** **v1.3.4 HOTFIX COMPLETE.** One group (Group R:
+transient classification + retry + network probe gate) landed on
+top of v1.3.3. Schema bumped v5 → v6 (additive, backward compatible
+— PROMPT_v1.3.4 said 4→5 but v1.3.3 already shipped at 5; coordinated
+bump to 6 documented in V134_BUILD_DONE.md). 635 → **685 tests
+passing** (+50). 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3 + 2 v1.3.4
+= **17/17 hotfix smokes green**. Empirical drivers: "Server is
+temporarily limiting requests" stderr from Anthropic during parallel-
+project load, 6:00 MSK router reboot (~5 min outage), and WSL2
+networking hiccups all silently took healthy projects to FAILED in
+v1.3.3. Awaiting Roman validation + tag v1.3.4.
+
+**Earlier stage:** v1.3.3 HOTFIX COMPLETE. Three groups (Group L:
+liveness check + Group M: cc-autopipe-smoke helper + Group N:
+knowledge.md detach gate). Schema bumped v4 → v5. 599 → 635 tests.
+See `V133_BUILD_DONE.md`.
 
 **Earlier stage:** v1.3.2 HOTFIX COMPLETE. RECOVERY-SAFE +
 STDERR-LOGGING + TRIGGER-SMOKES on top of v1.3.1. 573 → 599 tests.
@@ -27,6 +35,61 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.4 HOTFIX — final state
+
+**1 group (R) landed across 6 atomic commits.** See
+`V134_BUILD_DONE.md` for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| R1 | src/lib/transient.py — classify_failure (transient / structural / unknown) + is_anthropic_reachable + is_internet_reachable | +39 |
+| R2 | state.py: SCHEMA_VERSION 5 → 6, State.consecutive_transient_failures + last_transient_at | +4 |
+| R3 | cycle.py: _network_gate_ok pre-cycle probe with backoff ladder + CC_AUTOPIPE_NETWORK_PROBE_DISABLED conftest hook | +4 |
+| R4 | cycle.py: transient retry loop, CC_AUTOPIPE_TRANSIENT_BACKOFF_OVERRIDE smoke hook | +5 unit + 2 integration |
+| R5 | quota.py: fetch_quota retry loop with QUOTA_RETRY_BACKOFF_SEC = (1,3,8) | +5 |
+| R6 | daily_report.py: Connectivity section (network_probe_failed + claude_invocation_transient + retry_exhausted counts) | +1 |
+| R8+R9 | tests/smoke/v134/ + mock-claude.sh CC_AUTOPIPE_MOCK_TRANSIENT_THEN_OK + run-all-smokes.sh wiring | +0 (smokes) |
+| R10 | rules.md.example "Engine retry behavior" section | docs |
+
+**Test counts (v1.3.4):**
+- pytest: 635 (v1.3.3 baseline) → **685 passed** (+50 new tests)
+- 17 hotfix smokes all green: 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 +
+  5 v1.3.3 + 2 v1.3.4
+- Both v1.3.4 real-CLI smokes (no Python heredoc per acceptance) under
+  `tests/smoke/v134/`: transient retry (real engine + mock-claude
+  emitting transient stderr) and network probe (swap-and-restore
+  stub of src/lib/transient.py)
+
+**Schema:** **v5 → v6** (additive). Existing v1.3.3 state.json files
+read cleanly via dataclass defaults; first write persists v=6. New
+counter fields default to 0 / null → behaviour identical to v1.3.3
+unless transient pressure triggers retry path.
+
+**New events in aggregate.jsonl:** `network_probe_failed`,
+`network_probe_recovered`, `network_probe_giving_up`,
+`claude_invocation_transient`, `claude_invocation_retry_exhausted`.
+
+**New CLI surface:** none. New env vars (test-only):
+`CC_AUTOPIPE_NETWORK_PROBE_DISABLED`,
+`CC_AUTOPIPE_NETWORK_PROBE_BACKOFF_OVERRIDE`,
+`CC_AUTOPIPE_TRANSIENT_BACKOFF_OVERRIDE`,
+`CC_AUTOPIPE_MOCK_TRANSIENT_THEN_OK`,
+`CC_AUTOPIPE_PROBE_COUNTER_FILE`,
+`CC_AUTOPIPE_MOCK_COUNTER_FILE`.
+
+### Currently working on
+
+**v1.3.4 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.4`. See `V134_BUILD_DONE.md` for
+the full smoke test plan + manual AI-trade scenarios (parallel
+project transient pressure, 6:00 MSK router reboot survival).
+
+---
 
 ## v1.3.3 HOTFIX — final state
 

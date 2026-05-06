@@ -194,6 +194,37 @@ where `check_cmd` only sees the success path — it forces a recovery
 cycle when the pipeline log mtime stalls. But a well-composed
 `check_cmd` that detects FAILED states up front is faster.
 
+## Engine retry behavior (v1.3.4 — informational, no action required)
+
+The engine handles three classes of subprocess failure differently
+during 14-day autonomy:
+
+- **Transient** — claude exits rc!=0 with stderr matching narrow
+  signatures: "Server is temporarily limiting requests",
+  "Connection refused / reset / timed out", "Network is unreachable",
+  "503 Service Unavailable", "rate limit exceeded", etc. The engine
+  retries with exponential backoff (30s, 60s, 120s, 300s, 600s) and
+  does NOT increment `consecutive_failures`. After 5 failed retries
+  the path falls through to the structural treatment so a genuinely
+  broken state masquerading as transient still triggers smart
+  escalation.
+- **Structural** — auth failures (401/403, "invalid api key"),
+  command-not-found, syntax errors. Treated as immediate
+  `claude_subprocess_failed`; `consecutive_failures` increments;
+  smart escalation eventually triggers.
+- **Network unreachable** before a cycle starts (router reboot, DNS
+  hiccup, WSL2 networking glitch) — engine probes
+  `api.anthropic.com:443` before each cycle. Failed probe →
+  exponential backoff sleep, retry probe. NEVER counts as a failure.
+  Falls through to a deferred cycle when the backoff exhausts (up to
+  ~17 minutes total wait).
+
+You don't need to do anything different — this is automatic. But if
+you see `claude_invocation_transient`, `network_probe_failed`, or
+`claude_invocation_retry_exhausted` events in `aggregate.jsonl` you'll
+know what the engine handled. The daily report's Connectivity section
+aggregates these counts per project per day.
+
 ## Project-specific guidance
 
 (Add what's specific to this project. Stack idioms, files Claude
