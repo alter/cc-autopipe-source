@@ -10,7 +10,7 @@ produce <project>/.cc-autopipe/daily_<YYYY-MM-DD>.md every 24 hours.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +26,7 @@ def _aggregate_path() -> Path:
     return _user_home() / "log" / "aggregate.jsonl"
 
 
-def _read_events_for_project(
-    project_name: str, day: date
-) -> list[dict[str, Any]]:
+def _read_events_for_project(project_name: str, day: date) -> list[dict[str, Any]]:
     """Filter aggregate.jsonl for events from `project_name` on `day` (UTC)."""
     p = _aggregate_path()
     if not p.exists():
@@ -77,9 +75,7 @@ def _findings_for_day(project_path: Path, day: date) -> list[str]:
     return out
 
 
-def render_daily_report(
-    project_path: Path, day: date | None = None
-) -> str:
+def render_daily_report(project_path: Path, day: date | None = None) -> str:
     """Compose the markdown body of the daily summary."""
     project_path = Path(project_path)
     project_name = project_path.name
@@ -102,11 +98,7 @@ def render_daily_report(
     network_probe_failures = _count_events(events, "network_probe_failed")
     transient_invocations = _count_events(events, "claude_invocation_transient")
     retry_exhausted = _count_events(events, "claude_invocation_retry_exhausted")
-    closed_today = [
-        e
-        for e in events
-        if e.get("event") == "stage_completed"
-    ]
+    closed_today = [e for e in events if e.get("event") == "stage_completed"]
     findings_lines = _findings_for_day(project_path, day)
 
     quota_pct = ""
@@ -135,7 +127,9 @@ def render_daily_report(
     lines.append("")
     lines.append("## Tasks")
     if s.current_task is not None and s.current_task.id:
-        lines.append(f"- In progress: {s.current_task.id} (stage {s.current_task.stage})")
+        lines.append(
+            f"- In progress: {s.current_task.id} (stage {s.current_task.stage})"
+        )
     else:
         lines.append("- In progress: (none)")
     lines.append(f"- Stage transitions today: {len(closed_today)}")
@@ -153,9 +147,7 @@ def render_daily_report(
     lines.append("## Connectivity")
     lines.append(f"- Network probe failures: {network_probe_failures}")
     lines.append(f"- Transient claude failures: {transient_invocations}")
-    lines.append(
-        f"- Retries exhausted (escalated to structural): {retry_exhausted}"
-    )
+    lines.append(f"- Retries exhausted (escalated to structural): {retry_exhausted}")
     lines.append("")
     lines.append("## Health")
     lines.append(f"- Recovery attempts (lifetime): {s.recovery_attempts}")
@@ -164,9 +156,7 @@ def render_daily_report(
     return "\n".join(lines) + "\n"
 
 
-def write_daily_report(
-    project_path: Path, day: date | None = None
-) -> Path | None:
+def write_daily_report(project_path: Path, day: date | None = None) -> Path | None:
     """Render and write <project>/.cc-autopipe/daily_<YYYY-MM-DD>.md.
 
     Returns the path written, or None if the project isn't initialized

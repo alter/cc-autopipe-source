@@ -39,7 +39,9 @@ def _seed_project(root: Path, name: str, mock_claude: Path) -> Path:
         json.dumps(
             {
                 "hooks": {
-                    "SessionStart": [{"hooks": [{"command": str(HOOKS_DIR / "session-start.sh")}]}],
+                    "SessionStart": [
+                        {"hooks": [{"command": str(HOOKS_DIR / "session-start.sh")}]}
+                    ],
                 }
             }
         )
@@ -105,9 +107,7 @@ def _make_mock_claude(tmp_path: Path, transient_then_ok: int) -> Path:
 
 def _write_projects_list(user_home: Path, projects: list[Path]) -> None:
     user_home.mkdir(parents=True, exist_ok=True)
-    (user_home / "projects.list").write_text(
-        "\n".join(str(p) for p in projects) + "\n"
-    )
+    (user_home / "projects.list").write_text("\n".join(str(p) for p in projects) + "\n")
 
 
 def _run_orch(

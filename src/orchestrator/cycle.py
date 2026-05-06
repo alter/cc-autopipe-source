@@ -11,7 +11,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from orchestrator._runtime import _interruptible_sleep, _log, _now_iso, _user_home, is_shutdown
+from orchestrator._runtime import (
+    _interruptible_sleep,
+    _log,
+    _now_iso,
+    _user_home,
+    is_shutdown,
+)
 from orchestrator.alerts import _notify_tg
 from orchestrator.preflight import (
     _preflight_disk,

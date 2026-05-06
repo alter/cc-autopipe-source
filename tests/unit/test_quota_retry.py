@@ -110,9 +110,7 @@ def test_fetch_quota_does_not_retry_on_4xx() -> None:
         hdrs=None,  # type: ignore[arg-type]
         fp=io.BytesIO(b""),
     )
-    with mock.patch.object(
-        quota.urllib.request, "urlopen", side_effect=err
-    ) as op:
+    with mock.patch.object(quota.urllib.request, "urlopen", side_effect=err) as op:
         out = quota.fetch_quota()
     assert out is None
     assert op.call_count == 1

@@ -73,16 +73,22 @@ bash "$REPO_ROOT/src/helpers/cc-autopipe" status >/dev/null 2>&1 \
 ok 'status read v1.3.2 state without crashing'
 
 # 2. cc-autopipe run --once should resume (check_cmd=true succeeds) and
-#    write back schema_version=5 with liveness fields = null.
+#    write back the engine's current schema_version with liveness fields
+#    = null. Test pins the migration BEHAVIOUR (write-back happens, new
+#    fields get defaults), not the integer — v1.3.4 lifted the version
+#    from 5 to 6 and a future hotfix may bump it again.
 export CC_AUTOPIPE_CLAUDE_BIN="$REPO_ROOT/tools/mock-claude.sh"
 export CC_AUTOPIPE_MOCK_SCENARIO=success
 log 'cc-autopipe run --once'
 bash "$REPO_ROOT/src/helpers/cc-autopipe" run "$PROJ" --once >/dev/null 2>&1 || true
 ok 'run --once completed without crash'
 
+# Discover the engine's current SCHEMA_VERSION rather than hard-coding it.
+EXPECTED_SV=$("$PY" -c "import sys; sys.path.insert(0, '$REPO_ROOT/src/lib'); import state; print(state.SCHEMA_VERSION)")
 SV=$("$PY" -c "import json; print(json.load(open('$PROJ/.cc-autopipe/state.json'))['schema_version'])")
-[ "$SV" = "5" ] || die "schema_version did not migrate to 5; got=$SV"
-ok 'schema_version migrated 4 → 5'
+[ "$SV" = "$EXPECTED_SV" ] || die "schema_version did not migrate to $EXPECTED_SV; got=$SV"
+[ "$SV" -ge 5 ] || die "schema_version regressed below 5; got=$SV"
+ok "schema_version migrated 4 → $SV (current engine SCHEMA_VERSION)"
 
 # Liveness fields default null (no opt-in retroactively).
 PLP=$("$PY" -c "import json; s=json.load(open('$PROJ/.cc-autopipe/state.json')); d=s.get('detached'); print('null' if d is None else (d.get('pipeline_log_path') or 'null'))")
