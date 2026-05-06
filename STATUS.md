@@ -1,13 +1,19 @@
 # Build Status
 
-**Updated:** 2026-05-06T00:00:00Z
+**Updated:** 2026-05-06T09:00:00Z
 **Current branch:** main
-**Current stage:** **v1.3.2 HOTFIX COMPLETE.** Three groups landed
-on top of v1.3.1 (RECOVERY-SAFE: skip enforcement-state phases +
-STDERR-LOGGING: daemon stderr capture with 50MB rotation +
-TRIGGER-SMOKES: synthetic enforcement-loop validation). 573 → 599
-tests passing. 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 smokes all green.
-Awaiting Roman validation + tag v1.3.2.
+**Current stage:** **v1.3.3 HOTFIX COMPLETE.** Three groups landed
+on top of v1.3.2 (Group L: liveness check + Group M: cc-autopipe-smoke
+helper + Group N: knowledge.md detach gate). Schema bumped v4 → v5
+(additive, backward compatible). 599 → **635 tests passing** (+36).
+4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3 = **15/15 hotfix smokes green**.
+Empirical drivers: vec_multihead lost knowledge after REJECT and
+vec_rl silent crash burned 50+ minutes during AI-trade run.
+Awaiting Roman validation + tag v1.3.3.
+
+**Earlier stage:** v1.3.2 HOTFIX COMPLETE. RECOVERY-SAFE +
+STDERR-LOGGING + TRIGGER-SMOKES on top of v1.3.1. 573 → 599 tests.
+See `V132_BUILD_DONE.md`.
 
 **Earlier stage:** v1.3.1 HOTFIX COMPLETE. Three groups (B-FIX
 regression test + B3-FIX shutdown/lock awareness + DETACH-CONFIG
@@ -21,6 +27,53 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.3 HOTFIX — final state
+
+**3 groups landed.** See `V133_BUILD_DONE.md` for the full summary
+including the empirical drivers from the AI-trade production run.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| L | state.Detached pipeline_log_path + stale_after_sec; phase._maybe_resume_on_stale_pipeline; cc-autopipe-detach --pipeline-log / --stale-after-sec; prompt notice block | +6 |
+| M | cli/smoke.py + helpers/cc-autopipe-smoke + dispatcher entry; rules.md template "Pipeline script discipline" + "check_cmd composition" | +8 |
+| N | state.last_verdict_event_at + last_verdict_task_id; cycle.py verdict-stage stamping (also emits task_verdict event); lib/knowledge_gate.py with exit code 3; cli/init.py seeds knowledge.md header; rules.md template "Knowledge discipline" | +22 (7 unit + 9 integration + 6 helper integration) |
+
+**Test counts (v1.3.3):**
+- pytest: 599 (v1.3.2 baseline) → **635 passed** (+36 new tests)
+- 15 hotfix smokes all green: 4 v1.3 + 3 v1.3.1 + 3 v1.3.2 + 5 v1.3.3
+- All 5 v1.3.3 real-CLI smokes (no Python heredoc per PROMPT) under
+  `tests/smoke/v133/`: liveness stale detection, knowledge gate blocks
+  detach, smoke helper command, detach with liveness flags (end-to-end
+  with worker subprocess), v1.3.2 backward compat (schema migration)
+
+**Schema:** **v4 → v5** (additive). Existing v1.3.2 state.json files
+read cleanly via dataclass defaults; first write persists v=5.
+Liveness fields default null → behaviour identical to v1.3.2 unless
+operator opts in via --pipeline-log.
+
+**New events in aggregate.jsonl:** `detach_pipeline_stale`,
+`detach_pipeline_log_missing`, `detach_pipeline_log_clock_skew`,
+`task_verdict`.
+
+**New CLI surface:**
+- `cc-autopipe smoke <script> [--timeout-sec N] [--min-alive-sec N]
+  [--workdir DIR]` — dispatch + `cc-autopipe-smoke` helper
+- `cc-autopipe-detach --pipeline-log <path> [--stale-after-sec N]`
+- New exit code: `cc-autopipe-detach exit 3` = knowledge gate failure
+
+### Currently working on
+
+**v1.3.3 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.3`. See `V133_BUILD_DONE.md` for
+the full smoke test plan + manual AI-trade gate scenarios (verdict
+gate, smoke validation, liveness check).
+
+---
 
 ## v1.3.2 HOTFIX — final state
 
