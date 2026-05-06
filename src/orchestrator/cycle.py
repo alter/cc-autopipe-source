@@ -48,6 +48,7 @@ import knowledge as knowledge_lib  # noqa: E402
 import locking  # noqa: E402
 import notify as notify_lib  # noqa: E402
 import quota as quota_lib  # noqa: E402
+import research_completion as research_completion_lib  # noqa: E402
 import state  # noqa: E402
 import transient as transient_lib  # noqa: E402
 
@@ -279,11 +280,52 @@ def process_project(project_path: Path) -> str:
             else []
         )
 
+        # v1.3.5 RESEARCH-COMPLETION: snapshot the topmost open
+        # [research] task BEFORE the cycle so we can detect artifact-
+        # based completion afterwards. After the cycle Claude has
+        # likely marked the task `[x]` so it's no longer top-open.
+        pre_research_item = research_completion_lib.find_top_research_task(
+            project_path
+        )
+
         rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
 
         # Re-read state.json — hooks may have updated it from inside the claude
         # subprocess (stop.sh's update-verify, stop-failure.sh's set-paused).
         s = state.read(project_path)
+
+        # v1.3.5 RESEARCH-COMPLETION: when the cycle started with a top
+        # `[research]` task, accept artifact-based completion in lieu of
+        # the verify.sh contract. Research tasks produce analysis
+        # artifacts (no code, no commit) so verify.sh is meaningless.
+        # On completion: synthesise a passed-verify result. On still-
+        # pending: log informational event without bumping any failure
+        # counter — claude just hasn't finished yet.
+        if pre_research_item is not None and rc == 0:
+            _research_ok, _research_reason = research_completion_lib.completion_satisfied(
+                project_path, pre_research_item
+            )
+            if _research_ok:
+                if not s.last_passed:
+                    s.last_passed = True
+                    s.last_score = 1.0
+                    s.consecutive_failures = 0
+                    state.write(project_path, s)
+                state.log_event(
+                    project_path,
+                    "research_task_completed",
+                    task_id=pre_research_item.id,
+                    artifact=research_completion_lib.expected_artifact_glob(
+                        pre_research_item
+                    ),
+                )
+            else:
+                state.log_event(
+                    project_path,
+                    "research_task_pending",
+                    task_id=pre_research_item.id,
+                    reason=_research_reason,
+                )
 
         # v1.2 Bug D: task_switched event when current_task.id changes
         # cycle-over-cycle. None → non-None is task_started; non-None →
