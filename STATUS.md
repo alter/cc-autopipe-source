@@ -1,8 +1,21 @@
 # Build Status
 
-**Updated:** 2026-05-06T17:30:00Z
+**Updated:** 2026-05-07T10:30:00Z
 **Current branch:** main
-**Current stage:** **v1.3.5 HOTFIX COMPLETE.** Three groups (R:
+**Current stage:** **v1.3.6 HOTFIX COMPLETE.** Three groups
+(VERDICT-LENIENT: heading-style PROMOTION.md parser + new CONDITIONAL
+canonical state; PHASE-DONE-RECOVERY: sweep_done_projects auto-resume
+when backlog reopens; SENTINEL-PATTERNS: broader knowledge.md arming
+vocabulary + PROMOTION-mtime fallback). Schema **unchanged at v6** (no
+new persisted fields). 743 → **770 tests passing** (+27). 22/22 hotfix
+smokes green (15 v1.3+ hotfix style + 5 v1.3.3 + 2 v1.3.4) including 2
+new v1.3.6 smokes (lenient-verdict, phase-done-reopen). 5/5 real
+AI-trade Phase 1/2 PROMOTION reference files parse to expected
+verdicts. Empirical drivers: AI-trade Phase 2 v2.1 surfaced three
+operational gaps blocking confident multi-month autonomy on the v2.0
+220-task / 3-4 month roadmap. Awaiting Roman validation + tag v1.3.6.
+
+**Earlier stage:** v1.3.5 HOTFIX COMPLETE. Three groups (R:
 [research]-task artifact-based completion + Phase 2 verdict-pattern
 stages; P: v2.0 PROMOTION.md parser + atomic 5-child ablation
 auto-spawn + quarantine; L: persistent LEADERBOARD.md with composite
@@ -13,7 +26,7 @@ adjustments on existing fields). 685 → **743 tests passing** (+58).
 2 v1.3.4 + 3 v1.3.5). Empirical drivers: AI-trade Phase 2 PRD v2.0
 needs three engine-side guardrails (research artifact contract,
 PROMOTION format enforcement, persistent leaderboard) before
-confident 16-week autonomy. Awaiting Roman validation + tag v1.3.5.
+confident 16-week autonomy.
 
 **Earlier stage:** v1.3.4 HOTFIX COMPLETE. One group (Group R:
 transient classification + retry + network probe gate) landed on
@@ -48,6 +61,75 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.6 HOTFIX — final state
+
+**3 groups landed across 8 atomic commits (+1 baseline hygiene fix +
+1 follow-up bugfix).** See `V136_BUILD_DONE.md` for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| VERDICT-LENIENT/1 | src/lib/promotion.py — VERDICT_HEADING_RE + VERDICT_KEYWORD_RE + _next_heading_re(level) + CANONICAL_MAP. Two-pass discovery: locate Verdict heading at any level (with optional `Stage X:` prefix and optional `**` bold), then scan up to 20 lines or until same-or-higher-level heading for keyword. CONDITIONAL/PARTIAL canonicalise to a new third state. Legacy `**Verdict: PROMOTED**` preserved as fallback. | (covered by unit + integration tests) |
+| VERDICT-LENIENT/2 | src/orchestrator/cycle.py — CONDITIONAL emits promotion_conditional event, no on_promotion_success, no children, no leaderboard. Unrecognized verdict path emits promotion_verdict_unrecognized AND legacy promotion_verdict_missing for backwards compat. | (covered by integration tests) |
+| VERDICT-LENIENT/3 | tests/unit/test_promotion.py +8 cases; tests/integration/test_promotion_flow.py +3 cases | +11 |
+| PHASE-DONE-RECOVERY | src/orchestrator/recovery.py — _should_resume_done gate with same enforcement-state guards as _should_recover; _count_open_backlog helper; maybe_resume_done per-project flip with per-project lock; sweep_done_projects iterable wrapper. Wired into src/orchestrator/main.py periodic sweep alongside auto_recover_failed_projects. | +7 (tests/integration/test_recovery_sweep.py NEW file) |
+| SENTINEL-PATTERNS/1 | src/lib/knowledge.py — _VERDICT_PATTERNS extended with complete/completed/done/closed/finished/reject/pass/fail and analysis_complete/reporting_complete/implementation_complete. Substring match preserved. NB: prompt placed this in current_task.py — actual location is knowledge.py with helper is_verdict_stage. | +2 |
+| SENTINEL-PATTERNS/2 | src/orchestrator/cycle.py — _maybe_arm_sentinel_via_promotion(project, post_task_id, s) helper. Arms sentinel when fresh PROMOTION.md (mtime <5 min) parses to a verdict, even if stages_completed lacks a verdict pattern. Idempotent w/ stage-based path. Emits knowledge_sentinel_armed_via_promotion. | +7 (tests/integration/test_sentinel_promotion_fallback.py NEW file) |
+| smokes | tests/smoke/run-lenient-verdict-smoke.sh + tests/smoke/run-phase-done-reopen-smoke.sh + run-all-smokes.sh wiring | +0 (2 smokes) |
+
+**Test counts (v1.3.6):**
+- pytest: 743 (v1.3.5 baseline) → **770 passed** (+27 new tests)
+- 22 hotfix-style smokes all green: 15 v1.3+ (incl. 2 v1.3.6 new) + 5
+  v1.3.3 + 2 v1.3.4
+- AI-trade reference verification: 5/5 real Phase 1/2 PROMOTION files
+  parse to expected verdicts (long_only_baseline=REJECTED,
+  dr_synth_v1=CONDITIONAL, q_compressed_partial_filter=PROMOTED,
+  dr_regime_classifier_check=PROMOTED, rl=REJECTED)
+
+**Schema:** **unchanged at v6.** No new persisted fields per
+PROMPT_v1.3.6 §"Don't"; only new event records in aggregate.jsonl.
+
+**New events in aggregate.jsonl:** `promotion_conditional`,
+`promotion_verdict_unrecognized` (legacy `promotion_verdict_missing`
+also still emitted alongside), `phase_done_to_active`,
+`phase_done_resume_skipped`, `knowledge_sentinel_armed_via_promotion`.
+
+**New CLI surface:** none.
+
+### Tactical deviations from PROMPT_v1.3.6-hotfix.md
+
+1. **Verdict-pattern location.** Prompt §SENTINEL-PATTERNS placed
+   `_VERDICT_PATTERNS` and the helper `matches_verdict_pattern` in
+   `src/lib/current_task.py`. Actual location is `src/lib/knowledge.py`,
+   helper is `is_verdict_stage`. No behavior change vs prompt intent —
+   broaden the vocabulary in the place it actually lives.
+2. **`_next_heading_re` is heading-level-aware.** Prompt's reference
+   impl used a single `^#{1,4}\s+` boundary that would treat the
+   `### STABLE` sub-heading under `## Verdict` as the next section,
+   missing the keyword. Real AI-trade fixtures all use sub-heading
+   verdicts. Implementation respects level: `## Verdict` is bounded
+   only by `##` or `#`, not by `###`/`####`. All 5 reference files
+   parse correctly as a result.
+3. **`_should_resume_done` uses `_count_open_backlog`, not
+   `detect_prd_complete`.** Initial implementation followed the
+   prompt's reference impl (which uses `detect_prd_complete`), but
+   that returns False on missing backlog and erroneously flipped a
+   long-done project with no backlog file into active
+   (regression caught by `test_skips_done_and_failed_projects`).
+   Switched to direct `^[ \t]*-[ \t]*\[ \]` count: 0 lines (or
+   missing backlog) → skip with `prd_still_complete`.
+
+### Currently working on
+
+**v1.3.6 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.6`. See `V136_BUILD_DONE.md` for
+the full smoke test plan.
+
+---
 
 ## v1.3.5 HOTFIX — final state
 
