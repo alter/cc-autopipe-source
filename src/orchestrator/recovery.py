@@ -349,11 +349,14 @@ def _should_resume_done(s: state.State, project_path: Path) -> tuple[bool, str]:
         return False, "knowledge_update_in_progress"
     if s.research_plan_required:
         return False, "research_plan_pending"
-    # Local import to avoid a recovery → research module-load cycle on
-    # cold start (research itself doesn't depend on recovery, but the
-    # cycle is still cleaner kept inside the function).
-    from orchestrator.research import detect_prd_complete  # noqa: PLC0415
-    if detect_prd_complete(project_path):
+    # Resume only when the backlog has at least one open `- [ ]` line.
+    # `detect_prd_complete` is unsuitable here because it returns False
+    # for a *missing* backlog, which would erroneously flip a long-done
+    # project that has no backlog file at all into active. The right
+    # signal is "actually has open tasks now" — count open lines
+    # directly. 0 open lines → either backlog missing or PRD truly
+    # complete; either way, nothing to resume to.
+    if _count_open_backlog(project_path) == 0:
         return False, "prd_still_complete"
     return True, ""
 
