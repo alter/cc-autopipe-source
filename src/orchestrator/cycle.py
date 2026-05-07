@@ -393,7 +393,31 @@ def process_project(project_path: Path) -> str:
                             "promotion_rejected",
                             task_id=pre_item.id,
                         )
+                    elif verdict == "CONDITIONAL":
+                        # v1.3.6: distinct partial-pass state. Does NOT
+                        # fire on_promotion_success — no ablation children,
+                        # no leaderboard append. Operator reviews and
+                        # decides whether to manually escalate to
+                        # PROMOTED or REJECTED. Logged distinctly so it's
+                        # visible in aggregate.jsonl.
+                        state.log_event(
+                            project_path,
+                            "promotion_conditional",
+                            task_id=pre_item.id,
+                        )
                     else:
+                        # v1.3.6 rename for clarity: parser explicitly
+                        # could not recognize a verdict keyword (vs.
+                        # v1.3.5's "missing" which conflated "no
+                        # verdict line" and "verdict line in unexpected
+                        # format"). Keep emitting the legacy event name
+                        # too so any tooling filtering on
+                        # `promotion_verdict_missing` keeps working.
+                        state.log_event(
+                            project_path,
+                            "promotion_verdict_unrecognized",
+                            task_id=pre_item.id,
+                        )
                         state.log_event(
                             project_path,
                             "promotion_verdict_missing",
