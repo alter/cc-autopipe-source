@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """promotion — parse and validate PROMOTION.md reports + on_promotion_success hook.
 
-Refs: PROMPT_v1.3.5-hotfix.md GROUP PROMOTION-PARSER.
+Refs: PROMPT_v1.3.5-hotfix.md GROUP PROMOTION-PARSER,
+      PROMPT_v1.3.6-hotfix.md GROUP VERDICT-LENIENT.
 
 PROMOTION.md v2.0 required structure (per AI-trade rules.md
 "PROMOTION report format v2.0"):
 
-    - Verdict line: '**Verdict: PROMOTED**' or '**Verdict: REJECTED**'
+    - Verdict heading + body keyword (v1.3.6 lenient parse, see below)
     - § Long-only verification
     - § Regime-stratified PnL
     - § Statistical significance
@@ -15,9 +16,32 @@ PROMOTION.md v2.0 required structure (per AI-trade rules.md
     - Plus all v1.2 sections (Acceptance, Evidence, etc.) — not enforced
       by this module.
 
+v1.3.6: verdict parsing is lenient. Recognizes any heading containing
+"Verdict" followed by a verdict keyword in the next 20 lines (or until
+the next heading), then maps fuzzy verdicts to a canonical state in
+{PROMOTED, REJECTED, CONDITIONAL}. CONDITIONAL is a new third state used
+for partial passes (Phase 2 PRDs that meet 3-of-4 acceptance criteria);
+it does NOT trigger on_promotion_success — no ablation children, no
+leaderboard entry — but is logged distinctly so operators can see
+partial wins.
+
+Heading patterns recognized:
+    ## Verdict
+    ## Verdict: PROMOTED
+    ## Verdict: LONG_LOSES_MONEY
+    ## Stage D: Verdict
+    **Verdict: PROMOTED**
+    # Verdict
+    ### Verdict
+
+Verdict keywords (in heading or body):
+    PROMOTED, ACCEPT, ACCEPTED, PASS, PASSED, STABLE → PROMOTED
+    REJECTED, REJECT, FAIL, FAILED, LONG_LOSES_MONEY → REJECTED
+    CONDITIONAL, PARTIAL                              → CONDITIONAL
+
 Public surface:
     - promotion_path(project, task_id)        -> Path
-    - parse_verdict(promotion_path)           -> 'PROMOTED' | 'REJECTED' | None
+    - parse_verdict(promotion_path)           -> 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None
     - validate_v2_sections(promotion_path)    -> tuple[bool, list[str]]
     - parse_metrics(promotion_path)           -> dict
     - on_promotion_success(project, item, metrics) -> None
@@ -39,10 +63,68 @@ REQUIRED_V2_SECTIONS = [
     "No-lookahead audit",
 ]
 
+# v1.3.5 (legacy): exact `**Verdict: PROMOTED**` / `**Verdict: REJECTED**`.
+# v1.3.6: kept as a fallback so v1.3.5 PROMOTION fixtures still parse.
 VERDICT_RE = re.compile(
     r"^\*\*Verdict:\s*(PROMOTED|REJECTED)\*\*\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
+
+# v1.3.6 lenient parser. Recognizes any heading containing "Verdict"
+# (any heading level, optionally prefixed with "Stage X:") followed by a
+# verdict keyword in the next 20 lines or until the next heading. Maps
+# fuzzy verdicts to canonical {PROMOTED, REJECTED, CONDITIONAL}.
+#
+# Heading patterns recognized:
+#   ## Verdict
+#   ## Verdict: PROMOTED
+#   ## Verdict: LONG_LOSES_MONEY
+#   ## Stage D: Verdict
+#   **Verdict: PROMOTED**
+#   # Verdict
+#   ### Verdict
+VERDICT_HEADING_RE = re.compile(
+    r"^(?P<bold>\*\*)?(?P<hashes>#{0,4})\s*(?:Stage\s+\w+\s*:\s*)?"
+    r"Verdict\b[:\s]*[\w\s\-]*(?:\*\*)?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+VERDICT_KEYWORD_RE = re.compile(
+    r"\b(PROMOTED|REJECTED|ACCEPTED|ACCEPT|REJECT|PASSED|PASS|FAILED|FAIL|"
+    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY)\b",
+    re.IGNORECASE,
+)
+
+
+def _next_heading_re(verdict_level: int) -> re.Pattern[str]:
+    """Match the next heading at the same level as the Verdict heading or
+    higher (fewer hashes). Subsections (`### body` under `## Verdict`) are
+    considered part of the verdict body and must not terminate scanning —
+    real AI-trade fixtures place the verdict keyword on a `### KEYWORD —
+    ...` line directly under `## Verdict`.
+
+    `verdict_level` is the number of `#` characters in the Verdict heading
+    (1-4). For a bold-marker form (`**Verdict: ...**`) without any `#`,
+    the level is treated as 1 so any subsequent heading bounds the body.
+    """
+    level = max(1, min(verdict_level, 4))
+    return re.compile(rf"^#{{1,{level}}}\s+", re.MULTILINE)
+
+CANONICAL_MAP = {
+    "PROMOTED": "PROMOTED",
+    "ACCEPT": "PROMOTED",
+    "ACCEPTED": "PROMOTED",
+    "PASS": "PROMOTED",
+    "PASSED": "PROMOTED",
+    "STABLE": "PROMOTED",
+    "REJECTED": "REJECTED",
+    "REJECT": "REJECTED",
+    "FAIL": "REJECTED",
+    "FAILED": "REJECTED",
+    "LONG_LOSES_MONEY": "REJECTED",
+    "CONDITIONAL": "CONDITIONAL",
+    "PARTIAL": "CONDITIONAL",
+}
 
 
 def _promotion_basename(task_id: str) -> str:
@@ -63,16 +145,58 @@ def promotion_path(project: Path, task_id: str) -> Path:
 
 
 def parse_verdict(path: Path) -> str | None:
+    """Return canonical verdict 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None.
+
+    v1.3.6: lenient two-pass discovery. First find a Verdict heading at any
+    level (optionally prefixed `Stage X:`), then scan up to 20 lines (or
+    until the next heading) for a verdict keyword. First keyword wins.
+    Falls back to the v1.3.5 strict `**Verdict: <X>**` pattern when no
+    Verdict heading is found, so legacy PROMOTION fixtures still parse.
+
+    Returns None when neither pattern locates a verdict.
+    """
     if not path.exists():
         return None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    m = VERDICT_RE.search(text)
-    if not m:
+
+    # Pass 1: find any Verdict heading (handles `## Verdict`, `## Stage D:
+    # Verdict`, `## Verdict: LONG_LOSES_MONEY`, `**Verdict: PROMOTED**`).
+    heading_match = VERDICT_HEADING_RE.search(text)
+    if not heading_match:
+        # Legacy strict pattern fallback for backward compat with v1.3.5
+        # `**Verdict: PROMOTED**` fixtures that lack any heading-style cue.
+        legacy = VERDICT_RE.search(text)
+        if legacy:
+            return CANONICAL_MAP.get(legacy.group(1).upper())
         return None
-    return m.group(1).upper()
+
+    # Pass 2: scan from the start of the heading line through the next ~20
+    # lines (or until the next same-or-higher-level heading) for any verdict
+    # keyword. Including the heading line itself catches inline forms like
+    # `## Verdict: PROMOTED` and `## Verdict: LONG_LOSES_MONEY`.
+    after_idx = heading_match.start()
+    tail = text[after_idx:]
+    verdict_level = len(heading_match.group("hashes") or "")
+    next_heading_pattern = _next_heading_re(verdict_level)
+    # Skip past the heading line itself before looking for the next heading.
+    next_heading = next_heading_pattern.search(
+        tail, pos=len(heading_match.group(0))
+    )
+    section_end = next_heading.start() if next_heading else len(tail)
+    section = tail[:section_end]
+    # Cap at 20 newlines so an enormous body section past the verdict
+    # heading doesn't catch a stray verdict keyword in unrelated prose.
+    lines = section.split("\n")[:20]
+    section_capped = "\n".join(lines)
+
+    keyword_match = VERDICT_KEYWORD_RE.search(section_capped)
+    if not keyword_match:
+        return None
+    raw = keyword_match.group(1).upper()
+    return CANONICAL_MAP.get(raw)
 
 
 def validate_v2_sections(path: Path) -> tuple[bool, list[str]]:
