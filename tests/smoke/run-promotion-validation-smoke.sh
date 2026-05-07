@@ -42,7 +42,7 @@ cat > "$PROJ/backlog.md" <<'EOF'
 ## Done
 EOF
 
-cat > "$PROJ/data/debug/CAND_vec_long_lgbm_PROMOTION.md" <<'EOF'
+cat > "$PROJ/data/debug/CAND_lgbm_PROMOTION.md" <<'EOF'
 # CAND vec_long_lgbm — PROMOTION
 
 **Verdict: PROMOTED**
@@ -127,7 +127,7 @@ cat > "$PROJ2/backlog.md" <<'EOF'
 - [x] [implement] [P1] vec_long_lgbm — model
 EOF
 
-cat > "$PROJ2/data/debug/CAND_vec_long_lgbm_PROMOTION.md" <<'EOF'
+cat > "$PROJ2/data/debug/CAND_lgbm_PROMOTION.md" <<'EOF'
 **Verdict: PROMOTED**
 
 ## Long-only verification
@@ -175,7 +175,7 @@ mkdir -p "$PROJ3/.cc-autopipe/memory" "$PROJ3/data/debug"
 cat > "$PROJ3/backlog.md" <<'EOF'
 - [x] [implement] [P0] vec_long_xgb — rejected model
 EOF
-cat > "$PROJ3/data/debug/CAND_vec_long_xgb_PROMOTION.md" <<'EOF'
+cat > "$PROJ3/data/debug/CAND_xgb_PROMOTION.md" <<'EOF'
 **Verdict: REJECTED**
 
 (no v2.0 sections necessary for rejected verdicts)
