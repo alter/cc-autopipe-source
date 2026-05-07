@@ -72,6 +72,70 @@ TRANSIENT_BACKOFF_SEC = (30, 60, 120, 300, 600)
 MAX_TRANSIENT_RETRIES = 5
 
 
+# v1.3.6 SENTINEL-PATTERNS fallback: arm the knowledge.md sentinel when
+# a fresh PROMOTION.md was just written with a parseable verdict, even
+# if CURRENT_TASK.md `stages_completed` lacks a verdict-pattern stage.
+# 5-minute window scopes the trigger to a "fresh" artifact — a stale
+# PROMOTION from a prior cycle would otherwise re-arm forever.
+PROMOTION_MTIME_FRESH_WINDOW_SEC = 300
+
+
+def _maybe_arm_sentinel_via_promotion(
+    project_path: Path, post_task_id: str | None, s: state.State
+) -> bool:
+    """v1.3.6 SENTINEL-PATTERNS: arm knowledge.md sentinel via fresh
+    PROMOTION.md when CURRENT_TASK stages didn't trigger it.
+
+    Returns True iff the sentinel was armed by this call. Caller is
+    expected to have already run the v1.3 stage-based arming logic;
+    this is a defense-in-depth fallback that fires only when the
+    sentinel is NOT already armed.
+
+    Gates:
+      - post_task_id starts with vec_ or phase_gate_ (engine convention
+        for tasks that produce PROMOTION reports)
+      - PROMOTION.md exists at the resolved path
+      - PROMOTION.md mtime within PROMOTION_MTIME_FRESH_WINDOW_SEC
+      - parse_verdict returns a verdict (PROMOTED|REJECTED|CONDITIONAL)
+
+    On arm: emits `knowledge_sentinel_armed_via_promotion` event with
+    the mtime age in seconds so operators can see why the sentinel
+    fired without a stage transition.
+    """
+    if (
+        post_task_id is None
+        or not post_task_id.startswith(("vec_", "phase_gate_"))
+        or s.knowledge_update_pending
+    ):
+        return False
+    p_promo = promotion_lib.promotion_path(project_path, post_task_id)
+    if not p_promo.exists():
+        return False
+    import time as _time  # noqa: PLC0415
+    try:
+        mtime_age = _time.time() - p_promo.stat().st_mtime
+    except OSError:
+        return False
+    if mtime_age >= PROMOTION_MTIME_FRESH_WINDOW_SEC:
+        return False
+    if promotion_lib.parse_verdict(p_promo) is None:
+        return False
+    verdict_ts = _now_iso()
+    s.knowledge_update_pending = True
+    s.knowledge_baseline_mtime = knowledge_lib.get_mtime_or_zero(project_path)
+    s.knowledge_pending_reason = f"promotion_mtime_fallback on {post_task_id}"
+    s.last_verdict_event_at = verdict_ts
+    s.last_verdict_task_id = post_task_id
+    state.write(project_path, s)
+    state.log_event(
+        project_path,
+        "knowledge_sentinel_armed_via_promotion",
+        task_id=post_task_id,
+        promotion_mtime_age_sec=int(mtime_age),
+    )
+    return True
+
+
 def _backoff_override(env_var: str, default: tuple[int, ...]) -> tuple[int, ...]:
     """Honour CC_AUTOPIPE_*_BACKOFF_OVERRIDE env vars for tests.
 
@@ -500,6 +564,21 @@ def process_project(project_path: Path) -> str:
                         task_id=post_task_id,
                         verdict_ts=verdict_ts,
                     )
+
+        # v1.3.6 SENTINEL-PATTERNS fallback: arm the knowledge.md
+        # sentinel when a fresh PROMOTION.md was just written with a
+        # parseable verdict, even if CURRENT_TASK.md `stages_completed`
+        # never contained a verdict-pattern stage. Defense-in-depth —
+        # Claude task discipline may forget to emit a verdict-named
+        # stage; the engine reads the artifact directly. Helper is
+        # idempotent: skips when sentinel is already armed by the
+        # stage-based path above.
+        try:
+            _maybe_arm_sentinel_via_promotion(project_path, post_task_id, s)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not crash
+            _log(
+                f"{project_path.name}: promotion-mtime fallback error: {exc!r}"
+            )
 
         # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
         # when prd.md declares `### Phase N:` headers AND the current
