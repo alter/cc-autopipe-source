@@ -301,6 +301,153 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
         proj_lock.release()
 
 
+def _count_open_backlog(project_path: Path) -> int:
+    """Count `- [ ]` open task lines in the project's backlog. Returns 0
+    when no backlog exists. Used by `sweep_done_projects` for telemetry —
+    NOT for the resume decision (which delegates to detect_prd_complete
+    so the decision matches what the rest of the engine considers
+    complete)."""
+    candidates = [
+        project_path / "backlog.md",
+        project_path / ".cc-autopipe" / "backlog.md",
+    ]
+    backlog = next((p for p in candidates if p.exists()), None)
+    if backlog is None:
+        return 0
+    try:
+        text = backlog.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    import re  # noqa: PLC0415
+    return len(re.findall(r"^[ \t]*-[ \t]*\[ \]", text, re.MULTILINE))
+
+
+def _should_resume_done(s: state.State, project_path: Path) -> tuple[bool, str]:
+    """v1.3.6 PHASE-DONE-RECOVERY: gate `sweep_done_projects` against
+    active enforcement state.
+
+    Returns (should_resume, skip_reason). Mirrors `_should_recover` but
+    targets the `phase=done` → `active` transition: when an operator adds
+    new tasks to a done project's backlog, the engine should resume work
+    without requiring a manual `state.json` edit. Without this, a
+    `phase=done` project on a 3-4 month autonomous run requires manual
+    rescue every time backlog cycles drained → reopened.
+
+    Skip reasons:
+      - phase != done — boring default, sweep iterates past actives
+      - meta_reflect_pending / knowledge_update_pending /
+        research_plan_required — enforcement loops outrank reopen, just
+        like sweep_failed_projects
+      - prd_still_complete — backlog has no open `[ ]`, so there's
+        actually nothing to resume to
+    """
+    if s.phase != "done":
+        return False, f"phase={s.phase}_not_done"
+    if s.meta_reflect_pending:
+        return False, "meta_reflect_in_progress"
+    if s.knowledge_update_pending:
+        return False, "knowledge_update_in_progress"
+    if s.research_plan_required:
+        return False, "research_plan_pending"
+    # Local import to avoid a recovery → research module-load cycle on
+    # cold start (research itself doesn't depend on recovery, but the
+    # cycle is still cleaner kept inside the function).
+    from orchestrator.research import detect_prd_complete  # noqa: PLC0415
+    if detect_prd_complete(project_path):
+        return False, "prd_still_complete"
+    return True, ""
+
+
+def maybe_resume_done(project_path: Path | str) -> bool:
+    """Single-project resume decision. Returns True iff transitioned.
+
+    `phase=done` is normally terminal — the project's PRD is satisfied,
+    no further cycles run. v1.3.6 introduces an exception: when an
+    operator manually adds new tasks to backlog.md (Phase 3 / extension
+    scenario), the engine detects the reopen at the next sweep cycle and
+    flips the project back to `active` automatically. Without this,
+    Roman's planned 3-4 month autonomous absence would need manual
+    `cc-autopipe update-verify --prd-complete=false` calls every time a
+    backlog cycle drained → reopened.
+
+    Atomic via state.write (per the v1.3.6 §"Don't" rule). Per-project
+    lock acquired non-blocking — if a cycle is in flight we skip and
+    let the next sweep retry.
+    """
+    project_path = Path(project_path)
+    if not (project_path / ".cc-autopipe").exists():
+        return False
+    proj_lock = locking.acquire_project(project_path)
+    if proj_lock is None:
+        _log(
+            f"{project_path.name}: skip done-resume (per-project lock held)"
+        )
+        return False
+    try:
+        s = state.read(project_path)
+        should, reason = _should_resume_done(s, project_path)
+        if not should:
+            # Only log when the project IS done — emitting a skip event
+            # for every active project on every sweep would flood
+            # aggregate.jsonl. The phase=*_not_done case is the boring
+            # default for a healthy active project.
+            if s.phase == "done":
+                state.log_event(
+                    project_path, "phase_done_resume_skipped", reason=reason
+                )
+                _log(
+                    f"{project_path.name}: phase_done resume skipped — {reason}"
+                )
+            return False
+        # Transition done → active. Clear PRD-complete flags so the
+        # next cycle picks up the new backlog tasks normally; clear
+        # current_task because the operator added new work and we
+        # want the engine to pick a fresh top item rather than
+        # resume on stale state.
+        s.phase = "active"
+        s.prd_complete = False
+        s.prd_complete_detected = False
+        s.last_score = None
+        s.last_passed = None
+        s.current_task = None
+        state.write(project_path, s)
+        state.log_event(
+            project_path,
+            "phase_done_to_active",
+            reason="backlog_reopened",
+            open_tasks=_count_open_backlog(project_path),
+        )
+        _log(
+            f"{project_path.name}: phase_done → active (backlog reopened, "
+            f"{_count_open_backlog(project_path)} open tasks)"
+        )
+        return True
+    finally:
+        proj_lock.release()
+
+
+def sweep_done_projects(projects: Iterable[Path]) -> int:
+    """Per-cycle sweep: reopen DONE projects whose backlog has gained open
+    tasks. Operators add tasks manually; engine should not require
+    manual state.json edits to resume work.
+
+    Returns the number of projects transitioned. Aborts on shutdown
+    flag mid-sweep so a SIGTERM during a long projects.list scan stops
+    mutating state.
+    """
+    n = 0
+    for p in projects:
+        if is_shutdown():
+            _log("phase-done-resume sweep: shutdown flag set, aborting")
+            break
+        try:
+            if maybe_resume_done(p):
+                n += 1
+        except Exception as exc:  # noqa: BLE001 — sweep must continue
+            _log(f"{p}: phase_done resume error: {exc!r}")
+    return n
+
+
 def auto_recover_failed_projects(projects: Iterable[Path]) -> int:
     """Sweep helper: invoke maybe_auto_recover for each project, return
     count revived. Used by main.py's periodic background sweep.

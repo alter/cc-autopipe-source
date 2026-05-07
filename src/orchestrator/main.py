@@ -49,6 +49,7 @@ from orchestrator.daily_report import maybe_write_for_all
 from orchestrator.recovery import (
     RECOVERY_INTERVAL_SEC,
     auto_recover_failed_projects,
+    sweep_done_projects,
 )
 import claude_settings  # noqa: E402
 import locking  # noqa: E402
@@ -278,6 +279,21 @@ def main(argv: list[str] | None = None) -> int:
                         _log(f"auto-recovery sweep revived {revived} project(s)")
                 except Exception as exc:  # noqa: BLE001
                     _log(f"auto-recovery sweep error: {exc!r}")
+                # v1.3.6 PHASE-DONE-RECOVERY: parallel sweep that flips
+                # `phase=done` projects back to `active` when their
+                # backlog has been reopened (operator added new tasks).
+                # Without this, a 3-4 month autonomous run requires
+                # manual state.json edits every time a backlog cycle
+                # drains → reopens.
+                try:
+                    resumed = sweep_done_projects(projects)
+                    if resumed:
+                        _log(
+                            f"phase-done-resume sweep flipped {resumed} "
+                            f"project(s) back to active"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"phase-done-resume sweep error: {exc!r}")
                 last_recovery_sweep_at = time.time()
 
             # v1.3 F1: write per-project daily summary every 24h.
