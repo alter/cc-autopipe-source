@@ -50,6 +50,39 @@ def test_is_verdict_skips_unrelated() -> None:
     assert knowledge.is_verdict_stage(None) is False  # type: ignore[arg-type]
 
 
+def test_is_verdict_v136_broader_vocabulary() -> None:
+    """v1.3.6 SENTINEL-PATTERNS: the v1.3.5 set was too narrow ({verdict,
+    rejected, promoted, accepted, shipped, phase_gate, ...}). Real
+    Claude task-sessions in the AI-trade Phase 2 v2.1 run used stages
+    like 'complete', 'analysis_complete', 'reporting_complete' — none
+    matched. v1.3.6 broadens the vocabulary so the knowledge.md sentinel
+    arms after these too."""
+    # Outcome words Claude actually uses
+    assert knowledge.is_verdict_stage("complete") is True
+    assert knowledge.is_verdict_stage("completed") is True
+    assert knowledge.is_verdict_stage("done") is True
+    assert knowledge.is_verdict_stage("closed") is True
+    assert knowledge.is_verdict_stage("finished") is True
+    # Substring patterns for compound stage names
+    assert knowledge.is_verdict_stage("analysis_complete") is True
+    assert knowledge.is_verdict_stage("reporting_complete") is True
+    assert knowledge.is_verdict_stage("implementation_complete") is True
+    # `pass` / `fail` / `reject` substring matches
+    assert knowledge.is_verdict_stage("pass") is True
+    assert knowledge.is_verdict_stage("fail") is True
+    assert knowledge.is_verdict_stage("reject") is True
+
+
+def test_is_verdict_v136_implementation_alone_still_skipped() -> None:
+    """`implementation` by itself is NOT a verdict — Claude is still in
+    flight. Only `implementation_complete`/`implementation_done` arm the
+    sentinel. Pin this so we don't over-fire on every stage that happens
+    to mention 'implementation'."""
+    assert knowledge.is_verdict_stage("implementation") is False
+    assert knowledge.is_verdict_stage("hypothesis") is False
+    assert knowledge.is_verdict_stage("foobar") is False
+
+
 # ---------------------------------------------------------------------------
 # build_knowledge_update_block
 # ---------------------------------------------------------------------------

@@ -48,6 +48,25 @@ _VERDICT_PATTERNS = (
     "negative_mining",
     "hypo_filed",
     "track_winner",
+    # v1.3.6: broaden to cover the stage vocabulary Claude task-sessions
+    # actually use. The v1.3.5 set missed `complete`, `done`, `closed`,
+    # `reporting`, `analysis_complete` etc. — Phase 2 v2.1 finished 23
+    # tasks with `knowledge_baseline_mtime: None` because none of the
+    # stages_completed strings matched a verdict pattern, so the
+    # sentinel never armed. On a 3-4 month run the accumulated
+    # knowledge.md is the only memory mechanism — without sentinel
+    # arming, Claude restarts each cycle without the lessons appended.
+    "complete",
+    "completed",
+    "done",
+    "closed",
+    "finished",
+    "reject",
+    "pass",
+    "fail",
+    "analysis_complete",
+    "reporting_complete",
+    "implementation_complete",
 )
 
 
