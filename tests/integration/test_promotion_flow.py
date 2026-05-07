@@ -217,6 +217,148 @@ def test_quarantine_invalid_reverts_x_to_tilde(
     assert "Walk-forward stability" in invalid[0]["missing_sections"]
 
 
+PROMOTED_VIA_HEADING_STABLE = """\
+## Verdict
+
+### STABLE — M-Regime classifier consistent and ready
+
+## Long-only verification
+yes
+## Regime-stratified PnL
+yes
+sum_fixed: +268.99%
+regime_parity: 0.18
+max_DD: -8.20%
+DM_p_value: 0.003
+DSR: 1.12
+## Statistical significance
+yes
+## Walk-forward stability
+yes
+## No-lookahead audit
+yes
+"""
+
+CONDITIONAL_BODY = """\
+## Verdict
+
+### CONDITIONAL — Passes 3/4 PRD criteria; fails sum_fixed threshold
+
+## Long-only verification
+yes
+## Regime-stratified PnL
+yes
+## Statistical significance
+yes
+## Walk-forward stability
+yes
+## No-lookahead audit
+yes
+"""
+
+REJECTED_LONG_LOSES = """\
+## Verdict: LONG_LOSES_MONEY
+
+## Long-only verification
+n/a
+"""
+
+
+def test_heading_style_stable_promotes_and_spawns_children(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """v1.3.6: a `## Verdict\\n### STABLE` PROMOTION body should be
+    parsed as PROMOTED, all 5 ablation children should spawn, and the
+    leaderboard hook should fire — same flow as the legacy
+    `**Verdict: PROMOTED**` form."""
+    user_home = tmp_path / "uhome"
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
+    project = _seed(
+        tmp_path,
+        backlog_body=(
+            "- [x] [implement] [P1] vec_long_lgbm — model\n"
+            "## Done\n"
+        ),
+        promotion_body=PROMOTED_VIA_HEADING_STABLE,
+        task_id="vec_long_lgbm",
+        user_home=user_home,
+    )
+
+    p = promotion.promotion_path(project, "vec_long_lgbm")
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+    item = SimpleNamespace(id="vec_long_lgbm", priority=1)
+    metrics = promotion.parse_metrics(p)
+    promotion.on_promotion_success(project, item, metrics)
+
+    body = (project / "backlog.md").read_text(encoding="utf-8")
+    for suffix in ("ab_drop_top", "ab_loss", "ab_seq", "ab_seed", "ab_eth"):
+        assert f"vec_long_lgbm_{suffix}" in body
+
+    events = [e for e in _read_aggregate(user_home) if e.get("event")]
+    assert any(e["event"] == "ablation_children_spawned" for e in events)
+
+
+def test_conditional_does_not_spawn_children_or_leaderboard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """v1.3.6: CONDITIONAL is a third state. Verdict parses to
+    CONDITIONAL — engine logs `promotion_conditional` but does NOT call
+    on_promotion_success, so no ablation children appear and no
+    leaderboard append fires."""
+    user_home = tmp_path / "uhome"
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
+    project = _seed(
+        tmp_path,
+        backlog_body="- [x] [implement] [P1] vec_long_lgbm — model\n",
+        promotion_body=CONDITIONAL_BODY,
+        task_id="vec_long_lgbm",
+        user_home=user_home,
+    )
+
+    p = promotion.promotion_path(project, "vec_long_lgbm")
+    assert promotion.parse_verdict(p) == "CONDITIONAL"
+
+    # Caller (cycle dispatch) does NOT invoke on_promotion_success for
+    # CONDITIONAL — emulate that here. Just emit the event.
+    import state  # noqa: PLC0415
+    state.log_event(project, "promotion_conditional", task_id="vec_long_lgbm")
+
+    body = (project / "backlog.md").read_text(encoding="utf-8")
+    assert "vec_long_lgbm_ab_drop_top" not in body
+    assert "[P2]" not in body  # no children spawned
+
+    events = [e for e in _read_aggregate(user_home) if e.get("event")]
+    cond = [e for e in events if e["event"] == "promotion_conditional"]
+    assert len(cond) == 1
+    assert not any(e["event"] == "ablation_children_spawned" for e in events)
+    assert not any(e["event"] == "leaderboard_updated" for e in events)
+
+
+def test_long_loses_money_inline_verdict_rejects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """v1.3.6: `## Verdict: LONG_LOSES_MONEY` resolves to REJECTED via
+    CANONICAL_MAP. Engine emits promotion_rejected only — no children,
+    no leaderboard."""
+    user_home = tmp_path / "uhome"
+    monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
+    project = _seed(
+        tmp_path,
+        backlog_body="- [x] [implement] [P0] vec_long_baseline — model\n",
+        promotion_body=REJECTED_LONG_LOSES,
+        task_id="vec_long_baseline",
+        user_home=user_home,
+    )
+
+    p = promotion.promotion_path(project, "vec_long_baseline")
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+    body = (project / "backlog.md").read_text(encoding="utf-8")
+    # No mutation: REJECTED handling is log-only.
+    assert "vec_long_baseline_ab_drop_top" not in body
+
+
 def test_atomic_write_no_partial_state(tmp_path: Path, monkeypatch) -> None:
     """The backlog mutation must use tmp+os.replace so a concurrent
     reader sees either old or new — never partial."""
