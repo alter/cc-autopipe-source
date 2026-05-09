@@ -1,8 +1,37 @@
 # Build Status
 
-**Updated:** 2026-05-09T11:05:00Z
+**Updated:** 2026-05-09T11:30:00Z
 **Current branch:** main
-**Current stage:** **POST-v1.3.7 OPERATOR TOOLING.** Ships
+**Current stage:** **v1.3.8 HOTFIX COMPLETE.** Three groups
+(SENTINEL-RACE-FIX: idempotent sentinel arming in both
+`_maybe_arm_sentinel_via_promotion` and the stage_completed
+verdict-stage path + new `_safe_baseline_mtime` helper that snapshots
+pre-cycle mtime so a same-cycle Claude knowledge.md append still
+clears pending; RECOVERY-SWEEP-SENTINEL-TIMEOUT: 4h escape hatch via
+`_is_sentinel_genuinely_stuck` + `sentinel_stuck_force_clear` reason
+in `_should_recover` + sentinel teardown in `maybe_auto_recover`;
+PROMOTION-HOOK-DIAGNOSTICS: 9-prefix `STRATEGY_PROMOTION_PREFIXES`
+gate via `requires_full_v2_validation` + relaxed `validate_v2_sections(path,
+task_id=...)` for measurement / infra tasks + per-stage event trail
+in `on_promotion_success` (`_entered`, `ablation_children_spawned` /
+`promotion_children_skipped`, `_failed stage=...`, `_completed`)).
+Schema **unchanged at v6** with NO new persisted fields per
+PROMPT_v1.3.8 §"Don't". 798 → **820 tests passing** (+22). 24/24
+hotfix smokes green (16 v1.3+ + new sentinel-race + 5 v1.3.3 + 2
+v1.3.4 = 17 hotfix-style + 7 stage-letter). 9/9 real AI-trade
+Phase 2 PROMOTION reference files parse to expected verdicts;
+`vec_long_quantile` and `vec_long_risk_adj_target` (the production
+measurement tasks v1.3.7 silently quarantined for "missing v2.0
+sections") now `validate_v2_sections(task_id=...) → ok=True` and
+will fire `on_promotion_success` end-to-end. Empirical drivers:
+AI-trade Phase 2 v2.0 ~10h autonomous run 2026-05-09 — sentinel-arm
+race left engine permanently stuck at `phase=failed,
+knowledge_update_pending=True` for 4+ hours with infinite recovery
+skip loop, AND 5 measurement-task PROMOTIONs spawned 0 ablation
+children + LEADERBOARD.md never created. Awaiting Roman validation
++ tag v1.3.8.
+
+**Earlier stage:** **POST-v1.3.7 OPERATOR TOOLING.** Ships
 `cc-autopipe snapshot` (src/helpers/cc-autopipe-snapshot, wired into
 the dispatcher) — universal 12-section one-shot project health view
 with optional 13th section via `<project>/.cc-autopipe/snapshot-extra.sh`
@@ -100,6 +129,87 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.8 HOTFIX — final state
+
+**3 groups landed across 8 atomic commits (3 SENTINEL-RACE-FIX +
+2 RECOVERY-SWEEP-SENTINEL-TIMEOUT + 3 PROMOTION-HOOK-DIAGNOSTICS) +
+1 smoke commit + 1 STATUS commit.** See `V138_BUILD_DONE.md` for the
+full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| SENTINEL-RACE-FIX/1 | src/orchestrator/cycle.py — new `_safe_baseline_mtime(s, project_path)` helper computes `min(current_mtime, cycle_start_unix)` (or `current_mtime - 1` fallback); `_maybe_arm_sentinel_via_promotion` rewritten as idempotent (early-return + `knowledge_sentinel_arm_skipped_already_armed` event when pending=True with all other gates passed); arm event enriched with `baseline_mtime` + `current_mtime`. | (covered in test_sentinel_race.py) |
+| SENTINEL-RACE-FIX/2 | src/orchestrator/cycle.py — stage-based arming branch under `stage_completed` mirrors the same idempotency: `was_already_armed = s.knowledge_update_pending` checked, only flip + baseline-snapshot when False. Skip event emitted with `reason=stage_based`. `task_verdict` + `knowledge_update_required` events still fire on every verdict stage (telemetry preserved). | (covered in test_sentinel_race.py) |
+| SENTINEL-RACE-FIX/3 | src/lib/stop_helper.py — `maybe_clear_knowledge_update_flag` enriched with `baseline_was` + `current_mtime` payload on the `knowledge_updated_detected` event so race traces are visible in aggregate.jsonl. The v1.3 baseline-reset-on-clear behaviour is preserved (no functional change there). | (covered in test_sentinel_race.py) |
+| SENTINEL-RACE-FIX/4 | tests/integration/test_sentinel_race.py NEW file: 5 cases — pre-cycle baseline at arm; idempotent skip on already-armed; clear+reset on mtime advance; v1.3.6 bug-state direct simulation (pending=True + baseline=current_mtime → must NOT re-arm); cleared+new PROMOTION arms again with fresh baseline. | +5 |
+| RECOVERY-SWEEP-SENTINEL-TIMEOUT/1 | src/orchestrator/recovery.py — `SENTINEL_STUCK_THRESHOLD_SEC = 4 * 3600`; `_is_sentinel_genuinely_stuck(s, project_path)` (all-True gate: pending=True + last_activity > 4h + mtime ≤ baseline); `_should_recover(s, project_path=None)` extended (project_path optional for unit-test back-compat); `maybe_auto_recover` clears sentinel state before phase reset when reason is `sentinel_stuck_force_clear`, emits `sentinel_force_cleared` and tags `auto_recovery_attempted` with `recover_reason`. | (covered in test_recovery_sentinel_timeout.py) |
+| RECOVERY-SWEEP-SENTINEL-TIMEOUT/2 | tests/integration/test_recovery_sentinel_timeout.py NEW file: 5 cases — 2h-stuck still skipped; 5h-stuck force-cleared + recovered; 5h-but-mtime-advanced falls through to standard skip; pending=False uses standard recovery; direct unit test of `_is_sentinel_genuinely_stuck` per-branch. | +5 |
+| PROMOTION-HOOK-DIAGNOSTICS/1 | src/lib/promotion.py — `STRATEGY_PROMOTION_PREFIXES` (9 prefixes: synth/dr_synth/pack/moe/cascade/ensemble/committee/stacking/hybrid); `requires_full_v2_validation(task_id)`; `validate_v2_sections(path, task_id=None)` — task_id supplied + non-strategy → `(True, [])`; task_id=None preserves v1.3.5 strict 5-section check (back-compat); `on_promotion_success(...)` instrumented with `_entered` / `_completed` / `_failed` events tagged with `stage=ablation_spawn` or `stage=leaderboard` on raise. | (covered in test_promotion.py + test_promotion_diagnostics.py) |
+| PROMOTION-HOOK-DIAGNOSTICS/2 | src/orchestrator/cycle.py — call site updated: `validate_v2_sections(p_path, task_id=pre_item.id)`. Emits `promotion_validated_attempt` at entry and `promotion_v2_sections_check` (with `all_present`, `missing` csv, `strict` flag) for every PROMOTED-verdict task. | (covered in test_promotion_diagnostics.py) |
+| PROMOTION-HOOK-DIAGNOSTICS/3 | tests/unit/test_promotion.py +7 cases (4 prefix-gate + 3 validate-with-task_id branch); tests/integration/test_promotion_diagnostics.py NEW file: 5 cases — strategy happy path (entered+spawned+completed); no-backlog skip; ablation-stage failure event; leaderboard-stage failure event; full happy path with real leaderboard module + LEADERBOARD.md side-effect. | +12 |
+| smokes | tests/smoke/run-sentinel-race-smoke.sh + run-all-smokes.sh wiring (`HOTFIX_SMOKES` += sentinel-race) | +0 (1 smoke) |
+
+**Test counts (v1.3.8):**
+- pytest: 798 (v1.3.7 baseline) → **820 passed** (+22 new tests)
+- 24 hotfix-style smokes all green: 17 v1.3+ (incl. new
+  sentinel-race) + 5 v1.3.3 + 2 v1.3.4
+- AI-trade reference verification: 9/9 real Phase 2 PROMOTION files
+  parse to expected verdicts; `vec_long_quantile` and
+  `vec_long_risk_adj_target` now also pass `validate_v2_sections(task_id=...)`
+  with `strict=False, ok=True` (the production measurement tasks
+  v1.3.7 silently dropped before).
+
+**Schema:** **unchanged at v6.** No new persisted fields per
+PROMPT_v1.3.8 §"Don't"; only event-payload enrichment on existing
+events + new event names.
+
+**New events in aggregate.jsonl:**
+- `knowledge_sentinel_arm_skipped_already_armed` (Group A)
+- `sentinel_force_cleared` (Group B)
+- `on_promotion_success_entered` / `_completed` / `_failed stage=...`
+  (Group C)
+- `promotion_validated_attempt` / `promotion_v2_sections_check`
+  (Group C)
+
+**Enriched events:** `knowledge_updated_detected` (+`baseline_was`,
+`current_mtime`); `knowledge_sentinel_armed_via_promotion`
+(+`baseline_mtime`, `current_mtime`); `auto_recovery_attempted`
+(+`recover_reason`).
+
+**New CLI surface:** none.
+
+### Tactical deviations from PROMPT_v1.3.8-hotfix.md
+
+1. **`maybe_clear_knowledge_pending` lives in `stop_helper.py`, not
+   `knowledge.py`.** Real function name `maybe_clear_knowledge_update_flag`
+   (per v1.3 I4); behaviour matches the prompt spec — only the event
+   payload was extended.
+2. **Stage-based arming patched too.** Prompt targets the v1.3.6
+   `_maybe_arm_sentinel_via_promotion` only, but the same race exists
+   in the `stage_completed` verdict-stage branch. Both arming paths
+   get the idempotency check + `_safe_baseline_mtime` snapshot.
+3. **`_should_recover` keeps backward-compatible signature.** Prompt
+   changes the signature to require project_path; implementation
+   makes it optional with default None so existing
+   `tests/unit/test_recovery_safe.py` continues to call
+   `_should_recover(s)` without churn.
+4. **`leaderboard_append_skipped` retained for backward compat.** New
+   `on_promotion_success_failed stage=leaderboard` event added per
+   the prompt, AND the v1.3.5 event preserved so existing tooling
+   filtering on the legacy name keeps working.
+
+### Currently working on
+
+**v1.3.8 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.8`. See `V138_BUILD_DONE.md` for
+the full smoke test plan + acceptance gate trace.
+
+---
 
 ## v1.3.7 HOTFIX — final state
 
