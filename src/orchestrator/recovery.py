@@ -32,6 +32,14 @@ STUCK_FAIL_SEC = 60 * 60  # 60 min
 # v1.3 B3: auto-recovery cadence + threshold.
 RECOVERY_INTERVAL_SEC = 30 * 60  # scan failed projects every 30 min
 RECOVERY_AGE_SEC = 60 * 60  # only recover after 1h of inactivity
+# v1.3.8 RECOVERY-SWEEP-SENTINEL-TIMEOUT: escape hatch threshold. When a
+# `knowledge_update_pending` sentinel has been armed > 4 hours with no
+# knowledge.md mtime advance past baseline, treat it as genuinely stuck
+# (not "in progress") and force-clear before recovering. Mirrors the 4h
+# autonomous-burn limit and is well past any normal verdict→knowledge
+# append turnaround. Set high enough not to interfere with legitimate
+# slow-running tasks.
+SENTINEL_STUCK_THRESHOLD_SEC = 4 * 3600  # 4 hours
 
 
 def _handle_smart_escalation(
@@ -193,7 +201,53 @@ def evaluate_stuck(s: state.State) -> str:
     return "ok"
 
 
-def _should_recover(s: state.State) -> tuple[bool, str]:
+def _is_sentinel_genuinely_stuck(
+    s: state.State, project_path: Path
+) -> bool:
+    """v1.3.8 RECOVERY-SWEEP-SENTINEL-TIMEOUT: True iff the
+    `knowledge_update_pending` sentinel has been armed > threshold AND
+    knowledge.md mtime hasn't advanced past baseline.
+
+    AI-trade Phase 2 v2.0 production showed the v1.3.6 sentinel-arming
+    race could leave a project's pending flag stuck True forever.
+    Without an escape, the recovery sweep refused to reset state for
+    that project (per v1.3.2 RECOVERY-SAFE), running every 30 min in an
+    infinite skip loop. Group A (cycle.py idempotent arming) prevents
+    new instances of the bug; this gate breaks already-stuck projects
+    out of the loop after 4h.
+
+    The mtime-advance check is belt-and-suspenders: if mtime moved past
+    baseline but the detector hasn't fired yet (next stop_helper call
+    will clear it), don't force-clear — let the natural path complete.
+    """
+    if not s.knowledge_update_pending:
+        return False
+    if not s.last_activity_at:
+        return False
+    last_activity = _parse_iso_utc(s.last_activity_at)
+    if last_activity is None:
+        return False
+    age_sec = (
+        datetime.now(timezone.utc) - last_activity
+    ).total_seconds()
+    if age_sec < SENTINEL_STUCK_THRESHOLD_SEC:
+        return False
+    knowledge_md = project_path / ".cc-autopipe" / "knowledge.md"
+    if knowledge_md.exists():
+        try:
+            current_mtime = knowledge_md.stat().st_mtime
+        except OSError:
+            current_mtime = 0.0
+        baseline = s.knowledge_baseline_mtime or 0.0
+        if current_mtime > baseline:
+            # Mtime advanced — detector will clear soon; not stuck.
+            return False
+    return True
+
+
+def _should_recover(
+    s: state.State, project_path: Path | None = None
+) -> tuple[bool, str]:
     """v1.3.2 RECOVERY-SAFE: gate `maybe_auto_recover` against active
     enforcement state.
 
@@ -208,9 +262,24 @@ def _should_recover(s: state.State) -> tuple[bool, str]:
     pending flag and the engine forgets why it triggered. Same logic
     for non-failed phases (paused/detached/done) which have their own
     lifecycles and never need recovery.
+
+    v1.3.8 RECOVERY-SWEEP-SENTINEL-TIMEOUT: a `knowledge_update_pending`
+    sentinel that's been armed > 4h with no knowledge.md mtime advance
+    is treated as genuinely stuck (vs. legitimate "in progress") and
+    returns True with reason `sentinel_stuck_force_clear`. Caller
+    clears the sentinel before resetting phase. project_path is
+    optional for backward compatibility with callers that haven't been
+    updated; without it the v1.3.8 escape hatch is bypassed.
     """
     if s.phase != "failed":
         return False, f"phase={s.phase}_not_failed"
+    # v1.3.8: escape hatch BEFORE enforcement-loop checks. If sentinel
+    # is genuinely stuck (no progress > threshold), force-clear and
+    # recover.
+    if project_path is not None and _is_sentinel_genuinely_stuck(
+        s, project_path
+    ):
+        return True, "sentinel_stuck_force_clear"
     if s.meta_reflect_pending:
         return False, "meta_reflect_in_progress"
     if s.knowledge_update_pending:
@@ -257,7 +326,7 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
         return False
     try:
         s = state.read(project_path)
-        should, reason = _should_recover(s)
+        should, reason = _should_recover(s, project_path)
         if not should:
             # Only emit the skip event for projects that ARE in `failed`
             # phase — emitting one for every healthy project on every
@@ -271,6 +340,26 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
                     f"{project_path.name}: auto-recovery skipped — {reason}"
                 )
             return False
+        # v1.3.8 RECOVERY-SWEEP-SENTINEL-TIMEOUT: when the escape hatch
+        # fires, force-clear the stuck sentinel state BEFORE the standard
+        # phase reset so the next cycle doesn't immediately re-arm or get
+        # blocked by the sentinel injection. Logged separately so the
+        # event trail shows why we touched sentinel state outside the
+        # normal verdict→detector→clear path.
+        if reason == "sentinel_stuck_force_clear":
+            baseline_was = s.knowledge_baseline_mtime
+            pending_reason_was = s.knowledge_pending_reason
+            s.knowledge_update_pending = False
+            s.knowledge_baseline_mtime = None
+            s.knowledge_pending_reason = None
+            state.log_event(
+                project_path,
+                "sentinel_force_cleared",
+                reason="stuck_>4h_no_mtime_advance",
+                baseline_was=baseline_was,
+                pending_reason_was=pending_reason_was,
+                threshold_sec=SENTINEL_STUCK_THRESHOLD_SEC,
+            )
         last = _parse_iso_utc(s.last_activity_at)
         # _should_recover already verified last is not None.
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
@@ -288,6 +377,7 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
             "auto_recovery_attempted",
             attempts=s.recovery_attempts,
             elapsed_sec=int(elapsed),
+            recover_reason=reason or "stale_failed",
         )
         _log(
             f"{project_path.name}: auto-recovery attempt {s.recovery_attempts} "
