@@ -1,8 +1,42 @@
 # Build Status
 
-**Updated:** 2026-05-09T11:30:00Z
+**Updated:** 2026-05-09T13:45:00Z
 **Current branch:** main
-**Current stage:** **v1.3.8 HOTFIX COMPLETE.** Three groups
+**Current stage:** **v1.3.9 HOTFIX COMPLETE.** One group
+(BOLD-METADATA-VERDICT: tier-4 inline `**Field**: KEYWORD` fallback
+in `parse_verdict` via new `BOLD_METADATA_VERDICT_RE` +
+`_parse_verdict_tier4_bold_metadata` — fires only when tiers 1-3
+returned None; restricted to closure-synonym field names
+(Status / Result / Outcome / Verdict / Decision / Conclusion) so
+unrelated bold metadata like `**Note**: ...` or `**Pareto points**: 7`
+does NOT trigger; keyword vocabulary mirrors tiers 1+3 so canonical
+mapping stays consistent). Schema **unchanged at v6** — no new
+persisted fields per PROMPT_v1.3.9 §"Don't". Tiers 1-3 unchanged
+(purely additive). 820 → **833 tests passing** (+13: 9 unit
+covering Status/Result/Outcome/Conclusion + PASS/FAIL/PROMOTED/
+REJECTED/CONDITIONAL keywords, the in-progress non-verdict negative,
+the field-name guard against `**Note**:` and `**Pareto points**:`,
+and the tier-1/tier-2 win cases for fallback ordering; 4 real
+AI-trade Phase 2 v2.1 fixture parses for `CAND_elo_rating`,
+`CAND_tournament_round_robin`, `CAND_tournament_swiss`,
+`CAND_optuna_mo`). 25/25 hotfix smokes green (24 v1.3.8 + new
+bold-metadata + 5 v1.3.3 + 2 v1.3.4). End-to-end re-validation on
+real AI-trade Phase 2 fixtures: `CAND_elo_rating`,
+`CAND_tournament_round_robin`, `CAND_tournament_swiss`,
+`CAND_optuna_mo` all resolve PROMOTED via tier 4; v1.3.7
+`CAND_long_only_baseline` (REJECTED), `CAND_dr_synth_v1`
+(CONDITIONAL), `CAND_focal_loss` (REJECTED), `CAND_long_stat_dm_test`
+(PROMOTED) still parse to expected verdicts via earlier tiers.
+Empirical driver: AI-trade Phase 2 v2.1 production aggregate.jsonl
+showed **31 `promotion_verdict_unrecognized` events in 12 hours**
+post-v1.3.8 deploy — all from compact bold-metadata measurement
+reports (`vec_long_features_*`, `vec_long_lgbm/tft/nhits/etc.`,
+`vec_long_elo_rating`, `vec_long_tournament_*`) that drop the
+heading entirely and stamp the verdict on a `**Status**: PASS ✓`
+line. Tiers 1-3 all require a heading; v1.3.9 tier 4 catches the
+inline form. Awaiting Roman validation + tag v1.3.9.
+
+**Earlier stage:** **v1.3.8 HOTFIX COMPLETE.** Three groups
 (SENTINEL-RACE-FIX: idempotent sentinel arming in both
 `_maybe_arm_sentinel_via_promotion` and the stage_completed
 verdict-stage path + new `_safe_baseline_mtime` helper that snapshots
@@ -28,8 +62,7 @@ AI-trade Phase 2 v2.0 ~10h autonomous run 2026-05-09 — sentinel-arm
 race left engine permanently stuck at `phase=failed,
 knowledge_update_pending=True` for 4+ hours with infinite recovery
 skip loop, AND 5 measurement-task PROMOTIONs spawned 0 ablation
-children + LEADERBOARD.md never created. Awaiting Roman validation
-+ tag v1.3.8.
+children + LEADERBOARD.md never created.
 
 **Earlier stage:** **POST-v1.3.7 OPERATOR TOOLING.** Ships
 `cc-autopipe snapshot` (src/helpers/cc-autopipe-snapshot, wired into
