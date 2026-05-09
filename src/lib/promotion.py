@@ -17,15 +17,19 @@ PROMOTION.md v2.0 required structure (per AI-trade rules.md
     - Plus all v1.2 sections (Acceptance, Evidence, etc.) — not enforced
       by this module.
 
-v1.3.7: Verdict parsing has a 3-tier fallback. Each tier returns a
+v1.3.9: Verdict parsing has a 4-tier fallback. Each tier returns a
 canonical {PROMOTED, REJECTED, CONDITIONAL} or None and the next tier
 fires only when the prior one returned None.
 
   Tier 1 (v1.3.6, unchanged):  Verdict heading + body keyword.
   Tier 2 (v1.3.5, unchanged):  legacy strict **Verdict: PROMOTED**.
-  Tier 3 (v1.3.7, new):        Acceptance/Conclusion/Result/Outcome/
+  Tier 3 (v1.3.7, unchanged):  Acceptance/Conclusion/Result/Outcome/
                                Status heading + verdict-equivalent
                                keyword (or ✅/❌ marker).
+  Tier 4 (v1.3.9, new):        inline `**Field**: KEYWORD` bold-
+                               metadata pattern (Status / Result /
+                               Outcome / Verdict / Decision /
+                               Conclusion field names only).
 
 Tier 3 exists because measurement / infrastructure tasks legitimately
 omit a Verdict heading and close with ## Acceptance (criteria checklist)
@@ -48,6 +52,16 @@ Symmetric ✅/❌ markers complement the keyword set: AI-trade
 documentation-style Acceptance sections (e.g. seed_var) confirm work
 with bare ✅ checkmarks alone. The 30-line cap keeps a stray ✅ deep
 in a body section from accidentally driving the verdict.
+
+Tier 4 (v1.3.9) catches the compact bold-metadata format used by
+AI-trade Phase 2 measurement reports — no heading, just an inline
+`**Status**: PASS ✓` / `**Result**: FAIL` line. AI-trade Phase 2 v2.1
+production logged 31 `promotion_verdict_unrecognized` events in 12
+hours from this format alone, dropping all measurement promotions
+silently. Field names are restricted to closure synonyms (Status /
+Result / Outcome / Verdict / Decision / Conclusion) so unrelated
+bold-metadata lines like `**Note**: ...` or `**Pareto points**: 7`
+do NOT trigger the tier.
 
 Heading patterns recognized for the Verdict tier (Tier 1):
     ## Verdict
@@ -229,6 +243,39 @@ ACCEPTANCE_KEYWORD_RE = re.compile(
 # up a stray ✅ deep in a body table.
 _ACCEPTANCE_NEXT_HEADING_RE = re.compile(r"^#{1,4}\s+", re.MULTILINE)
 
+# v1.3.9 BOLD-METADATA-VERDICT (tier 4): inline `**Field**: KEYWORD`
+# bold-metadata patterns observed in AI-trade Phase 2 v2.1 measurement-
+# task PROMOTION reports — `CAND_elo_rating`, `CAND_tournament_*`,
+# `CAND_optuna_mo`, etc. These compact reports have NO heading section
+# (`## Verdict` / `## Acceptance` / `## Conclusion` / `## Status`), just
+# an inline bold-metadata line like:
+#
+#     # CAND_elo_rating_PROMOTION
+#     **Status**: PASS ✓
+#     **Note**: ELO computed for 8 models. ...
+#
+# Tier 1 misses (no Verdict heading), tier 2 misses (no
+# `**Verdict: PROMOTED**` literal), tier 3 misses (no level-2/3/4
+# closure heading). Without tier 4, AI-trade Phase 2 v2.1 production
+# logged 31 `promotion_verdict_unrecognized` events in 12 hours,
+# silently dropping every measurement-task promotion.
+#
+# Field names are restricted to closure synonyms (Status / Result /
+# Outcome / Verdict / Decision / Conclusion) so this tier does NOT fire
+# on unrelated bold-metadata lines like `**Note**: ...` or
+# `**Pareto points**: 7 non-dominated`. The keyword vocabulary mirrors
+# tiers 1+3 (PROMOTED / REJECTED / ACCEPT[ED] / REJECT / PASS[ED] /
+# FAIL[ED] / STABLE / CONDITIONAL / PARTIAL / LONG_LOSES_MONEY) so the
+# canonical mapping stays consistent across all tiers.
+BOLD_METADATA_VERDICT_RE = re.compile(
+    r"^\s*\*\*\s*"
+    r"(?:Status|Result|Outcome|Verdict|Decision|Conclusion)"
+    r"\s*\*\*\s*[:\s]+\s*\**\s*"
+    r"(PROMOTED|REJECTED|ACCEPT(?:ED)?|REJECT|PASS(?:ED)?|FAIL(?:ED)?|"
+    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _promotion_basename(task_id: str) -> str:
     """AI-trade convention: PROMOTION files drop 'vec_long_' / 'vec_' prefix.
@@ -317,16 +364,35 @@ def _parse_verdict_acceptance(text: str) -> str | None:
     return None
 
 
+def _parse_verdict_tier4_bold_metadata(text: str) -> str | None:
+    """Tier 4 (v1.3.9): inline `**Field**: KEYWORD` bold-metadata pattern.
+
+    Searches for `**Status**: PASS` / `**Result**: FAIL` / `**Outcome**:
+    REJECTED` etc. anywhere in the file. First match wins. Restricted
+    to closure-synonym field names (Status / Result / Outcome / Verdict /
+    Decision / Conclusion) so unrelated bold metadata (e.g.
+    `**Note**: ...`, `**Pareto points**: 7`) does NOT trigger this tier.
+    """
+    match = BOLD_METADATA_VERDICT_RE.search(text)
+    if match is None:
+        return None
+    raw = match.group(1).upper()
+    return CANONICAL_MAP.get(raw)
+
+
 def parse_verdict(path: Path) -> str | None:
     """Return canonical verdict 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None.
 
-    Three-tier fallback (v1.3.7):
+    Four-tier fallback (v1.3.9):
       1. Verdict heading + body keyword (v1.3.6 lenient parse).
       2. Legacy strict `**Verdict: <X>**` pattern (v1.3.5 backward compat).
       3. Acceptance / Conclusion / Result / Outcome / Status heading +
          verdict-equivalent keyword or ✅/❌ marker. Defense-in-depth —
          measurement / infrastructure tasks legitimately omit Verdict
          headings.
+      4. Inline `**Field**: KEYWORD` bold-metadata pattern (v1.3.9) —
+         compact AI-trade Phase 2 measurement reports drop the heading
+         entirely and stamp the verdict on a `**Status**: PASS ✓` line.
 
     Each tier returns the first match; the next tier fires only when
     the prior one returned None. Returns None when no tier finds a
@@ -350,7 +416,12 @@ def parse_verdict(path: Path) -> str | None:
         return CANONICAL_MAP.get(legacy.group(1).upper())
 
     # Tier 3 (v1.3.7): Acceptance / Conclusion / Result fallback.
-    return _parse_verdict_acceptance(text)
+    result = _parse_verdict_acceptance(text)
+    if result is not None:
+        return result
+
+    # Tier 4 (v1.3.9): inline `**Status**: PASS` bold-metadata fallback.
+    return _parse_verdict_tier4_bold_metadata(text)
 
 
 def validate_v2_sections(
