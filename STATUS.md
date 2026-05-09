@@ -1,8 +1,18 @@
 # Build Status
 
-**Updated:** 2026-05-09T20:30:00Z
+**Updated:** 2026-05-10T00:00:00Z
 **Current branch:** main
-**Current stage:** **v1.3.10 HOTFIX COMPLETE.** One group
+**Current stage:** **v1.3.11 COMPLETE.** One group
+(CC-AUTOPIPE-QUOTA-CMD: new `src/cli/quota.py` + dispatcher wire +
+7 integration tests). `cc-autopipe quota` — human-readable default
+(`5h: 47% (resets ...)`, `7d: 12% (resets ...)`, `cache age: Ns`),
+`--json` (normalised `Quota.to_jsonable()` float 0.0–1.0), `--raw`
+(passthrough raw endpoint response), `--refresh` (force fetch,
+composable). Exit 2 with stderr hint on unavailable data. No new
+events, no schema changes — purely a CLI surface addition. 840 →
+**847 tests passing** (+7, no regressions).
+
+**Earlier stage:** **v1.3.10 HOTFIX COMPLETE.** One group
 (POST-CYCLE-DELTA-SCAN: new `_post_cycle_delta_scan(project_path,
 pre_open_vec_long)` helper in `src/orchestrator/cycle.py` runs after
 the existing v1.3.5 pre-cycle validation loop and validates

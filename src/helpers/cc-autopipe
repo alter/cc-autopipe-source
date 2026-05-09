@@ -39,6 +39,7 @@ Project lifecycle:
   doctor                       Verify prerequisites and config         [stage F]
   health [--24h] [--json]      Show recent health metrics              [v1.3]
   snapshot [--project DIR]     One-shot universal health snapshot      [v1.3.7]
+  quota [--json|--raw] [--refresh]  Show 5h/7d Claude quota             [v1.3.11]
 
 Helpers (called from inside Claude sessions):
   checkpoint <text>            Save .cc-autopipe/checkpoint.md         [stage F]
@@ -109,6 +110,9 @@ case "$CMD" in
         ;;
     health)
         exec python3 "$CC_AUTOPIPE_HOME/cli/health.py" "$@"
+        ;;
+    quota)
+        exec python3 "$CC_AUTOPIPE_HOME/cli/quota.py" "$@"
         ;;
     checkpoint)
         exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-checkpoint" "$@"
