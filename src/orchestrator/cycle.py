@@ -182,6 +182,38 @@ def _check_in_cycle_progress(
     return out
 
 
+def _safe_baseline_mtime(s: state.State, project_path: Path) -> float:
+    """v1.3.8 SENTINEL-RACE-FIX: compute pre-cycle baseline mtime so the
+    detector can fire when Claude appends to knowledge.md within the
+    current cycle.
+
+    The v1.3.6 bug was setting baseline=current_mtime at arm time. In a
+    high-throughput cycle Claude updates knowledge.md AND writes a fresh
+    PROMOTION within the same cycle. The detector then fires on the next
+    cycle's start, clears pending, and the v1.3.6 sentinel re-arms with
+    baseline=just-advanced-mtime — so any subsequent advance test fails
+    and pending stays stuck forever.
+
+    Returns min(current_mtime, cycle_start_unix), or current_mtime - 1
+    when last_cycle_started_at is unparseable. Always non-negative.
+    The min(...) form covers the case where current_mtime predates
+    cycle_start (e.g. knowledge.md untouched this cycle): we keep the
+    older mtime as baseline so any future advance still clears pending.
+    """
+    knowledge_md = project_path / ".cc-autopipe" / "knowledge.md"
+    try:
+        current_mtime = knowledge_md.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+    cycle_start_dt = _parse_iso_utc(s.last_cycle_started_at)
+    cycle_start_unix = cycle_start_dt.timestamp() if cycle_start_dt else 0.0
+    if cycle_start_unix > 0:
+        baseline = min(current_mtime, cycle_start_unix)
+    else:
+        baseline = current_mtime - 1.0
+    return max(0.0, baseline)
+
+
 def _maybe_arm_sentinel_via_promotion(
     project_path: Path, post_task_id: str | None, s: state.State
 ) -> bool:
@@ -203,11 +235,20 @@ def _maybe_arm_sentinel_via_promotion(
     On arm: emits `knowledge_sentinel_armed_via_promotion` event with
     the mtime age in seconds so operators can see why the sentinel
     fired without a stage transition.
+
+    v1.3.8 SENTINEL-RACE-FIX: idempotent. When all the gate checks pass
+    but the sentinel is already armed, emits
+    `knowledge_sentinel_arm_skipped_already_armed` and returns False
+    instead of re-arming. Re-arming would have advanced
+    `knowledge_baseline_mtime` to the current (just-advanced) mtime,
+    making future detector comparisons (`current > baseline`) impossible
+    — that's the production deadlock the v1.3.7→v1.3.8 hotfix targets.
+    Baseline is now snapshotted via `_safe_baseline_mtime` (pre-cycle
+    mtime) so a same-cycle Claude append still clears pending.
     """
     if (
         post_task_id is None
         or not post_task_id.startswith(("vec_", "phase_gate_"))
-        or s.knowledge_update_pending
     ):
         return False
     p_promo = promotion_lib.promotion_path(project_path, post_task_id)
@@ -222,9 +263,26 @@ def _maybe_arm_sentinel_via_promotion(
         return False
     if promotion_lib.parse_verdict(p_promo) is None:
         return False
+    if s.knowledge_update_pending:
+        # v1.3.8: idempotent skip. All conditions otherwise matched, so
+        # log the would-have-armed signal so operators can see it; do
+        # NOT mutate baseline_mtime (the race that left projects stuck).
+        state.log_event(
+            project_path,
+            "knowledge_sentinel_arm_skipped_already_armed",
+            task_id=post_task_id,
+            promotion_mtime_age_sec=int(mtime_age),
+            reason="promotion_mtime_fallback",
+        )
+        return False
     verdict_ts = _now_iso()
+    knowledge_md = project_path / ".cc-autopipe" / "knowledge.md"
+    try:
+        current_mtime = knowledge_md.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
     s.knowledge_update_pending = True
-    s.knowledge_baseline_mtime = knowledge_lib.get_mtime_or_zero(project_path)
+    s.knowledge_baseline_mtime = _safe_baseline_mtime(s, project_path)
     s.knowledge_pending_reason = f"promotion_mtime_fallback on {post_task_id}"
     s.last_verdict_event_at = verdict_ts
     s.last_verdict_task_id = post_task_id
@@ -234,6 +292,8 @@ def _maybe_arm_sentinel_via_promotion(
         "knowledge_sentinel_armed_via_promotion",
         task_id=post_task_id,
         promotion_mtime_age_sec=int(mtime_age),
+        baseline_mtime=s.knowledge_baseline_mtime,
+        current_mtime=current_mtime,
     )
     return True
 
@@ -651,14 +711,31 @@ def process_project(project_path: Path) -> str:
                 # task switch.
                 if knowledge_lib.is_verdict_stage(st):
                     verdict_ts = _now_iso()
-                    s.knowledge_update_pending = True
-                    s.knowledge_baseline_mtime = knowledge_lib.get_mtime_or_zero(
-                        project_path
-                    )
-                    s.knowledge_pending_reason = f"{st} on {post_task_id}"
+                    was_already_armed = s.knowledge_update_pending
+                    if not was_already_armed:
+                        # v1.3.8 SENTINEL-RACE-FIX: idempotent stage-based
+                        # arming + pre-cycle baseline. Mirrors the fix in
+                        # `_maybe_arm_sentinel_via_promotion`. Re-arming on
+                        # every verdict-stage transition would advance the
+                        # baseline to the current (post-Claude-append)
+                        # mtime; the detector compares `current > baseline`
+                        # so an already-advanced mtime leaves pending stuck.
+                        s.knowledge_update_pending = True
+                        s.knowledge_baseline_mtime = _safe_baseline_mtime(
+                            s, project_path
+                        )
+                        s.knowledge_pending_reason = f"{st} on {post_task_id}"
                     s.last_verdict_event_at = verdict_ts
                     s.last_verdict_task_id = post_task_id
                     state.write(project_path, s)
+                    if was_already_armed:
+                        state.log_event(
+                            project_path,
+                            "knowledge_sentinel_arm_skipped_already_armed",
+                            task_id=post_task_id,
+                            stage=st,
+                            reason="stage_based",
+                        )
                     state.log_event(
                         project_path,
                         "knowledge_update_required",
