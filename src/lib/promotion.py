@@ -2,7 +2,8 @@
 """promotion — parse and validate PROMOTION.md reports + on_promotion_success hook.
 
 Refs: PROMPT_v1.3.5-hotfix.md GROUP PROMOTION-PARSER,
-      PROMPT_v1.3.6-hotfix.md GROUP VERDICT-LENIENT.
+      PROMPT_v1.3.6-hotfix.md GROUP VERDICT-LENIENT,
+      PROMPT_v1.3.7-hotfix.md GROUP ACCEPTANCE-FALLBACK.
 
 PROMOTION.md v2.0 required structure (per AI-trade rules.md
 "PROMOTION report format v2.0"):
@@ -16,16 +17,39 @@ PROMOTION.md v2.0 required structure (per AI-trade rules.md
     - Plus all v1.2 sections (Acceptance, Evidence, etc.) — not enforced
       by this module.
 
-v1.3.6: verdict parsing is lenient. Recognizes any heading containing
-"Verdict" followed by a verdict keyword in the next 20 lines (or until
-the next heading), then maps fuzzy verdicts to a canonical state in
-{PROMOTED, REJECTED, CONDITIONAL}. CONDITIONAL is a new third state used
-for partial passes (Phase 2 PRDs that meet 3-of-4 acceptance criteria);
-it does NOT trigger on_promotion_success — no ablation children, no
-leaderboard entry — but is logged distinctly so operators can see
-partial wins.
+v1.3.7: Verdict parsing has a 3-tier fallback. Each tier returns a
+canonical {PROMOTED, REJECTED, CONDITIONAL} or None and the next tier
+fires only when the prior one returned None.
 
-Heading patterns recognized:
+  Tier 1 (v1.3.6, unchanged):  Verdict heading + body keyword.
+  Tier 2 (v1.3.5, unchanged):  legacy strict **Verdict: PROMOTED**.
+  Tier 3 (v1.3.7, new):        Acceptance/Conclusion/Result/Outcome/
+                               Status heading + verdict-equivalent
+                               keyword (or ✅/❌ marker).
+
+Tier 3 exists because measurement / infrastructure tasks legitimately
+omit a Verdict heading and close with ## Acceptance (criteria checklist)
+or ## Conclusion (analysis summary). Without this fallback, ~50% of
+Phase 2 measurement/infra reports return None and the engine logs
+`promotion_verdict_unrecognized` even when the report is unambiguously
+PROMOTED — disabling ablation spawn, leaderboard updates, and
+infrastructure validation that v1.3.5 + v1.3.6 layered on top.
+
+Tier 3 keyword vocabulary (case-insensitive, scanned in the section
+under the heading for up to 30 lines or until the next ##/### boundary):
+
+    PROMOTED:    'criteria met', 'all met', 'fully met', whole-word
+                 'met', 'met ✅', '✅ met', 'pass', 'passed', bare ✅
+    REJECTED:    'criteria not met', 'not met', 'fail', 'failed',
+                 bare ❌
+    CONDITIONAL: 'partial', 'partially met', 'mixed', 'conditional'
+
+Symmetric ✅/❌ markers complement the keyword set: AI-trade
+documentation-style Acceptance sections (e.g. seed_var) confirm work
+with bare ✅ checkmarks alone. The 30-line cap keeps a stray ✅ deep
+in a body section from accidentally driving the verdict.
+
+Heading patterns recognized for the Verdict tier (Tier 1):
     ## Verdict
     ## Verdict: PROMOTED
     ## Verdict: LONG_LOSES_MONEY
@@ -34,7 +58,7 @@ Heading patterns recognized:
     # Verdict
     ### Verdict
 
-Verdict keywords (in heading or body):
+Verdict keywords (in heading or body) for Tier 1:
     PROMOTED, ACCEPT, ACCEPTED, PASS, PASSED, STABLE → PROMOTED
     REJECTED, REJECT, FAIL, FAILED, LONG_LOSES_MONEY → REJECTED
     CONDITIONAL, PARTIAL                              → CONDITIONAL
@@ -126,6 +150,47 @@ CANONICAL_MAP = {
     "PARTIAL": "CONDITIONAL",
 }
 
+# v1.3.7 ACCEPTANCE-FALLBACK: tier 3 vocabulary. Headings recognised
+# when no Verdict heading is found anywhere in the file. Each entry is a
+# heading at level 2-4 carrying one of the closure-style words.
+ACCEPTANCE_HEADING_RE = re.compile(
+    r"^(?:\*\*)?#{2,4}\s*"
+    r"(?:Acceptance(?:\s+Criteria)?|Conclusion|Result(?:s)?|Outcome|Status)"
+    r"\b[:\s]*(?:\*\*)?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Three capture groups → three canonical states. First match wins; the
+# surrounding code keys off which group landed the match. ✅/❌ have no
+# word boundaries (non-word chars), so they sit at the end of each group
+# without \b — bare ✅ in a documentation-style Acceptance section
+# (e.g. AI-trade `CAND_long_baseline_seed_var_PROMOTION.md` which only
+# stamps ✅ next to each documented criterion) signals PROMOTED, and ❌
+# signals REJECTED symmetrically. Whole-word `met` is intentionally
+# included so a bold **MET** verdict is caught; group-2 alternatives
+# `criteria not met` / `not met` are tried before `met` so REJECTED
+# never gets misclassified as PROMOTED on negated text.
+ACCEPTANCE_KEYWORD_RE = re.compile(
+    r"(?:"
+    # Group 1 — PROMOTED indicators.
+    r"(\bcriteria\s+met\b|\ball\s+met\b|\bfully\s+met\b|"
+    r"\bmet\s+✅|✅\s*met\b|\bpassed\b|\bpass\b|\bmet\b|✅)|"
+    # Group 2 — REJECTED indicators.
+    r"(\bcriteria\s+not\s+met\b|\bnot\s+met\b|\bfailed\b|\bfail\b|❌)|"
+    # Group 3 — CONDITIONAL indicators.
+    r"(\bpartial(?:ly\s+met)?\b|\bmixed\b|\bconditional\b)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Body-section bound for the Acceptance fallback. Acceptance / Conclusion
+# closures rarely nest sub-headings before the verdict keyword, so a
+# level-agnostic `^#{1,4}\s+` boundary is fine here (compare to the
+# verdict-tier _next_heading_re which respects level for sub-heading-
+# style verdicts). 30-line cap below the heading guards against picking
+# up a stray ✅ deep in a body table.
+_ACCEPTANCE_NEXT_HEADING_RE = re.compile(r"^#{1,4}\s+", re.MULTILINE)
+
 
 def _promotion_basename(task_id: str) -> str:
     """AI-trade convention: PROMOTION files drop 'vec_long_' / 'vec_' prefix.
@@ -144,39 +209,18 @@ def promotion_path(project: Path, task_id: str) -> Path:
     return project / 'data' / 'debug' / f'CAND_{_promotion_basename(task_id)}_PROMOTION.md'
 
 
-def parse_verdict(path: Path) -> str | None:
-    """Return canonical verdict 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None.
+def _parse_verdict_tier1(text: str) -> str | None:
+    """Tier 1 (v1.3.6): Verdict heading + body keyword.
 
-    v1.3.6: lenient two-pass discovery. First find a Verdict heading at any
-    level (optionally prefixed `Stage X:`), then scan up to 20 lines (or
-    until the next heading) for a verdict keyword. First keyword wins.
-    Falls back to the v1.3.5 strict `**Verdict: <X>**` pattern when no
-    Verdict heading is found, so legacy PROMOTION fixtures still parse.
-
-    Returns None when neither pattern locates a verdict.
+    Lenient two-pass discovery. First find a Verdict heading at any level
+    (optionally prefixed `Stage X:`), then scan up to 20 lines (or until
+    the next same-or-higher-level heading) for a verdict keyword.
+    First keyword wins. Returns None when no Verdict heading exists or
+    the section under it has no recognised keyword.
     """
-    if not path.exists():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-    # Pass 1: find any Verdict heading (handles `## Verdict`, `## Stage D:
-    # Verdict`, `## Verdict: LONG_LOSES_MONEY`, `**Verdict: PROMOTED**`).
     heading_match = VERDICT_HEADING_RE.search(text)
     if not heading_match:
-        # Legacy strict pattern fallback for backward compat with v1.3.5
-        # `**Verdict: PROMOTED**` fixtures that lack any heading-style cue.
-        legacy = VERDICT_RE.search(text)
-        if legacy:
-            return CANONICAL_MAP.get(legacy.group(1).upper())
         return None
-
-    # Pass 2: scan from the start of the heading line through the next ~20
-    # lines (or until the next same-or-higher-level heading) for any verdict
-    # keyword. Including the heading line itself catches inline forms like
-    # `## Verdict: PROMOTED` and `## Verdict: LONG_LOSES_MONEY`.
     after_idx = heading_match.start()
     tail = text[after_idx:]
     verdict_level = len(heading_match.group("hashes") or "")
@@ -197,6 +241,78 @@ def parse_verdict(path: Path) -> str | None:
         return None
     raw = keyword_match.group(1).upper()
     return CANONICAL_MAP.get(raw)
+
+
+def _parse_verdict_acceptance(text: str) -> str | None:
+    """Tier 3 (v1.3.7): Acceptance/Conclusion/Result/Outcome/Status
+    heading + verdict-equivalent keyword (or ✅/❌ marker).
+
+    Two-pass mirror of tier 1 but for documentation-style closure
+    sections that omit a Verdict heading entirely. Returns None when no
+    such heading exists, or when the section under it has neither a
+    keyword match nor a checkmark.
+    """
+    heading_match = ACCEPTANCE_HEADING_RE.search(text)
+    if not heading_match:
+        return None
+    after_idx = heading_match.start()
+    tail = text[after_idx:]
+    next_heading = _ACCEPTANCE_NEXT_HEADING_RE.search(
+        tail, pos=len(heading_match.group(0))
+    )
+    section_end = next_heading.start() if next_heading else len(tail)
+    section = tail[:section_end]
+    # 30-line cap (vs tier 1's 20) — Acceptance sections often itemise
+    # criteria with several context lines before stamping the verdict.
+    lines = section.split("\n")[:30]
+    section_capped = "\n".join(lines)
+
+    keyword_match = ACCEPTANCE_KEYWORD_RE.search(section_capped)
+    if keyword_match is None:
+        return None
+    if keyword_match.group(1) is not None:
+        return "PROMOTED"
+    if keyword_match.group(2) is not None:
+        return "REJECTED"
+    if keyword_match.group(3) is not None:
+        return "CONDITIONAL"
+    return None
+
+
+def parse_verdict(path: Path) -> str | None:
+    """Return canonical verdict 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None.
+
+    Three-tier fallback (v1.3.7):
+      1. Verdict heading + body keyword (v1.3.6 lenient parse).
+      2. Legacy strict `**Verdict: <X>**` pattern (v1.3.5 backward compat).
+      3. Acceptance / Conclusion / Result / Outcome / Status heading +
+         verdict-equivalent keyword or ✅/❌ marker. Defense-in-depth —
+         measurement / infrastructure tasks legitimately omit Verdict
+         headings.
+
+    Each tier returns the first match; the next tier fires only when
+    the prior one returned None. Returns None when no tier finds a
+    verdict.
+    """
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    # Tier 1: Verdict heading + body keyword (v1.3.6).
+    result = _parse_verdict_tier1(text)
+    if result is not None:
+        return result
+
+    # Tier 2: legacy strict `**Verdict: PROMOTED**` (v1.3.5 backward compat).
+    legacy = VERDICT_RE.search(text)
+    if legacy:
+        return CANONICAL_MAP.get(legacy.group(1).upper())
+
+    # Tier 3 (v1.3.7): Acceptance / Conclusion / Result fallback.
+    return _parse_verdict_acceptance(text)
 
 
 def validate_v2_sections(path: Path) -> tuple[bool, list[str]]:
