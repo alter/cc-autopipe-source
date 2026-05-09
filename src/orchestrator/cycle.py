@@ -967,6 +967,18 @@ def process_project(project_path: Path) -> str:
                         f"phase=failed (stuck), see HUMAN_NEEDED.md"
                     )
 
+        # v1.3.7 ACTIVITY-MTIME-BASED: refresh `last_activity_at` from
+        # the filesystem evidence on every cycle, not only when stuck-
+        # detection fires. Closes the pause+resume staleness bug — the
+        # state-write-driven timestamp doesn't advance through a long
+        # pause window even when the next cycle does real work; the
+        # filesystem does. Idempotent with the stuck-skip path above
+        # (which also refreshes), and a no-op when fs_progress shows
+        # nothing to refresh from. Skipped on `phase=failed` so the
+        # moment-of-fail record retains its diagnostic timestamp.
+        if fs_progress["any_progress"] and s.phase != "failed":
+            s.last_activity_at = _now_iso()
+            state.write(project_path, s)
 
         # v1.3 F2: emit a health record for this cycle. Best-effort —
         # never blocks the cycle. Quota cache may be unavailable
