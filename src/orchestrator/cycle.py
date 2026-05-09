@@ -599,7 +599,30 @@ def process_project(project_path: Path) -> str:
                     )
                     verdict = promotion_lib.parse_verdict(p_path)
                     if verdict == "PROMOTED":
-                        ok, missing = promotion_lib.validate_v2_sections(p_path)
+                        # v1.3.8 PROMOTION-HOOK-DIAGNOSTICS: emit a
+                        # `promotion_validated_attempt` to mark the entry
+                        # point of the validate→hook pipeline. Followed
+                        # by `promotion_v2_sections_check` with the
+                        # gating decision (strict for strategy task IDs,
+                        # relaxed for measurement / infra tasks).
+                        state.log_event(
+                            project_path,
+                            "promotion_validated_attempt",
+                            task_id=pre_item.id,
+                        )
+                        ok, missing = promotion_lib.validate_v2_sections(
+                            p_path, task_id=pre_item.id
+                        )
+                        state.log_event(
+                            project_path,
+                            "promotion_v2_sections_check",
+                            task_id=pre_item.id,
+                            all_present=ok,
+                            missing=",".join(missing),
+                            strict=promotion_lib.requires_full_v2_validation(
+                                pre_item.id
+                            ),
+                        )
                         if ok:
                             metrics = promotion_lib.parse_metrics(p_path)
                             promotion_lib.on_promotion_success(
