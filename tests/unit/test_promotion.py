@@ -207,3 +207,100 @@ def test_parse_verdict_partial_keyword_canonicalizes_to_conditional(
         tmp_path, "x", "## Verdict\n\n### PARTIAL — see notes\n"
     )
     assert promotion.parse_verdict(p) == "CONDITIONAL"
+
+
+# v1.3.7 ACCEPTANCE-FALLBACK tier 3 tests. Measurement/infrastructure
+# PROMOTION reports legitimately omit Verdict headings and close with
+# ## Acceptance / ## Conclusion. v1.3.7 falls back through these.
+
+
+def test_parse_verdict_acceptance_criteria_met_promoted(tmp_path: Path) -> None:
+    p = _write_promo(
+        tmp_path, "x", "## Acceptance\n\nAll criteria met. ✅\n"
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_parse_verdict_acceptance_criteria_not_met_rejected(tmp_path: Path) -> None:
+    p = _write_promo(
+        tmp_path, "x", "## Acceptance\n\nCriteria not met — too few periods.\n"
+    )
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+def test_parse_verdict_acceptance_partially_met_conditional(tmp_path: Path) -> None:
+    p = _write_promo(
+        tmp_path, "x", "## Acceptance\n\nPartially met (2/3).\n"
+    )
+    assert promotion.parse_verdict(p) == "CONDITIONAL"
+
+
+def test_parse_verdict_conclusion_pass_promoted(tmp_path: Path) -> None:
+    p = _write_promo(
+        tmp_path, "x", "## Conclusion\n\nResults pass acceptance.\n"
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_parse_verdict_result_failed_rejected(tmp_path: Path) -> None:
+    p = _write_promo(
+        tmp_path, "x", "## Result\n\nFailed validation.\n"
+    )
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+def test_parse_verdict_acceptance_no_keyword_returns_none(tmp_path: Path) -> None:
+    """No verdict-like words and no ✅/❌ → tier 3 returns None."""
+    p = _write_promo(
+        tmp_path, "x", "## Acceptance\n\nNo verdict-like words here.\n"
+    )
+    assert promotion.parse_verdict(p) is None
+
+
+def test_parse_verdict_tier1_wins_over_tier3_acceptance(tmp_path: Path) -> None:
+    """When BOTH `## Acceptance` (with PROMOTED-ish keyword) AND
+    `## Verdict: REJECTED` are present, tier 1 must win over tier 3."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "## Acceptance\n\nAll met.\n\n## Verdict: REJECTED\n",
+    )
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+def test_parse_verdict_acceptance_bare_check_marks_promoted(tmp_path: Path) -> None:
+    """AI-trade documentation-style Acceptance sections (e.g.
+    `seed_var`) confirm work with bare ✅ checkmarks alongside
+    documented criteria — no `met` / `pass` keyword is present."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "## Acceptance\n\n✅ `std/mean` documented as noise floor.\n",
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+# v1.3.7 fixture-based tests against the real AI-trade Phase 2 v2.0
+# Acceptance-only PROMOTION files that v1.3.6 returned None on. These
+# are skipped if the AI-trade repo isn't checked out alongside, so the
+# test suite stays self-contained on CI.
+
+AI_TRADE_DEBUG = Path("/mnt/c/claude/artifacts/repos/AI-trade/data/debug")
+
+
+def test_parse_verdict_real_ai_trade_dm_test_acceptance_only(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_long_stat_dm_test_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(tmp_path, "long_stat_dm_test", src.read_text(encoding="utf-8"))
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_parse_verdict_real_ai_trade_seed_var_acceptance_only(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_long_baseline_seed_var_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(tmp_path, "long_baseline_seed_var", src.read_text(encoding="utf-8"))
+    assert promotion.parse_verdict(p) == "PROMOTED"
