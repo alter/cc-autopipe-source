@@ -228,6 +228,12 @@ class State:
     # problems) doesn't fire on network blips.
     consecutive_transient_failures: int = 0
     last_transient_at: Optional[str] = None
+    # v1.3.7 STUCK-WITH-PROGRESS: backlog `[x]` count snapshotted at
+    # cycle_start. Counted again at stuck-check time; a positive delta
+    # is filesystem evidence that Claude closed at least one task in
+    # the cycle, even when verify.sh rc=1 makes the cycle look stuck.
+    # None when no backlog file exists or the cycle hasn't started yet.
+    cycle_backlog_x_count_at_start: Optional[int] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -276,6 +282,7 @@ class State:
             "last_detach_resume_reason": self.last_detach_resume_reason,
             "consecutive_transient_failures": self.consecutive_transient_failures,
             "last_transient_at": self.last_transient_at,
+            "cycle_backlog_x_count_at_start": self.cycle_backlog_x_count_at_start,
         }
         d.update(self.extras)
         return d
