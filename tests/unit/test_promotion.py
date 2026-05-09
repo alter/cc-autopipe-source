@@ -408,3 +408,159 @@ def test_validate_v2_sections_strategy_task_with_full_sections_passes(
     ok, missing = promotion.validate_v2_sections(p, task_id="vec_long_synth_v1")
     assert ok is True
     assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# v1.3.9 BOLD-METADATA-VERDICT — tier-4 inline `**Field**: KEYWORD`
+# ---------------------------------------------------------------------------
+#
+# Compact AI-trade Phase 2 v2.1 measurement-task reports omit any heading
+# and stamp the verdict on a single `**Status**: PASS ✓` line. Tiers 1-3
+# all require a heading; tier 4 catches the inline form. Restricted to
+# closure-synonym field names so unrelated bold metadata
+# (`**Note**: ...`, `**Pareto points**: 7`) does not trigger.
+
+
+def test_tier4_bold_status_pass_promoted(tmp_path: Path) -> None:
+    """Real AI-trade `CAND_elo_rating_PROMOTION.md` shape: title + bold
+    Status: PASS line + Note. Tiers 1-3 all miss; tier 4 returns
+    PROMOTED."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "# CAND_elo_rating_PROMOTION\n"
+        "**Status**: PASS ✓\n"
+        "**Note**: ELO computed for 8 models.\n",
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_bold_status_fail_rejected(tmp_path: Path) -> None:
+    """Symmetric REJECTED form."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "# CAND_x_PROMOTION\n"
+        "**Status**: FAIL ✗\n"
+        "**Note**: regression vs baseline.\n",
+    )
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+def test_tier4_bold_result_promoted(tmp_path: Path) -> None:
+    """`**Result**: PROMOTED` (no surrounding heading) → PROMOTED."""
+    p = _write_promo(tmp_path, "x", "**Result**: PROMOTED\nfoo bar\n")
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_bold_outcome_rejected(tmp_path: Path) -> None:
+    """`**Outcome**: REJECTED — see notes` → REJECTED."""
+    p = _write_promo(tmp_path, "x", "**Outcome**: REJECTED — see notes\n")
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+def test_tier4_bold_conclusion_conditional(tmp_path: Path) -> None:
+    """`**Conclusion**: CONDITIONAL — partial pass` → CONDITIONAL."""
+    p = _write_promo(
+        tmp_path, "x", "**Conclusion**: CONDITIONAL — partial pass\n"
+    )
+    assert promotion.parse_verdict(p) == "CONDITIONAL"
+
+
+def test_tier4_bold_status_no_verdict_keyword_returns_none(
+    tmp_path: Path,
+) -> None:
+    """`**Status**: in progress` — value is not a verdict keyword,
+    tier 4 returns None instead of misclassifying."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "# Title\n**Status**: in progress\n**Note**: still running.\n",
+    )
+    assert promotion.parse_verdict(p) is None
+
+
+def test_tier4_field_name_guard_unrelated_bold_metadata_ignored(
+    tmp_path: Path,
+) -> None:
+    """`**Note**: PASS but unrelated` and `**Pareto points**: 7` are NOT
+    closure-synonym fields — tier 4 must not fire on them. Keeps tier 4
+    from eating arbitrary bold-metadata lines that happen to share a
+    keyword with the verdict vocabulary."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "**Note**: PASS but unrelated\n"
+        "**Pareto points**: 7 non-dominated\n"
+        "**Other**: stuff\n",
+    )
+    assert promotion.parse_verdict(p) is None
+
+
+def test_tier4_loses_to_tier1_verdict_heading(tmp_path: Path) -> None:
+    """When BOTH `## Verdict` (with PASS) AND a `**Status**: FAIL` line
+    are present, tier 1 wins — fallback ordering must not regress."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "## Verdict\n\n### PASS — measurement OK\n\n**Status**: FAIL\n",
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_loses_to_tier2_legacy_strict(tmp_path: Path) -> None:
+    """Legacy `**Verdict: REJECTED**` (tier 2) must beat a tier-4
+    `**Status**: PASS` line in the same file — backward compat for
+    v1.3.5 fixtures."""
+    p = _write_promo(
+        tmp_path,
+        "x",
+        "**Verdict: REJECTED**\n\n**Status**: PASS\n",
+    )
+    assert promotion.parse_verdict(p) == "REJECTED"
+
+
+# v1.3.9 fixture-based tests against the real AI-trade Phase 2 v2.1
+# bold-metadata PROMOTION files that v1.3.8 returned None on. Skipped
+# when the AI-trade repo isn't checked out alongside, so the test suite
+# stays self-contained on CI.
+
+
+def test_tier4_real_ai_trade_elo_rating(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_elo_rating_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(tmp_path, "elo_rating", src.read_text(encoding="utf-8"))
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_real_ai_trade_tournament_round_robin(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_tournament_round_robin_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(
+        tmp_path, "tournament_round_robin", src.read_text(encoding="utf-8")
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_real_ai_trade_tournament_swiss(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_tournament_swiss_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(
+        tmp_path, "tournament_swiss", src.read_text(encoding="utf-8")
+    )
+    assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+def test_tier4_real_ai_trade_optuna_mo(tmp_path: Path) -> None:
+    src = AI_TRADE_DEBUG / "CAND_optuna_mo_PROMOTION.md"
+    if not src.exists():
+        import pytest  # noqa: PLC0415
+        pytest.skip("AI-trade reference fixture not present")
+    p = _write_promo(tmp_path, "optuna_mo", src.read_text(encoding="utf-8"))
+    assert promotion.parse_verdict(p) == "PROMOTED"
