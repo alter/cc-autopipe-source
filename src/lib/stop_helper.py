@@ -44,6 +44,14 @@ def maybe_clear_knowledge_update_flag(project_path: str | Path) -> bool:
     """v1.3 I4: clear knowledge_update_pending if knowledge.md mtime
     has moved past the recorded baseline since the verdict was emitted.
 
+    v1.3.8 SENTINEL-RACE-FIX: emits the cleared baseline + current mtime
+    in the `knowledge_updated_detected` event payload so the v1.3.6/8
+    arm→clear→re-arm race is observable from aggregate.jsonl. The reset
+    of `knowledge_baseline_mtime` to None (which the v1.3 code already
+    does) makes the next arming start fresh — the v1.3.8 fix is the
+    arming-side `_safe_baseline_mtime` snapshot, this just emits the
+    diagnostic state alongside.
+
     Returns True iff the flag was cleared this call.
     """
     project = Path(project_path)
@@ -52,14 +60,20 @@ def maybe_clear_knowledge_update_flag(project_path: str | Path) -> bool:
         return False
     if s.knowledge_baseline_mtime is None:
         return False
+    baseline_was = s.knowledge_baseline_mtime
     current_mtime = knowledge_lib.get_mtime_or_zero(project)
-    if current_mtime <= s.knowledge_baseline_mtime:
+    if current_mtime <= baseline_was:
         return False
     s.knowledge_update_pending = False
     s.knowledge_baseline_mtime = None
     s.knowledge_pending_reason = None
     state.write(project, s)
-    state.log_event(project, "knowledge_updated_detected")
+    state.log_event(
+        project,
+        "knowledge_updated_detected",
+        baseline_was=baseline_was,
+        current_mtime=current_mtime,
+    )
     return True
 
 
