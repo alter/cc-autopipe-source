@@ -1,8 +1,26 @@
 # Build Status
 
-**Updated:** 2026-05-07T10:30:00Z
+**Updated:** 2026-05-09T01:45:00Z
 **Current branch:** main
-**Current stage:** **v1.3.6 HOTFIX COMPLETE.** Three groups
+**Current stage:** **v1.3.7 HOTFIX COMPLETE.** Three groups
+(ACCEPTANCE-FALLBACK: 3-tier verdict parser with Acceptance/Conclusion/
+Result/Outcome/Status section + ✅/❌ marker support; STUCK-WITH-PROGRESS:
+filesystem-evidence stuck gate via `_check_in_cycle_progress` —
+PROMOTION.md mtime + backlog `[x]` delta + CURRENT_TASK stages_completed
+mtime; ACTIVITY-MTIME-BASED: unconditional `last_activity_at` refresh
+at cycle_end on filesystem evidence, closes pause+resume staleness).
+Schema **unchanged at v6** with one additive field (`cycle_backlog_x_count_at_start`).
+770 → **798 tests passing** (+28). 23/23 hotfix smokes green (16 v1.3+
+hotfix style including new acceptance-fallback + 5 v1.3.3 + 2 v1.3.4).
+9/9 real AI-trade Phase 2 PROMOTION reference files parse to expected
+verdicts (the two Acceptance-only files dm_test and seed_var that
+v1.3.6 dropped to None now resolve PROMOTED). Empirical drivers:
+AI-trade Phase 2 v2.0 stress test 2026-05-09T00:06:14 cycle showed
+v1.3.6 verdict regex missed ~50% of measurement/infra reports +
+spurious stuck_failed transitions blocked multi-month autonomy.
+Awaiting Roman validation + tag v1.3.7.
+
+**Earlier stage:** **v1.3.6 HOTFIX COMPLETE.** Three groups
 (VERDICT-LENIENT: heading-style PROMOTION.md parser + new CONDITIONAL
 canonical state; PHASE-DONE-RECOVERY: sweep_done_projects auto-resume
 when backlog reopens; SENTINEL-PATTERNS: broader knowledge.md arming
@@ -13,7 +31,7 @@ new v1.3.6 smokes (lenient-verdict, phase-done-reopen). 5/5 real
 AI-trade Phase 1/2 PROMOTION reference files parse to expected
 verdicts. Empirical drivers: AI-trade Phase 2 v2.1 surfaced three
 operational gaps blocking confident multi-month autonomy on the v2.0
-220-task / 3-4 month roadmap. Awaiting Roman validation + tag v1.3.6.
+220-task / 3-4 month roadmap.
 
 **Earlier stage:** v1.3.5 HOTFIX COMPLETE. Three groups (R:
 [research]-task artifact-based completion + Phase 2 verdict-pattern
@@ -61,6 +79,77 @@ knowledge + K WSL2). Schema bumped v3 → v4. Tag v1.3 awaiting push.
 **Earlier stage:** v1.2 BUILD COMPLETE. All 8 bugs (A-H) landed
 across 3 batches. Cooldown skipped per Roman 2026-05-03 (interactive
 session, mocked claude — no real quota at risk).
+
+## v1.3.7 HOTFIX — final state
+
+**3 groups landed across 7 atomic commits (2 ACCEPTANCE-FALLBACK + 3
+STUCK-WITH-PROGRESS + 2 ACTIVITY-MTIME-BASED) + 1 smoke commit.** See
+`V137_BUILD_DONE.md` for the full summary.
+
+| Group | Surface | Tests added |
+|---|---|---|
+| ACCEPTANCE-FALLBACK/1 | src/lib/promotion.py — ACCEPTANCE_HEADING_RE + ACCEPTANCE_KEYWORD_RE + _ACCEPTANCE_NEXT_HEADING_RE; tier-1 logic extracted to `_parse_verdict_tier1`; new `_parse_verdict_acceptance` helper. parse_verdict now runs 3 tiers (verdict heading → legacy strict → acceptance/conclusion section); each tier returns first match. ✅/❌ markers symmetric in the keyword vocabulary. | (covered by unit tests) |
+| ACCEPTANCE-FALLBACK/2 | tests/unit/test_promotion.py +10 cases (8 synthetic + 2 fixture-based against real AI-trade Acceptance-only files; fixture tests skip cleanly when AI-trade repo isn't present). | +10 |
+| STUCK-WITH-PROGRESS/1 | src/lib/state.py — `cycle_backlog_x_count_at_start: Optional[int]` (single additive field per PROMPT_v1.3.7 §"Don't"); to_dict serialises the new key. SCHEMA_VERSION unchanged at 6. | +4 (test_state_v137.py NEW file) |
+| STUCK-WITH-PROGRESS/2 | src/orchestrator/cycle.py — `_count_backlog_x` + `_check_in_cycle_progress` helpers; cycle_start snapshot of backlog `[x]`; stuck-detection branch consults fs_progress before honouring the legacy stuck_failed path (emits `stuck_check_skipped_progress_detected` with all evidence fields populated when progress detected). | (covered by integration tests) |
+| STUCK-WITH-PROGRESS/3 | tests/integration/test_stuck_with_progress.py NEW file: 6 helper-level cases for `_check_in_cycle_progress` + 5 process_project end-to-end scenarios. Stubs `activity_lib.detect_activity` to is_active=False to reproduce the AI-trade scenario where the 5000-file walk budget skipped fresh artefacts. | +11 |
+| ACTIVITY-MTIME-BASED/1 | src/orchestrator/cycle.py — unconditional `last_activity_at = _now_iso()` at cycle_end when `_check_in_cycle_progress.any_progress` AND `phase != "failed"`. Idempotent with the stuck-skip path; no-op without progress. | (covered by integration tests) |
+| ACTIVITY-MTIME-BASED/2 | tests/integration/test_activity_refresh.py NEW file: rc=0 + new PROMOTION → activity advances; rc=0 + 0 progress → unchanged; pause/resume + active cycle with progress → activity advances past pre-pause snapshot (the literal AI-trade bug). | +3 |
+| smokes | tests/smoke/run-acceptance-fallback-smoke.sh + run-all-smokes.sh wiring | +0 (1 smoke) |
+
+**Test counts (v1.3.7):**
+- pytest: 770 (v1.3.6 baseline) → **798 passed** (+28 new tests)
+- 23 hotfix-style smokes all green: 16 v1.3+ (incl. new
+  acceptance-fallback) + 5 v1.3.3 + 2 v1.3.4
+- AI-trade reference verification: 9/9 real Phase 2 PROMOTION files
+  parse to expected verdicts (two Acceptance-only files dm_test +
+  seed_var that v1.3.6 returned None on now resolve to PROMOTED;
+  the other 7 keep their v1.3.6 verdicts unchanged)
+
+**Schema:** **unchanged at v6** with ONE additive field
+(`cycle_backlog_x_count_at_start`, default null). Pre-v1.3.7 v6 state
+files migrate via the same dataclass-defaults path used everywhere
+else.
+
+**New events in aggregate.jsonl:** `stuck_check_skipped_progress_detected`
+(emitted with `new_promotions`, `backlog_x_delta`, `current_task_grew`
+fields).
+
+**New CLI surface:** none.
+
+### Tactical deviations from PROMPT_v1.3.7-hotfix.md
+
+1. **Tier-3 keyword vocabulary symmetry.** PROMPT_v1.3.7 §
+   ACCEPTANCE-FALLBACK gave a regex with bare `❌` for REJECTED but no
+   bare `✅` for PROMOTED. Real AI-trade documentation-style
+   Acceptance sections (e.g. `seed_var`) confirm work with bare ✅
+   alone — no `met` / `pass` / `criteria met` prose. Implementation
+   adds bare `✅` to the PROMOTED group symmetrically with `❌` in
+   REJECTED. Without this, the seed_var fixture would have remained
+   None and the prompt's manual smoke would have failed on it.
+2. **`_parse_verdict_tier1` extracted.** PROMPT_v1.3.7 reused the
+   v1.3.6 inline parse logic; the implementation pulls it into a
+   helper so each tier reads independently and the level-aware
+   `_next_heading_re` lives next to its caller.
+3. **Activity probe stub in tests.** Both new test files monkeypatch
+   `activity_lib.detect_activity` to is_active=False. Without the
+   stub the legacy probe (which scans data/{models,backtest,debug}
+   for any fresh file) catches the test artefacts BEFORE the v1.3.7
+   gate runs — but the AI-trade bug condition is precisely "activity
+   probe missed because of the 5000-file walk cap", so reproducing
+   that miss is what makes the gate testable.
+
+### Currently working on
+
+**v1.3.7 build done.** All gates + smokes green; awaiting Roman
+validation + manual smoke against AI-trade after deploying.
+
+### Next
+
+Roman validates + tags `v1.3.7`. See `V137_BUILD_DONE.md` for
+the full smoke test plan.
+
+---
 
 ## v1.3.6 HOTFIX — final state
 
