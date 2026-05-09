@@ -87,6 +87,44 @@ REQUIRED_V2_SECTIONS = [
     "No-lookahead audit",
 ]
 
+# v1.3.8 PROMOTION-HOOK-DIAGNOSTICS: which task IDs require full v2.0
+# PROMOTION sections? Strategy candidates require it (regime parity,
+# leakage, walk-forward, etc.). Measurement / infrastructure tasks
+# (vec_long_quantile, vec_long_stat_dm_test, vec_long_features_v1, …)
+# don't — they legitimately close with an Acceptance section and a
+# verdict and have no strategy backtest to gate. Prefix-based so a
+# single tuple update extends the gate as new strategy families land
+# without coupling promotion.py to the AI-trade roadmap.
+STRATEGY_PROMOTION_PREFIXES = (
+    "vec_long_synth_",
+    "vec_dr_synth_",
+    "vec_long_pack_",
+    "vec_long_moe_",
+    "vec_long_cascade_",
+    "vec_long_ensemble_",
+    "vec_long_committee_",
+    "vec_long_stacking_",
+    "vec_long_hybrid_",
+)
+
+
+def requires_full_v2_validation(task_id: str | None) -> bool:
+    """v1.3.8: True iff the task ID indicates a strategy candidate that
+    must carry the full v2.0 PROMOTION section list. False (relaxed) for
+    measurement / infrastructure / research tasks that just need a
+    verdict.
+
+    The strict default for unknown / blank task_id is False — when the
+    caller can't supply a task_id we treat it as a non-strategy task
+    and skip strict validation. Strategy gating is enabled by an
+    explicit task_id with a known prefix, not implicitly. (Pre-v1.3.8
+    callers that didn't pass task_id continue through validate_v2_sections's
+    None-task-id branch which preserves the v1.3.5 strict behaviour.)
+    """
+    if not task_id:
+        return False
+    return task_id.startswith(STRATEGY_PROMOTION_PREFIXES)
+
 # v1.3.5 (legacy): exact `**Verdict: PROMOTED**` / `**Verdict: REJECTED**`.
 # v1.3.6: kept as a fallback so v1.3.5 PROMOTION fixtures still parse.
 VERDICT_RE = re.compile(
@@ -315,16 +353,37 @@ def parse_verdict(path: Path) -> str | None:
     return _parse_verdict_acceptance(text)
 
 
-def validate_v2_sections(path: Path) -> tuple[bool, list[str]]:
+def validate_v2_sections(
+    path: Path, task_id: str | None = None
+) -> tuple[bool, list[str]]:
     """Returns (all_present, missing_list).
 
     Each section is matched as `## | ### | ####` heading containing the
     section name (case-insensitive). The test is intentionally loose:
     `### Regime-stratified PnL (5 regimes)` and `## REGIME-STRATIFIED PNL`
     both pass.
+
+    v1.3.8 PROMOTION-HOOK-DIAGNOSTICS: when `task_id` is supplied AND it
+    does NOT match a strategy-candidate prefix, strict v2.0 validation
+    is skipped and (True, []) returned. The 5 sections are the right
+    enforcement for strategy backtests (long-only check, regime parity,
+    DM significance, walk-forward, leakage audit) but inappropriate for
+    measurement / infra tasks (e.g. vec_long_quantile distribution
+    summary, vec_long_stat_dm_test pipeline-readiness check). Without
+    this gate, AI-trade Phase 2 v2.0 closed 4 measurement tasks with
+    PROMOTED verdicts that v1.3.5 silently quarantined for "missing
+    sections" — never spawning ablation children or appending to the
+    leaderboard.
+
+    Pre-v1.3.8 callers that pass only the path (task_id=None) continue
+    to receive the full strict validation, preserving the v1.3.5
+    behaviour. New call sites (cycle.py) pass task_id so the gate
+    activates.
     """
     if not path.exists():
         return False, list(REQUIRED_V2_SECTIONS)
+    if task_id is not None and not requires_full_v2_validation(task_id):
+        return True, []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -459,58 +518,108 @@ def on_promotion_success(project: Path, item: Any, metrics: dict[str, Any]) -> N
     `priority` attributes. The leaderboard hook (lib.leaderboard) is
     imported lazily so this module remains usable in environments that
     lack the leaderboard module (tests, partial deployments).
+
+    v1.3.8 PROMOTION-HOOK-DIAGNOSTICS: emits a stage-tagged event trail
+    so the operator can grep aggregate.jsonl and see exactly where each
+    PROMOTED task lands. AI-trade Phase 2 v2.0 production observed 4
+    PROMOTED measurement tasks that produced no ablation children and
+    no leaderboard append — without per-stage events, root-causing was
+    impossible. Events emitted (in order):
+      - on_promotion_success_entered      (always)
+      - promotion_children_skipped         (no backlog) OR
+        ablation_children_spawned          (success path)
+      - on_promotion_success_failed        (per stage on raise)
+      - on_promotion_success_completed     (only when both stages OK)
     """
     import state as _state  # noqa: PLC0415
 
+    task_id = getattr(item, "id", "")
+    _state.log_event(
+        project,
+        "on_promotion_success_entered",
+        task_id=task_id,
+    )
+
+    ablation_ok = False
     target = _resolve_backlog_path(project)
     if target is None:
         _state.log_event(
             project,
             "promotion_children_skipped",
-            task_id=getattr(item, "id", ""),
+            task_id=task_id,
             reason="backlog_missing",
         )
     else:
-        children = _ablation_children_for(
-            getattr(item, "id"), int(getattr(item, "priority", 1))
-        )
-        text = target.read_text(encoding="utf-8")
-        # Insert children at end of body, but BEFORE a "## Done" section
-        # if one exists. This keeps the backlog sorted as
-        # active → ablations → done.
-        insertion_marker = "## Done"
-        if insertion_marker in text:
-            head, _, tail = text.partition(insertion_marker)
-            new_text = (
-                head.rstrip()
-                + "\n\n"
-                + "\n".join(children)
-                + "\n\n"
-                + insertion_marker
-                + tail
+        try:
+            children = _ablation_children_for(
+                task_id, int(getattr(item, "priority", 1))
             )
-        else:
-            new_text = text.rstrip() + "\n\n" + "\n".join(children) + "\n"
-        _atomic_write(target, new_text)
-        _state.log_event(
-            project,
-            "ablation_children_spawned",
-            parent=getattr(item, "id"),
-            count=len(children),
-        )
+            text = target.read_text(encoding="utf-8")
+            # Insert children at end of body, but BEFORE a "## Done"
+            # section if one exists. This keeps the backlog sorted as
+            # active → ablations → done.
+            insertion_marker = "## Done"
+            if insertion_marker in text:
+                head, _, tail = text.partition(insertion_marker)
+                new_text = (
+                    head.rstrip()
+                    + "\n\n"
+                    + "\n".join(children)
+                    + "\n\n"
+                    + insertion_marker
+                    + tail
+                )
+            else:
+                new_text = (
+                    text.rstrip() + "\n\n" + "\n".join(children) + "\n"
+                )
+            _atomic_write(target, new_text)
+            _state.log_event(
+                project,
+                "ablation_children_spawned",
+                parent=task_id,
+                count=len(children),
+            )
+            ablation_ok = True
+        except Exception as exc:  # noqa: BLE001
+            _state.log_event(
+                project,
+                "on_promotion_success_failed",
+                task_id=task_id,
+                stage="ablation_spawn",
+                error=repr(exc),
+            )
 
     # Leaderboard hook is best-effort — a missing module must not
     # prevent the promotion path from completing.
+    leaderboard_ok = False
     try:
         import leaderboard as _lb  # noqa: PLC0415
 
-        _lb.append_entry(project, getattr(item, "id"), metrics)
+        _lb.append_entry(project, task_id, metrics)
+        leaderboard_ok = True
     except Exception as exc:  # noqa: BLE001
         _state.log_event(
             project,
+            "on_promotion_success_failed",
+            task_id=task_id,
+            stage="leaderboard",
+            error=repr(exc),
+        )
+        # Backwards compatibility: keep the v1.3.5 event name too so any
+        # tooling filtering on `leaderboard_append_skipped` keeps working.
+        _state.log_event(
+            project,
             "leaderboard_append_skipped",
-            task_id=getattr(item, "id", ""),
+            task_id=task_id,
             reason=repr(exc),
+        )
+
+    if ablation_ok and leaderboard_ok:
+        _state.log_event(
+            project,
+            "on_promotion_success_completed",
+            task_id=task_id,
         )
 
 
