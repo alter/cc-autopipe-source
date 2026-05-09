@@ -1,8 +1,38 @@
 # Build Status
 
-**Updated:** 2026-05-09T13:45:00Z
+**Updated:** 2026-05-09T20:30:00Z
 **Current branch:** main
-**Current stage:** **v1.3.9 HOTFIX COMPLETE.** One group
+**Current stage:** **v1.3.10 HOTFIX COMPLETE.** One group
+(POST-CYCLE-DELTA-SCAN: new `_post_cycle_delta_scan(project_path,
+pre_open_vec_long)` helper in `src/orchestrator/cycle.py` runs after
+the existing v1.3.5 pre-cycle validation loop and validates
+`vec_long_* + [implement] + [x]` tasks that were NOT in
+`pre_open_vec_long` — i.e. tasks added & closed in the SAME cycle
+(Claude meta-task pattern observed in AI-trade Phase 2 v2.0). Same
+pipeline as the pre-cycle path: `parse_verdict → validate_v2_sections
+(with task_id) → on_promotion_success / quarantine_invalid / log`,
+but every emitted event carries `origin="post_cycle_delta"` so
+operators distinguish pre-cycle path matches from delta-scan matches
+in aggregate.jsonl. Idempotency: `pre_ids` exclusion ensures no
+double-emit when an id appears in both the pre_open snapshot and the
+post-cycle `[x]` set). Schema **unchanged at v6** — no new persisted
+fields per PROMPT_v1.3.10 §"Don't". Pre-cycle validation path
+unchanged (purely additive). 833 → **840 tests passing** (+7: empty
+pre_open delta-promote, pre+post overlap exclusion, strategy-prefix
+quarantine, non-strategy relax → spawn, delta-path REJECTED, missing
+PROMOTION.md → unrecognized+missing, idempotency exclusion). 26/26
+hotfix smokes green (25 v1.3.9 + new mid-cycle-add-close + 5 v1.3.3
++ 2 v1.3.4). Empirical driver: AI-trade Phase 2 v2.0 production
+aggregate.jsonl showed **~30 `knowledge_sentinel_armed_via_promotion`
+events without parallel `promotion_validated_attempt` events** post-
+v1.3.9 deploy. Sentinel arming fires from every PROMOTION.md verdict,
+but the v1.3.5 validation loop only iterates `pre_open_vec_long` — so
+mid-cycle-added meta-tasks (`vec_long_phase8_summary`,
+`vec_long_production_script`, etc.) closed within the same cycle were
+silently skipped: 0 ablation children, no LEADERBOARD.md append.
+v1.3.10 closes the loop. Awaiting Roman validation + tag v1.3.10.
+
+**Earlier stage:** **v1.3.9 HOTFIX COMPLETE.** One group
 (BOLD-METADATA-VERDICT: tier-4 inline `**Field**: KEYWORD` fallback
 in `parse_verdict` via new `BOLD_METADATA_VERDICT_RE` +
 `_parse_verdict_tier4_bold_metadata` — fires only when tiers 1-3
@@ -12,29 +42,14 @@ unrelated bold metadata like `**Note**: ...` or `**Pareto points**: 7`
 does NOT trigger; keyword vocabulary mirrors tiers 1+3 so canonical
 mapping stays consistent). Schema **unchanged at v6** — no new
 persisted fields per PROMPT_v1.3.9 §"Don't". Tiers 1-3 unchanged
-(purely additive). 820 → **833 tests passing** (+13: 9 unit
-covering Status/Result/Outcome/Conclusion + PASS/FAIL/PROMOTED/
-REJECTED/CONDITIONAL keywords, the in-progress non-verdict negative,
-the field-name guard against `**Note**:` and `**Pareto points**:`,
-and the tier-1/tier-2 win cases for fallback ordering; 4 real
-AI-trade Phase 2 v2.1 fixture parses for `CAND_elo_rating`,
-`CAND_tournament_round_robin`, `CAND_tournament_swiss`,
-`CAND_optuna_mo`). 25/25 hotfix smokes green (24 v1.3.8 + new
-bold-metadata + 5 v1.3.3 + 2 v1.3.4). End-to-end re-validation on
-real AI-trade Phase 2 fixtures: `CAND_elo_rating`,
-`CAND_tournament_round_robin`, `CAND_tournament_swiss`,
-`CAND_optuna_mo` all resolve PROMOTED via tier 4; v1.3.7
-`CAND_long_only_baseline` (REJECTED), `CAND_dr_synth_v1`
-(CONDITIONAL), `CAND_focal_loss` (REJECTED), `CAND_long_stat_dm_test`
-(PROMOTED) still parse to expected verdicts via earlier tiers.
-Empirical driver: AI-trade Phase 2 v2.1 production aggregate.jsonl
-showed **31 `promotion_verdict_unrecognized` events in 12 hours**
-post-v1.3.8 deploy — all from compact bold-metadata measurement
-reports (`vec_long_features_*`, `vec_long_lgbm/tft/nhits/etc.`,
-`vec_long_elo_rating`, `vec_long_tournament_*`) that drop the
-heading entirely and stamp the verdict on a `**Status**: PASS ✓`
-line. Tiers 1-3 all require a heading; v1.3.9 tier 4 catches the
-inline form. Awaiting Roman validation + tag v1.3.9.
+(purely additive). 820 → 833 tests passing (+13). 25/25 hotfix
+smokes green. End-to-end re-validation on real AI-trade Phase 2
+fixtures: `CAND_elo_rating`, `CAND_tournament_round_robin`,
+`CAND_tournament_swiss`, `CAND_optuna_mo` all resolve PROMOTED via
+tier 4. Empirical driver: AI-trade Phase 2 v2.1 production
+aggregate.jsonl showed 31 `promotion_verdict_unrecognized` events in
+12 hours post-v1.3.8 deploy — all from compact bold-metadata
+measurement reports.
 
 **Earlier stage:** **v1.3.8 HOTFIX COMPLETE.** Three groups
 (SENTINEL-RACE-FIX: idempotent sentinel arming in both
