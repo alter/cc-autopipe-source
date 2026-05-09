@@ -1,8 +1,29 @@
 # Build Status
 
-**Updated:** 2026-05-09T01:45:00Z
+**Updated:** 2026-05-09T11:05:00Z
 **Current branch:** main
-**Current stage:** **v1.3.7 HOTFIX COMPLETE.** Three groups
+**Current stage:** **POST-v1.3.7 OPERATOR TOOLING.** Ships
+`cc-autopipe snapshot` (src/helpers/cc-autopipe-snapshot, wired into
+the dispatcher) — universal 12-section one-shot project health view
+with optional 13th section via `<project>/.cc-autopipe/snapshot-extra.sh`
+hook. Auto-detects backlog at project root vs `.cc-autopipe/`,
+falls back through journalctl → orchestrator-stderr.log →
+aggregate.jsonl so the timeline works under systemd, daemon mode,
+or foreground equally. README rewritten as an operator guide with
+new §6 "Monitoring — is it working?" (snapshot table + snapshot-extra
+hook docs + raw log-surface reference + 6-step working-or-not
+checklist). README §9 filesystem layout corrected:
+orchestrator-stderr.log + orchestrator-stdout.log (was incorrectly
+named orchestrator.log) + health.jsonl + per-project
+snapshot-extra.sh. Empirical driver: Roman ran the AI-trade-specific
+`tmp/one-shot-snapshot.sh` and asked for a universal version that
+ships by default — install.sh already copies all of helpers/
+recursively, so nothing else to wire. Smoke-tested against AI-trade
+v1.3.7 live (iteration 62, phase=active): all 12 universal sections
+render with real engine state; ps lines truncate cleanly. No engine
+state mutated, no schema change.
+
+**Earlier stage:** **v1.3.7 HOTFIX COMPLETE.** Three groups
 (ACCEPTANCE-FALLBACK: 3-tier verdict parser with Acceptance/Conclusion/
 Result/Outcome/Status section + ✅/❌ marker support; STUCK-WITH-PROGRESS:
 filesystem-evidence stuck gate via `_check_in_cycle_progress` —
