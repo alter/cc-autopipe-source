@@ -15,6 +15,7 @@ from orchestrator._runtime import (
     _interruptible_sleep,
     _log,
     _now_iso,
+    _parse_iso_utc,
     _user_home,
     is_shutdown,
 )
@@ -78,6 +79,107 @@ MAX_TRANSIENT_RETRIES = 5
 # 5-minute window scopes the trigger to a "fresh" artifact — a stale
 # PROMOTION from a prior cycle would otherwise re-arm forever.
 PROMOTION_MTIME_FRESH_WINDOW_SEC = 300
+
+
+def _count_backlog_x(project_path: Path) -> int | None:
+    """Count `- [x]` backlog lines. Returns None when no backlog exists.
+
+    Used at cycle_start to snapshot a baseline that
+    `_check_in_cycle_progress` compares against post-cycle. Mirrors
+    `recovery._count_open_backlog` but for closed tasks.
+    """
+    candidates = [
+        project_path / "backlog.md",
+        project_path / ".cc-autopipe" / "backlog.md",
+    ]
+    backlog = next((p for p in candidates if p.exists()), None)
+    if backlog is None:
+        return None
+    try:
+        text = backlog.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return sum(
+        1 for ln in text.splitlines() if ln.lstrip().startswith("- [x]")
+    )
+
+
+def _check_in_cycle_progress(
+    project_path: Path, cycle_start_at: float, s: state.State
+) -> dict:
+    """v1.3.7 STUCK-WITH-PROGRESS / ACTIVITY-MTIME-BASED:
+    return filesystem evidence of in-cycle work.
+
+    `cycle_start_at`: unix timestamp when the current cycle started.
+
+    Returns:
+        {
+          'new_promotion_files': int,        # CAND_*_PROMOTION.md
+                                             # created/modified ≥ cycle_start
+          'backlog_x_delta': int,            # delta in `- [x]` count vs the
+                                             # snapshot taken at cycle_start
+          'current_task_stages_grew': bool,  # CURRENT_TASK.md mtime ≥
+                                             # cycle_start AND the post-cycle
+                                             # state has any stages_completed
+          'any_progress': bool,              # OR of the three above
+        }
+
+    Both stuck-detection (gate fail → skip-fail) and the cycle-end
+    activity refresh consult this. Cheap; called twice per cycle is OK.
+    """
+    out = {
+        "new_promotion_files": 0,
+        "backlog_x_delta": 0,
+        "current_task_stages_grew": False,
+        "any_progress": False,
+    }
+
+    # Promotion files modified since cycle_start. AI-trade convention is
+    # `data/debug/CAND_*_PROMOTION.md` per `promotion.promotion_path`.
+    debug_dir = project_path / "data" / "debug"
+    if debug_dir.exists():
+        try:
+            for p in debug_dir.glob("CAND_*_PROMOTION.md"):
+                try:
+                    if p.stat().st_mtime >= cycle_start_at:
+                        out["new_promotion_files"] += 1
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+    # Backlog `[x]` delta vs the snapshot taken at cycle_start. None on
+    # the snapshot side means "we never snapshotted" (no backlog at
+    # cycle_start) — treat as no delta.
+    cached = s.cycle_backlog_x_count_at_start
+    current_x = _count_backlog_x(project_path)
+    if cached is not None and current_x is not None and current_x > cached:
+        out["backlog_x_delta"] = current_x - cached
+
+    # CURRENT_TASK.md was rewritten in-cycle (Stop hook syncs the file
+    # → state) AND the post-cycle current_task carries any
+    # stages_completed entries. The mtime check pins this to "this
+    # cycle"; the stages_completed presence guards against an empty
+    # CURRENT_TASK.md (e.g. after a task switch where Claude only wrote
+    # the header) being counted as progress.
+    ct_path = project_path / ".cc-autopipe" / "CURRENT_TASK.md"
+    if ct_path.exists():
+        try:
+            if (
+                ct_path.stat().st_mtime >= cycle_start_at
+                and s.current_task is not None
+                and s.current_task.stages_completed
+            ):
+                out["current_task_stages_grew"] = True
+        except OSError:
+            pass
+
+    out["any_progress"] = bool(
+        out["new_promotion_files"] > 0
+        or out["backlog_x_delta"] > 0
+        or out["current_task_stages_grew"]
+    )
+    return out
 
 
 def _maybe_arm_sentinel_via_promotion(
@@ -281,6 +383,12 @@ def process_project(project_path: Path) -> str:
         s.iteration += 1
         s.last_cycle_started_at = _now_iso()
         s.last_progress_at = s.last_cycle_started_at
+        # v1.3.7 STUCK-WITH-PROGRESS: snapshot backlog `[x]` count so
+        # post-cycle `_check_in_cycle_progress` can detect the delta.
+        # `_count_backlog_x` returns None when no backlog file exists;
+        # in that case we leave the field None and the in-cycle progress
+        # check falls back on PROMOTION mtime + CURRENT_TASK signals.
+        s.cycle_backlog_x_count_at_start = _count_backlog_x(project_path)
         state.write(project_path, s)
 
         # Snapshot improver_due for the prompt builder, then clear it on
@@ -785,6 +893,28 @@ def process_project(project_path: Path) -> str:
         except Exception as exc:  # noqa: BLE001 — telemetry must not crash
             _log(f"{project_path.name}: activity probe error: {exc!r}")
 
+        # v1.3.7 STUCK-WITH-PROGRESS / ACTIVITY-MTIME-BASED:
+        # compute filesystem evidence of in-cycle work. Both the stuck
+        # gate (fail-skip) and the unconditional `last_activity_at`
+        # refresh consult this. Cheap (`stat()` + small `glob`) so two
+        # callers per cycle is fine.
+        cycle_start_dt = _parse_iso_utc(s.last_cycle_started_at)
+        cycle_start_unix = (
+            cycle_start_dt.timestamp() if cycle_start_dt is not None else 0.0
+        )
+        try:
+            fs_progress = _check_in_cycle_progress(
+                project_path, cycle_start_unix, s
+            )
+        except Exception as exc:  # noqa: BLE001 — telemetry must not crash
+            _log(f"{project_path.name}: progress probe error: {exc!r}")
+            fs_progress = {
+                "new_promotion_files": 0,
+                "backlog_x_delta": 0,
+                "current_task_stages_grew": False,
+                "any_progress": False,
+            }
+
         if s.phase == "active":
             stuck = evaluate_stuck(s)
             if stuck == "warn":
@@ -795,24 +925,48 @@ def process_project(project_path: Path) -> str:
                     last_activity_at=s.last_activity_at,
                 )
             elif stuck == "fail":
-                s.phase = "failed"
-                state.write(project_path, s)
-                state.log_event(
-                    project_path,
-                    "stuck_failed",
-                    iteration=s.iteration,
-                    last_activity_at=s.last_activity_at,
-                    consecutive_in_progress=s.consecutive_in_progress,
-                )
-                _write_in_progress_cap_human_needed(
-                    project_path,
-                    s.consecutive_in_progress,
-                    s.consecutive_in_progress,
-                )
-                _notify_tg(
-                    f"[{project_path.name}] no activity for >60 min — "
-                    f"phase=failed (stuck), see HUMAN_NEEDED.md"
-                )
+                # v1.3.7 STUCK-WITH-PROGRESS: the engine-internal
+                # `last_activity_at` is stale, but if the filesystem
+                # shows Claude closed tasks / wrote PROMOTION files /
+                # advanced CURRENT_TASK stages within this cycle window,
+                # don't honour the stale-timestamp fail. Refresh
+                # `last_activity_at` to now and log the skip; next cycle
+                # starts clean. This decouples engine stuck-detection
+                # from verify.sh rc=1 (which fires for many reasons
+                # unrelated to staleness).
+                if fs_progress["any_progress"]:
+                    s.last_activity_at = _now_iso()
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "stuck_check_skipped_progress_detected",
+                        iteration=s.iteration,
+                        new_promotions=fs_progress["new_promotion_files"],
+                        backlog_x_delta=fs_progress["backlog_x_delta"],
+                        current_task_grew=fs_progress[
+                            "current_task_stages_grew"
+                        ],
+                    )
+                else:
+                    s.phase = "failed"
+                    state.write(project_path, s)
+                    state.log_event(
+                        project_path,
+                        "stuck_failed",
+                        iteration=s.iteration,
+                        last_activity_at=s.last_activity_at,
+                        consecutive_in_progress=s.consecutive_in_progress,
+                    )
+                    _write_in_progress_cap_human_needed(
+                        project_path,
+                        s.consecutive_in_progress,
+                        s.consecutive_in_progress,
+                    )
+                    _notify_tg(
+                        f"[{project_path.name}] no activity for >60 min — "
+                        f"phase=failed (stuck), see HUMAN_NEEDED.md"
+                    )
+
 
         # v1.3 F2: emit a health record for this cycle. Best-effort —
         # never blocks the cycle. Quota cache may be unavailable
