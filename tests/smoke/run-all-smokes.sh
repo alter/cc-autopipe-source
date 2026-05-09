@@ -55,6 +55,7 @@ HOTFIX_SMOKES=(
     lenient-verdict
     phase-done-reopen
     acceptance-fallback
+    sentinel-race
 )
 # v1.3.3 smokes use real CLI commands (no Python heredoc) and live
 # under tests/smoke/v133/test_<name>.sh. Stage names start with `v133-`
