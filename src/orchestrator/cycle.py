@@ -369,6 +369,117 @@ def _network_gate_ok(project_path: Path, s: state.State) -> bool:
     return False
 
 
+def _post_cycle_delta_scan(
+    project_path: Path,
+    pre_open_vec_long: list[backlog_lib.BacklogItem],
+) -> None:
+    """v1.3.10 POST-CYCLE-DELTA-SCAN: validate vec_long_* tasks that were
+    CLOSED in this cycle but weren't in the pre-cycle snapshot.
+
+    AI-trade Phase 2 production observed Claude regularly creating
+    meta-tasks (vec_long_phase8_summary, vec_long_production_script, …)
+    mid-cycle and closing them with PROMOTION reports same cycle. The
+    pre-cycle snapshot misses them entirely → ~30 promotions silently
+    dropped before this fix.
+
+    Idempotency: pre_open_vec_long IDs are excluded so we don't
+    double-emit `promotion_validated_attempt` for tasks the pre-cycle
+    loop already handled.
+
+    Telemetry-only: any exception is logged via `_log` and swallowed —
+    a delta-scan crash must not take the cycle down.
+    """
+    try:
+        bl_items_post = backlog_lib.parse_all_tasks(
+            project_path / "backlog.md"
+        )
+        pre_ids = {pi.id for pi in pre_open_vec_long}
+        delta_closed_vec_long = [
+            bl for bl in bl_items_post
+            if bl.status == "x"
+            and bl.id.startswith("vec_long_")
+            and bl.task_type == "implement"
+            and bl.id not in pre_ids
+        ]
+        for delta_item in delta_closed_vec_long:
+            p_path = promotion_lib.promotion_path(
+                project_path, delta_item.id
+            )
+            verdict = promotion_lib.parse_verdict(p_path)
+            if verdict == "PROMOTED":
+                state.log_event(
+                    project_path,
+                    "promotion_validated_attempt",
+                    task_id=delta_item.id,
+                    origin="post_cycle_delta",
+                )
+                ok, missing = promotion_lib.validate_v2_sections(
+                    p_path, task_id=delta_item.id
+                )
+                state.log_event(
+                    project_path,
+                    "promotion_v2_sections_check",
+                    task_id=delta_item.id,
+                    all_present=ok,
+                    missing=",".join(missing),
+                    strict=promotion_lib.requires_full_v2_validation(
+                        delta_item.id
+                    ),
+                    origin="post_cycle_delta",
+                )
+                if ok:
+                    metrics = promotion_lib.parse_metrics(p_path)
+                    promotion_lib.on_promotion_success(
+                        project_path, delta_item, metrics
+                    )
+                    state.log_event(
+                        project_path,
+                        "promotion_validated",
+                        task_id=delta_item.id,
+                        origin="post_cycle_delta",
+                        **{
+                            k: v
+                            for k, v in metrics.items()
+                            if v is not None
+                        },
+                    )
+                else:
+                    promotion_lib.quarantine_invalid(
+                        project_path, delta_item, missing
+                    )
+            elif verdict == "REJECTED":
+                state.log_event(
+                    project_path,
+                    "promotion_rejected",
+                    task_id=delta_item.id,
+                    origin="post_cycle_delta",
+                )
+            elif verdict == "CONDITIONAL":
+                state.log_event(
+                    project_path,
+                    "promotion_conditional",
+                    task_id=delta_item.id,
+                    origin="post_cycle_delta",
+                )
+            else:
+                state.log_event(
+                    project_path,
+                    "promotion_verdict_unrecognized",
+                    task_id=delta_item.id,
+                    origin="post_cycle_delta",
+                )
+                state.log_event(
+                    project_path,
+                    "promotion_verdict_missing",
+                    task_id=delta_item.id,
+                    origin="post_cycle_delta",
+                )
+    except Exception as exc:  # noqa: BLE001 — telemetry must not crash
+        _log(
+            f"{project_path.name}: post-cycle delta scan error: {exc!r}"
+        )
+
+
 def process_project(project_path: Path) -> str:
     """Run one cycle for a single project."""
     if not project_path.exists():
@@ -680,6 +791,8 @@ def process_project(project_path: Path) -> str:
                         )
             except Exception as exc:  # noqa: BLE001 — telemetry must not crash
                 _log(f"{project_path.name}: promotion validation error: {exc!r}")
+
+        _post_cycle_delta_scan(project_path, pre_open_vec_long)
 
         # v1.2 Bug D: task_switched event when current_task.id changes
         # cycle-over-cycle. None → non-None is task_started; non-None →
