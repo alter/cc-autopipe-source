@@ -38,6 +38,7 @@ Project lifecycle:
   tail                         Follow aggregate.jsonl                  [stage F]
   doctor                       Verify prerequisites and config         [stage F]
   health [--24h] [--json]      Show recent health metrics              [v1.3]
+  snapshot [--project DIR]     One-shot universal health snapshot      [v1.3.7]
 
 Helpers (called from inside Claude sessions):
   checkpoint <text>            Save .cc-autopipe/checkpoint.md         [stage F]
@@ -120,6 +121,9 @@ case "$CMD" in
         ;;
     smoke)
         exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-smoke" "$@"
+        ;;
+    snapshot)
+        exec bash "$CC_AUTOPIPE_HOME/helpers/cc-autopipe-snapshot" "$@"
         ;;
     install-systemd|uninstall-systemd|install-launchd|uninstall-launchd)
         exec python3 "$CC_AUTOPIPE_HOME/cli/service.py" "$CMD" "$@"

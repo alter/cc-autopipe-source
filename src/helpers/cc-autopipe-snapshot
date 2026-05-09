@@ -1,0 +1,311 @@
+#!/bin/bash
+# cc-autopipe-snapshot — one-shot health snapshot for any cc-autopipe project.
+#
+# Universal sections only — all derived from engine state. Project-specific
+# extensions (research artefacts, custom dashboards, domain metrics) go in
+# `<project>/.cc-autopipe/snapshot-extra.sh` which this helper sources at the
+# end if present and executable.
+#
+# Usage:
+#   cc-autopipe snapshot                       # snapshot of cwd
+#   cc-autopipe snapshot --project /path/...   # explicit project
+#   cc-autopipe snapshot --since '24 hours ago'
+#   cc-autopipe snapshot --events 30
+#
+# Exit codes:
+#   0 — snapshot rendered (some sections may be empty)
+#   1 — project is not initialised (no .cc-autopipe/)
+
+set -u
+
+PROJECT="$(pwd)"
+SINCE="6 hours ago"
+LIMIT_EVENTS=15
+LIMIT_TIMELINE=25
+LIMIT_ERRORS=15
+
+usage() {
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --project)  PROJECT=$2;       shift 2 ;;
+        --since)    SINCE=$2;         shift 2 ;;
+        --events)   LIMIT_EVENTS=$2;  shift 2 ;;
+        --timeline) LIMIT_TIMELINE=$2; shift 2 ;;
+        --errors)   LIMIT_ERRORS=$2;  shift 2 ;;
+        -h|--help)  usage; exit 0 ;;
+        *)          echo "cc-autopipe-snapshot: unknown arg: $1" >&2; usage >&2; exit 64 ;;
+    esac
+done
+
+if [ ! -d "$PROJECT" ]; then
+    echo "cc-autopipe-snapshot: $PROJECT does not exist" >&2
+    exit 1
+fi
+PROJECT=$(cd "$PROJECT" && pwd)
+CCA="$PROJECT/.cc-autopipe"
+STATE="$CCA/state.json"
+USER_HOME="${CC_AUTOPIPE_USER_HOME:-$HOME/.cc-autopipe}"
+AGG="$USER_HOME/log/aggregate.jsonl"
+STDERR_LOG="$USER_HOME/log/orchestrator-stderr.log"
+STDOUT_LOG="$USER_HOME/log/orchestrator-stdout.log"
+
+if [ ! -d "$CCA" ]; then
+    echo "cc-autopipe-snapshot: $PROJECT is not initialised (no .cc-autopipe/)." >&2
+    echo "Run 'cc-autopipe init' first." >&2
+    exit 1
+fi
+
+# Engine convention (lib/promotion.py:_resolve_backlog): backlog.md at project
+# root takes priority over .cc-autopipe/backlog.md. Mirror that here.
+BACKLOG=""
+if   [ -f "$PROJECT/backlog.md" ]; then BACKLOG="$PROJECT/backlog.md"
+elif [ -f "$CCA/backlog.md"     ]; then BACKLOG="$CCA/backlog.md"
+fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+hr()   { printf '═%.0s' $(seq 1 68); printf '\n'; }
+section() { echo; hr; printf '  %s\n' "$1"; hr; }
+
+section "1. STATUS  (cc-autopipe status)"
+cc-autopipe status 2>&1 || echo "  (cc-autopipe status failed — engine not on PATH?)"
+
+section "2. CURRENT TASK  ($CCA/CURRENT_TASK.md)"
+if [ -f "$CCA/CURRENT_TASK.md" ]; then
+    cat "$CCA/CURRENT_TASK.md"
+else
+    echo "  (no CURRENT_TASK.md — Claude has not started a task yet)"
+fi
+
+section "3. PHASE STATE  ($STATE)"
+if [ ! -f "$STATE" ]; then
+    echo "  state.json missing — run 'cc-autopipe init' or 'cc-autopipe run . --once'"
+elif ! have jq; then
+    echo "  jq not on PATH — install jq for richer phase output"
+    cat "$STATE"
+else
+    PHASE=$(jq -r .phase "$STATE")
+    echo "phase: $PHASE"
+    case "$PHASE" in
+        active)
+            echo "  task:        $(jq -r '.current_task.id // "<none>"' "$STATE") | stage: $(jq -r '.current_task.stage // "<none>"' "$STATE")"
+            echo "  iteration:   $(jq -r '.iteration // 0' "$STATE")  consec_fail: $(jq -r '.consecutive_failures // 0' "$STATE")"
+            echo "  last cycle:  $(jq -r '.last_cycle_started_at // "<never>"' "$STATE")"
+            echo "  last activity: $(jq -r '.last_activity_at // "<unknown>"' "$STATE")"
+            ;;
+        detached)
+            STARTED=$(jq -r '.detached.started_at // ""' "$STATE")
+            REASON=$( jq -r '.detached.reason     // ""' "$STATE")
+            MAXWAIT=$(jq -r '.detached.max_wait_sec // 0' "$STATE")
+            CHECKS=$( jq -r '.detached.checks_count // 0' "$STATE")
+            LAST_CHK=$(jq -r '.detached.last_check_at // ""' "$STATE")
+            echo "  reason:    $REASON"
+            echo "  started:   $STARTED"
+            if [ -n "$STARTED" ] && have date && have awk; then
+                NOW_E=$(date -u +%s)
+                ST_E=$(date -u -d "$STARTED" +%s 2>/dev/null || echo "$NOW_E")
+                ELAPSED=$(( NOW_E - ST_E ))
+                REMAIN=$(( MAXWAIT - ELAPSED ))
+                printf '             (%.1fh ago)  remaining: %.1fh (max=%ds)\n' \
+                    "$(awk "BEGIN{print $ELAPSED/3600}")" \
+                    "$(awk "BEGIN{print $REMAIN/3600}")"  "$MAXWAIT"
+            fi
+            echo "  checks:    $CHECKS done, last @ $LAST_CHK"
+            ;;
+        paused)
+            echo "  reason:    $(jq -r '.paused.reason    // "<none>"' "$STATE")"
+            echo "  resume_at: $(jq -r '.paused.resume_at  // "<none>"' "$STATE")"
+            ;;
+        failed)
+            echo "  recovery_attempts:        $(jq -r '.recovery_attempts // 0' "$STATE")"
+            echo "  meta_reflect_pending:     $(jq -r '.meta_reflect_pending // false' "$STATE")"
+            echo "  knowledge_update_pending: $(jq -r '.knowledge_update_pending // false' "$STATE")"
+            echo "  See: $CCA/HUMAN_NEEDED.md"
+            ;;
+        done)
+            echo "  PRD complete; engine has stopped touching this project."
+            echo "  Reopen by editing prd.md (uncheck items) or running 'cc-autopipe resume'."
+            ;;
+        *)
+            echo "  (unknown phase: $PHASE)"
+            ;;
+    esac
+fi
+
+section "4. STATE FLAGS (sanity)"
+if [ -f "$STATE" ]; then
+python3 - "$STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+keys = [
+    'phase', 'iteration', 'consecutive_in_progress', 'consecutive_failures',
+    'recovery_attempts', 'prd_complete', 'research_mode_active',
+    'research_plan_required', 'meta_reflect_pending', 'knowledge_update_pending',
+    'auto_recovery_attempted', 'knowledge_baseline_mtime',
+    'last_activity_at', 'cycle_backlog_x_count_at_start',
+]
+for k in keys:
+    v = s.get(k, '<absent>')
+    print(f'  {k:32s} = {v}')
+ct = s.get('current_task')
+print(f'  current_task                     = {ct}')
+PY
+else
+    echo "  state.json missing"
+fi
+
+section "5. CYCLE TIMELINE  (last events, since: $SINCE)"
+TIMELINE_PATTERN='cycle_(start|end)|iteration=|task_(picked|switched|completed)|promotion_|leaderboard_|research_task_|ablation_|phase_'
+TIMELINE_FOUND=0
+if have journalctl; then
+    JOUT=$(journalctl -u cc-autopipe.service --since "$SINCE" --no-pager 2>/dev/null \
+           | grep -E "$TIMELINE_PATTERN" | tail -"$LIMIT_TIMELINE")
+    if [ -n "$JOUT" ]; then
+        echo "$JOUT"
+        TIMELINE_FOUND=1
+    fi
+fi
+if [ "$TIMELINE_FOUND" -eq 0 ] && [ -f "$STDERR_LOG" ]; then
+    SOUT=$(grep -E "$TIMELINE_PATTERN" "$STDERR_LOG" 2>/dev/null | tail -"$LIMIT_TIMELINE")
+    if [ -n "$SOUT" ]; then
+        echo "(from $STDERR_LOG)"
+        echo "$SOUT"
+        TIMELINE_FOUND=1
+    fi
+fi
+if [ "$TIMELINE_FOUND" -eq 0 ] && [ -f "$AGG" ] && have jq; then
+    PROJ_NAME=$(basename "$PROJECT")
+    JOUT=$(grep -E '"event":"(cycle_(start|end)|task_(picked|switched|completed)|promotion_|leaderboard_)' "$AGG" 2>/dev/null \
+           | grep "\"$PROJ_NAME\"" | tail -"$LIMIT_TIMELINE" \
+           | jq -c '{ts, event, task_id, iteration, phase}' 2>/dev/null)
+    if [ -n "$JOUT" ]; then
+        echo "(from $AGG)"
+        echo "$JOUT"
+        TIMELINE_FOUND=1
+    fi
+fi
+[ "$TIMELINE_FOUND" -eq 0 ] && echo "  (no cycle events found in any log source)"
+
+section "6. ERRORS / TRACEBACKS  (since: $SINCE)"
+ERR_PATTERN='error|traceback|fatal|exception|429|FAIL|stuck_failed'
+ERR_FOUND=0
+if have journalctl; then
+    EOUT=$(journalctl -u cc-autopipe.service --since "$SINCE" --no-pager 2>/dev/null \
+           | grep -iE "$ERR_PATTERN" | tail -"$LIMIT_ERRORS")
+    if [ -n "$EOUT" ]; then
+        echo "$EOUT"
+        ERR_FOUND=1
+    fi
+fi
+if [ "$ERR_FOUND" -eq 0 ] && [ -f "$STDERR_LOG" ]; then
+    EOUT=$(tail -2000 "$STDERR_LOG" | grep -iE "$ERR_PATTERN" | tail -"$LIMIT_ERRORS")
+    if [ -n "$EOUT" ]; then
+        echo "(from $STDERR_LOG, last 2000 lines)"
+        echo "$EOUT"
+        ERR_FOUND=1
+    fi
+fi
+[ "$ERR_FOUND" -eq 0 ] && echo "  (clean)"
+
+section "7. LAST $LIMIT_EVENTS EVENTS  ($AGG)"
+if [ -f "$AGG" ]; then
+    if have jq; then
+        tail -"$LIMIT_EVENTS" "$AGG" \
+            | jq -c '{ts, project, event, task_id, reason, missing}' 2>/dev/null \
+            || tail -"$LIMIT_EVENTS" "$AGG"
+    else
+        tail -"$LIMIT_EVENTS" "$AGG"
+    fi
+else
+    echo "  $AGG not found — orchestrator hasn't started a cycle yet."
+fi
+
+section "8. BACKLOG"
+if [ -n "$BACKLOG" ]; then
+    OPEN=$(grep -c '^- \[ \]' "$BACKLOG" 2>/dev/null || echo 0)
+    INPRG=$(grep -c '^- \[~' "$BACKLOG" 2>/dev/null || echo 0)
+    DONE=$( grep -c '^- \[x\]' "$BACKLOG" 2>/dev/null || echo 0)
+    echo "  source:      $BACKLOG"
+    echo "  open:        $OPEN"
+    echo "  in-progress: $INPRG"
+    echo "  done:        $DONE"
+    if [ "$DONE" -gt 0 ]; then
+        echo "  Last 5 closed:"
+        grep '^- \[x\]' "$BACKLOG" | tail -5 | sed 's/^/    /'
+    fi
+else
+    echo "  (no backlog.md found at project root or $CCA/)"
+    echo "  Backlog is optional — projects without one drive work via prd.md only."
+fi
+
+section "9. DETACHED OPERATIONS"
+if [ -d "$CCA/detached" ] && [ -n "$(ls -A "$CCA/detached" 2>/dev/null)" ]; then
+    ls -lat "$CCA/detached" | head -10 | sed 's/^/  /'
+else
+    echo "  (no detached operations)"
+fi
+echo "  Live processes (claude / docker compose / common runners):"
+PS_OUT=$(ps -ef 2>/dev/null \
+    | grep -E 'claude --resume|docker compose|pytest|npm run|cargo|gradle|train|backtest' \
+    | grep -v grep | head -5 \
+    | awk '{
+        cmd=""; for(i=8;i<=NF;i++) cmd=cmd $i " ";
+        if (length(cmd) > 120) cmd=substr(cmd,1,117) "...";
+        printf "    %-7s %-7s %-7s %s\n", $2, $3, $7, cmd
+      }')
+[ -z "$PS_OUT" ] && echo "    (none)" || echo "$PS_OUT"
+
+section "10. KNOWLEDGE / FINDINGS"
+KN="$CCA/knowledge.md"
+FI="$CCA/findings_index.md"
+if [ -f "$KN" ]; then
+    echo "  knowledge.md:      $(wc -l < "$KN") lines, mtime: $(stat -c %y "$KN" 2>/dev/null || stat -f %Sm "$KN")"
+    echo "  knowledge.md tail (last 10 lines):"
+    tail -10 "$KN" | sed 's/^/    /'
+else
+    echo "  knowledge.md:      MISSING (cc-autopipe init seeds the v1.3.3 header)"
+fi
+if [ -f "$FI" ]; then
+    echo "  findings_index.md: $(wc -l < "$FI") lines, mtime: $(stat -c %y "$FI" 2>/dev/null || stat -f %Sm "$FI")"
+else
+    echo "  findings_index.md: not yet created (engine writes it as Claude logs findings)"
+fi
+
+section "11. QUOTA / HEALTH  (cc-autopipe health --24h)"
+cc-autopipe health --24h 2>&1 | sed 's/^/  /' \
+    || echo "  (cc-autopipe health failed — quota records not yet written)"
+
+section "12. ENGINE STDERR LOG  ($STDERR_LOG)"
+if [ -f "$STDERR_LOG" ]; then
+    SIZE=$(stat -c %s "$STDERR_LOG" 2>/dev/null || stat -f %z "$STDERR_LOG")
+    MTIME=$(stat -c %y "$STDERR_LOG" 2>/dev/null || stat -f %Sm "$STDERR_LOG")
+    echo "  size:  $SIZE bytes"
+    echo "  mtime: $MTIME"
+    echo "  Last 5 lines:"
+    tail -5 "$STDERR_LOG" | sed 's/^/    /'
+    echo "  Recent errors (if any):"
+    ERR=$(tail -500 "$STDERR_LOG" | grep -iE 'error|trace|fatal|exception' | tail -5)
+    [ -z "$ERR" ] && echo "    (clean)" || echo "$ERR" | sed 's/^/    /'
+else
+    echo "  $STDERR_LOG not found (orchestrator was started with --foreground or hasn't run)"
+fi
+
+# --- Project-specific extension ----------------------------------------------
+EXTRA="$CCA/snapshot-extra.sh"
+if [ -x "$EXTRA" ]; then
+    section "13. PROJECT EXTRAS  ($EXTRA)"
+    PROJECT="$PROJECT" CCA="$CCA" STATE="$STATE" USER_HOME="$USER_HOME" \
+    AGG="$AGG" STDERR_LOG="$STDERR_LOG" SINCE="$SINCE" \
+        bash "$EXTRA" || echo "  (snapshot-extra.sh exited non-zero)"
+elif [ -f "$EXTRA" ]; then
+    section "13. PROJECT EXTRAS"
+    echo "  $EXTRA exists but is not executable. Run:"
+    echo "    chmod +x $EXTRA"
+fi
+
+echo
+hr
+printf '  END  project=%s  user_home=%s\n' "$PROJECT" "$USER_HOME"
+hr
