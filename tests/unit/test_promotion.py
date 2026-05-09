@@ -304,3 +304,107 @@ def test_parse_verdict_real_ai_trade_seed_var_acceptance_only(tmp_path: Path) ->
         pytest.skip("AI-trade reference fixture not present")
     p = _write_promo(tmp_path, "long_baseline_seed_var", src.read_text(encoding="utf-8"))
     assert promotion.parse_verdict(p) == "PROMOTED"
+
+
+# ---------------------------------------------------------------------------
+# v1.3.8 PROMOTION-HOOK-DIAGNOSTICS — prefix-based v2 validation gate
+# ---------------------------------------------------------------------------
+
+
+def test_requires_full_v2_validation_strategy_synth_prefix() -> None:
+    """vec_long_synth_* is a strategy candidate — requires the full v2.0
+    PROMOTION section list (regime parity, leakage, walk-forward, etc.)."""
+    assert promotion.requires_full_v2_validation("vec_long_synth_v1") is True
+    assert promotion.requires_full_v2_validation("vec_dr_synth_baseline") is True
+
+
+def test_requires_full_v2_validation_measurement_task_relaxed() -> None:
+    """vec_long_quantile is a measurement / distribution-summary task —
+    legitimately closes with an Acceptance section + verdict, no
+    strategy backtest. Strict v2.0 sections don't apply."""
+    assert promotion.requires_full_v2_validation("vec_long_quantile") is False
+    assert (
+        promotion.requires_full_v2_validation("vec_long_stat_dm_test") is False
+    )
+    assert (
+        promotion.requires_full_v2_validation("vec_long_features_v1") is False
+    )
+    assert (
+        promotion.requires_full_v2_validation("vec_dr_regime_classifier_check")
+        is False
+    )
+
+
+def test_requires_full_v2_validation_blank_or_none_is_false() -> None:
+    """Defensive: blank task_id falls through to relaxed (we don't have
+    enough info to apply the strict gate)."""
+    assert promotion.requires_full_v2_validation("") is False
+    assert promotion.requires_full_v2_validation(None) is False
+
+
+def test_requires_full_v2_validation_other_strategy_prefixes() -> None:
+    """Pin all 9 strategy prefixes so a future refactor doesn't silently
+    drop one and let strategy candidates skip strict validation."""
+    for pfx in (
+        "vec_long_synth_v1",
+        "vec_dr_synth_baseline",
+        "vec_long_pack_a",
+        "vec_long_moe_router",
+        "vec_long_cascade_l1",
+        "vec_long_ensemble_v1",
+        "vec_long_committee_voting",
+        "vec_long_stacking_meta",
+        "vec_long_hybrid_arch",
+    ):
+        assert promotion.requires_full_v2_validation(pfx) is True, pfx
+
+
+def test_validate_v2_sections_measurement_task_relaxed_to_true(
+    tmp_path: Path,
+) -> None:
+    """A measurement task PROMOTION with no strict sections passes
+    validate_v2_sections when task_id is supplied. v1.3.5 strict
+    behaviour is preserved when task_id is None (backward compat)."""
+    body = (
+        "# CAND vec_long_quantile — PROMOTION\n\n"
+        "## Quantile Distribution Summary\n\n"
+        "## Trading Strategy Results\n\n"
+        "## Verdict\n\n### PROMOTED — pipeline-ready\n"
+    )
+    p = _write_promo(tmp_path, "long_quantile", body)
+    # With task_id → relaxed (measurement task).
+    ok, missing = promotion.validate_v2_sections(p, task_id="vec_long_quantile")
+    assert ok is True
+    assert missing == []
+    # Without task_id → v1.3.5 strict (5 sections required, all missing).
+    ok2, missing2 = promotion.validate_v2_sections(p)
+    assert ok2 is False
+    assert len(missing2) == 5
+
+
+def test_validate_v2_sections_strategy_task_strict_gate(tmp_path: Path) -> None:
+    """A strategy task (vec_long_synth_v1) with NONE of the 5 required
+    sections fails validation even when task_id is supplied — strict
+    gate stays strict for strategy candidates."""
+    body = (
+        "# CAND vec_long_synth_v1 — PROMOTION\n\n"
+        "## Verdict\n\n### PROMOTED\n"
+    )
+    p = _write_promo(tmp_path, "long_synth_v1", body)
+    ok, missing = promotion.validate_v2_sections(p, task_id="vec_long_synth_v1")
+    assert ok is False
+    assert len(missing) == 5
+    # All 5 expected sections still listed by name.
+    for sec in promotion.REQUIRED_V2_SECTIONS:
+        assert sec in missing
+
+
+def test_validate_v2_sections_strategy_task_with_full_sections_passes(
+    tmp_path: Path,
+) -> None:
+    """Strategy task with all 5 v2.0 sections + a Verdict still passes,
+    same as v1.3.5."""
+    p = _write_promo(tmp_path, "long_synth_v1", PROMOTED_FULL)
+    ok, missing = promotion.validate_v2_sections(p, task_id="vec_long_synth_v1")
+    assert ok is True
+    assert missing == []
