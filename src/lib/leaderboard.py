@@ -51,20 +51,41 @@ LEADERBOARD_SEP = (
 
 
 def _composite(metrics: dict[str, Any]) -> float:
-    """0.5*sum_fixed_norm + 0.3*(1-regime_parity) + 0.2*(max_dd / -100).
+    """Phase-detecting composite score.
 
-    sum_fixed normalized by /1000 (so +500% -> 0.5).
-    regime_parity in [0, 1], smaller=better when read as std/mean, so
-        we use 1 - parity as the contribution. Missing → 0.
-    max_dd: less negative is better, so /-100 flips sign so a -8.2% DD
-        contributes +0.082.
-    Missing metrics are treated as 0 (penalty for incomplete reports).
+    Phase 2 (long-only strategy — sum_fixed non-None):
+        0.5 * (sum_fixed / 1000)
+        + 0.3 * (1 - regime_parity)
+        + 0.2 * (max_dd / -100)
+        Missing Phase-2 metrics within this branch → 0 contribution
+        (penalty for incomplete reports).
+
+    Phase 3 (v1.3.13 — ML classification reports, sum_fixed absent):
+        0.6 * auc_adj + 0.3 * sharpe_adj + 0.1 * dm_adj
+        auc_adj    = max(0, (auc - 0.5) * 2)          # 0.5 → 0, 1.0 → 1
+        sharpe_adj = clamp(sharpe / 3.0, 0, 1)         # 3.0+ → 1
+        dm_adj     = max(0, 1 - dm_p_value * 10)       # p<0.1 → positive
+
+    Phase detection: sum_fixed non-None → Phase 2. Otherwise → Phase 3.
+    Phase 3 reports legitimately omit sum_fixed / regime_parity / max_dd
+    (no long-only PnL series); without phase detection their composite
+    collapses to 0.0 and they are evicted to ARCHIVE despite valid AUC
+    + Sharpe + DM evidence.
     """
-    sf = (metrics.get("sum_fixed") or 0) / 1000.0
-    rp_raw = metrics.get("regime_parity")
-    rp = (1.0 - rp_raw) if rp_raw is not None else 0.0
-    dd = (metrics.get("max_dd") or 0) / -100.0
-    return round(0.5 * sf + 0.3 * rp + 0.2 * dd, 4)
+    if metrics.get("sum_fixed") is not None:
+        sf = metrics["sum_fixed"] / 1000.0
+        rp_raw = metrics.get("regime_parity")
+        rp = (1.0 - rp_raw) if rp_raw is not None else 0.0
+        dd = (metrics.get("max_dd") or 0) / -100.0
+        return round(0.5 * sf + 0.3 * rp + 0.2 * dd, 4)
+    # Phase 3 path.
+    auc = metrics.get("auc")
+    sharpe = metrics.get("sharpe")
+    dm_p = metrics.get("dm_p_value")
+    auc_adj = max(0.0, (auc - 0.5) * 2.0) if auc is not None else 0.0
+    sharpe_adj = max(0.0, min((sharpe or 0) / 3.0, 1.0))
+    dm_adj = max(0.0, 1.0 - dm_p * 10.0) if dm_p is not None else 0.0
+    return round(0.6 * auc_adj + 0.3 * sharpe_adj + 0.1 * dm_adj, 4)
 
 
 def elo_after_match(
