@@ -1,8 +1,55 @@
 # Build Status
 
-**Updated:** 2026-05-10T00:00:00Z
+**Updated:** 2026-05-10T18:48:00Z
 **Current branch:** main
-**Current stage:** **v1.3.11 COMPLETE.** One group
+**Current stage:** **v1.3.12 HOTFIX COMPLETE.** Two groups
+(PROMOTION-TASK-PREFIX: new `_read_config_promotion` +
+`PROMOTION_DEFAULTS` in `src/orchestrator/prompt.py` reading the
+`promotion: task_prefix:` block from `.cc-autopipe/config.yaml` via
+the existing `_read_yaml_top_block`. `src/orchestrator/cycle.py`
+reads the prefix once per cycle and replaces the hardcoded
+`startswith("vec_long_")` calls with `startswith(task_prefix)` in
+both the pre-cycle snapshot and `_post_cycle_delta_scan`; renamed
+local `pre_open_vec_long` → `pre_open_promo_tasks`; default arg on
+the helper preserves the legacy 2-arg call shape. Template
+`config.yaml` gains a `promotion:` block defaulting to `vec_long_`
+so Phase 1+2 projects validate unchanged; Phase 3 sets
+`task_prefix: "vec_p3_"` to enable PROMOTION.md validation for
+`vec_p3_*` tasks. Empirical driver: AI-trade Phase 3 launched
+2026-05-10 with `vec_p3_*` task IDs — every `[x]` task with a
+PROMOTION.md was silently skipped because all three `startswith`
+guards rejected the prefix; aggregate.jsonl had **0**
+`promotion_validated_attempt` events for `vec_p3_*`. Hotfix is
+fully backward-compatible: missing block → `vec_long_` default.
+VERIFY-MALFORMED-BACKOFF: new `consecutive_malformed: int = 0`
+field on `State`, schema bumped 6→7. New `inc_malformed` /
+`reset_malformed` functions + `inc-malformed` / `reset-malformed`
+CLI subcommands on `state.py`. `src/hooks/stop.sh` malformed branch
+now calls `inc-malformed` instead of `inc-failures` so a buggy
+verify.sh (canonical `|| echo 0` double-zero pattern) never burns
+the auto-escalation budget. After 3 consecutive malformed events,
+`HUMAN_NEEDED.md` is written with the specific `|| echo 0` →
+`|| true` fix recipe. Passing verify resets `consecutive_malformed`
+but NOT `consecutive_failures` (and never auto-deletes
+HUMAN_NEEDED.md). Empirical driver: pre-template projects with the
+double-zero bug were hitting `verify_malformed` every cycle,
+escalating to Opus, then `phase=failed` for a problem entirely in
+their bash script. 847 → **857 tests passing** (+10: 5 prefix
+integration cases + 5 malformed backoff cases). 1 new smoke
+(`run-malformed-backoff-smoke.sh`) green; existing promotion
+smokes (`promotion-validation`, `mid-cycle-add-close`) still
+green. The pre-existing `test_three_consecutive_failures_transition_to_failed`
+integration test was updated: it previously relied on
+`verify_malformed` driving `consecutive_failures` (the exact
+behaviour this hotfix removes), so it now exercises a genuine
+`passed:false` path and accepts both `escalated_to_opus` and
+`escalation_skipped` as valid routes to `phase=failed`. Two
+schema-version regression tests in `test_state_v134.py` /
+`test_state_v137.py` switched from `== 6` to `>= 6` /
+`== state.SCHEMA_VERSION` so future bumps don't require touching
+them.
+
+**Earlier stage:** **v1.3.11 COMPLETE.** One group
 (CC-AUTOPIPE-QUOTA-CMD: new `src/cli/quota.py` + dispatcher wire +
 7 integration tests). `cc-autopipe quota` — human-readable default
 (`5h: 47% (resets ...)`, `7d: 12% (resets ...)`, `cache age: Ns`),
