@@ -39,6 +39,15 @@ IMPROVER_DEFAULTS: dict[str, object] = {
     "trigger_every_n_successes": 5,
 }
 
+# v1.3.12 PROMOTION-TASK-PREFIX defaults. The default `vec_long_` matches
+# Phase 1 / Phase 2 of the AI-trade backlog so projects predating this
+# block keep validating PROMOTION.md the same way. Phase 3 sets
+# `task_prefix: "vec_p3_"` in its own config to enable validation for
+# `vec_p3_*` tasks.
+PROMOTION_DEFAULTS: dict[str, object] = {
+    "task_prefix": "vec_long_",
+}
+
 # v1.2 Bug B in_progress defaults. SPEC-v1.2.md "Engine config":
 #   in_progress:
 #     max_in_progress_cycles: 12
@@ -307,6 +316,16 @@ def _read_config_improver(project_path: Path) -> dict[str, object]:
     """Parse the `improver:` block from config.yaml (Stage N).
     Defaults apply when absent."""
     return _read_yaml_top_block(project_path, "improver", IMPROVER_DEFAULTS)
+
+
+def _read_config_promotion(project_path: Path) -> dict[str, object]:
+    """Parse the `promotion:` block from config.yaml (v1.3.12).
+
+    Returns merged dict (defaults + overrides). Missing block → defaults.
+    The `task_prefix` key is the backlog ID prefix used as the promotion
+    filter (e.g. "vec_long_" for Phase 1+2, "vec_p3_" for Phase 3).
+    """
+    return _read_yaml_top_block(project_path, "promotion", PROMOTION_DEFAULTS)
 
 
 def _agents_json_path(project_path: Path) -> Path | None:
