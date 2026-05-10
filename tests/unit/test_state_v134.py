@@ -26,8 +26,11 @@ def _init_project(tmp_path: Path) -> Path:
     return project
 
 
-def test_schema_version_is_6() -> None:
-    assert state.SCHEMA_VERSION == 6
+def test_schema_version_is_at_least_6() -> None:
+    # v1.3.4 introduced schema 6; later bumps (e.g. v1.3.12 → 7) keep the
+    # transient fields intact, so this test pins the v1.3.4 invariant
+    # without locking the version to a specific number.
+    assert state.SCHEMA_VERSION >= 6
 
 
 def test_fresh_state_defaults_transient_fields() -> None:
@@ -47,10 +50,11 @@ def test_transient_fields_round_trip(tmp_path: Path) -> None:
     assert s2.last_transient_at == "2026-05-06T10:00:00Z"
 
 
-def test_v5_state_file_migrates_to_v6_with_defaults(tmp_path: Path) -> None:
+def test_v5_state_file_migrates_with_defaults(tmp_path: Path) -> None:
     """v1.3.3 produced schema_version=5 with the v1.3.3 fields but no
-    transient counter. Engine v1.3.4 must read it cleanly, supplying
-    defaults; the next write persists schema_version=6."""
+    transient counter. The engine must read it cleanly, supplying
+    defaults; the next write persists the current SCHEMA_VERSION
+    (>= 6 — v1.3.12 bumped to 7)."""
     project = _init_project(tmp_path)
     state_path = project / ".cc-autopipe" / "state.json"
     legacy = {
@@ -75,16 +79,16 @@ def test_v5_state_file_migrates_to_v6_with_defaults(tmp_path: Path) -> None:
 
     s = state.read(project)
     # Migrated up: schema bump on read, defaults supplied for new fields.
-    assert s.schema_version == 6
+    assert s.schema_version == state.SCHEMA_VERSION
     assert s.consecutive_transient_failures == 0
     assert s.last_transient_at is None
     # Pre-existing fields preserved verbatim.
     assert s.iteration == 7
     assert s.last_verdict_task_id == "T-001"
 
-    # Persist and re-read to verify schema 6 is now on disk.
+    # Persist and re-read to verify the current schema is now on disk.
     state.write(project, s)
     raw = json.loads(state_path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 6
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert raw["consecutive_transient_failures"] == 0
     assert raw["last_transient_at"] is None

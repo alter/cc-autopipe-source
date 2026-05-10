@@ -27,9 +27,12 @@ def _init_project(tmp_path: Path) -> Path:
     return project
 
 
-def test_schema_version_unchanged_at_6() -> None:
-    """v1.3.7 is purely additive on the v1.3.4 schema bump."""
-    assert state.SCHEMA_VERSION == 6
+def test_schema_version_at_least_6_after_v137() -> None:
+    """v1.3.7 was purely additive on the v1.3.4 schema bump (no version
+    change). Later hotfixes (e.g. v1.3.12 → 7) can bump again, so this
+    test only pins the floor.
+    """
+    assert state.SCHEMA_VERSION >= 6
 
 
 def test_fresh_state_defaults_cycle_backlog_count_to_none() -> None:
@@ -74,11 +77,12 @@ def test_pre_v137_v6_state_file_migrates_with_default(tmp_path: Path) -> None:
     state_path.write_text(json.dumps(legacy), encoding="utf-8")
 
     s = state.read(project)
-    assert s.schema_version == 6
+    # v1.3.7 read a v6 file; later versions migrate it up to current.
+    assert s.schema_version == state.SCHEMA_VERSION
     assert s.cycle_backlog_x_count_at_start is None
     assert s.iteration == 11
 
     state.write(project, s)
     raw = json.loads(state_path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 6
+    assert raw["schema_version"] == state.SCHEMA_VERSION
     assert raw["cycle_backlog_x_count_at_start"] is None
