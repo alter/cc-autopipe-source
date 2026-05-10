@@ -51,6 +51,22 @@ def test_parse_metrics_sharpe_negative(tmp_path: Path) -> None:
     assert m["sharpe"] == -0.45
 
 
+def test_parse_metrics_bold_wrap_all_three(tmp_path: Path) -> None:
+    """AI-trade Phase 3 canonical format wraps the field name in markdown
+    bold: `**AUC**: 0.873`, `**Sharpe ratio**: 1.45`,
+    `**DM p-value**: 0.031`. All three must extract."""
+    body = (
+        "## Verdict\n\n### PROMOTED\n\n"
+        "**AUC**: 0.873\n"
+        "**Sharpe ratio**: 1.45\n"
+        "**DM p-value**: 0.031\n"
+    )
+    m = promotion.parse_metrics(_write(tmp_path, body))
+    assert m["auc"] == 0.873
+    assert m["sharpe"] == 1.45
+    assert abs(m["dm_p_value"] - 0.031) < 1e-9
+
+
 def test_parse_metrics_phase2_only_leaves_phase3_none(tmp_path: Path) -> None:
     body = (
         "**Verdict: PROMOTED**\n\n"

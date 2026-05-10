@@ -529,8 +529,10 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     if m:
         out["max_dd"] = float(m.group(1))
 
+    # v1.3.13: hyphen + markdown-bold-close support added —
+    # `**DM p-value**: 0.031` is the canonical Phase 3 format.
     m = re.search(
-        r"DM[_\s]?p(?:[_\s]?value)?\s*[:=]?\s*(\d+(?:\.\d+)?)",
+        r"DM[_\s\-]?p(?:[_\s\-]?value)?\**\s*[:=]?\s*(\d+(?:\.\d+)?)",
         text,
         re.IGNORECASE,
     )
@@ -541,21 +543,22 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     if m:
         out["dsr"] = float(m.group(1))
 
-    # v1.3.13 Phase 3 — ROC AUC (inline `AUC: 0.86` or `ROC AUC: 0.86`).
-    # Table-cell form `| AUC | 0.86 |` matches the same pattern: the
-    # post-keyword `[|:=]?` accepts the trailing `|`, and `\s*` swallows
-    # spaces before the value.
+    # v1.3.13 Phase 3 — ROC AUC. Handles inline `AUC: 0.86`,
+    # `ROC AUC: 0.86`, markdown-bold `**AUC**: 0.86`, and table-cell
+    # `| AUC | 0.86 |`. The post-keyword `\**` consumes a trailing
+    # markdown-bold close; `[|:=]?` accepts the table cell separator.
     m = re.search(
-        r"\b(?:ROC[_\s]?)?AUC\b\s*[|:=]?\s*(\d+(?:\.\d+)?)",
+        r"\b(?:ROC[_\s]?)?AUC\b\**\s*[|:=]?\s*(\d+(?:\.\d+)?)",
         text,
         re.IGNORECASE,
     )
     if m:
         out["auc"] = float(m.group(1))
 
-    # v1.3.13 Phase 3 — Sharpe ratio (may be negative).
+    # v1.3.13 Phase 3 — Sharpe ratio (may be negative). Same
+    # markdown-bold-close tolerance as AUC.
     m = re.search(
-        r"\bSharpe(?:[_\s]ratio)?\b\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
+        r"\bSharpe(?:[_\s]ratio)?\b\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
         text,
         re.IGNORECASE,
     )
