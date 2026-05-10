@@ -29,6 +29,7 @@ from orchestrator.prompt import (
     _build_claude_cmd,
     _read_config_auto_escalation,
     _read_config_improver,
+    _read_config_promotion,
 )
 from orchestrator.phase import _maybe_transition_phase, _process_detached
 from orchestrator.recovery import (
@@ -371,10 +372,11 @@ def _network_gate_ok(project_path: Path, s: state.State) -> bool:
 
 def _post_cycle_delta_scan(
     project_path: Path,
-    pre_open_vec_long: list[backlog_lib.BacklogItem],
+    pre_open_promo_tasks: list[backlog_lib.BacklogItem],
+    task_prefix: str = "vec_long_",
 ) -> None:
-    """v1.3.10 POST-CYCLE-DELTA-SCAN: validate vec_long_* tasks that were
-    CLOSED in this cycle but weren't in the pre-cycle snapshot.
+    """v1.3.10 POST-CYCLE-DELTA-SCAN: validate [implement] tasks that
+    were CLOSED in this cycle but weren't in the pre-cycle snapshot.
 
     AI-trade Phase 2 production observed Claude regularly creating
     meta-tasks (vec_long_phase8_summary, vec_long_production_script, …)
@@ -382,7 +384,11 @@ def _post_cycle_delta_scan(
     pre-cycle snapshot misses them entirely → ~30 promotions silently
     dropped before this fix.
 
-    Idempotency: pre_open_vec_long IDs are excluded so we don't
+    v1.3.12 PROMOTION-TASK-PREFIX: `task_prefix` is the backlog ID
+    prefix used as the promotion filter (default `"vec_long_"`, set
+    via the `promotion:` block in config.yaml).
+
+    Idempotency: pre_open_promo_tasks IDs are excluded so we don't
     double-emit `promotion_validated_attempt` for tasks the pre-cycle
     loop already handled.
 
@@ -393,15 +399,15 @@ def _post_cycle_delta_scan(
         bl_items_post = backlog_lib.parse_all_tasks(
             project_path / "backlog.md"
         )
-        pre_ids = {pi.id for pi in pre_open_vec_long}
-        delta_closed_vec_long = [
+        pre_ids = {pi.id for pi in pre_open_promo_tasks}
+        delta_closed_promo_tasks = [
             bl for bl in bl_items_post
             if bl.status == "x"
-            and bl.id.startswith("vec_long_")
+            and bl.id.startswith(task_prefix)
             and bl.task_type == "implement"
             and bl.id not in pre_ids
         ]
-        for delta_item in delta_closed_vec_long:
+        for delta_item in delta_closed_promo_tasks:
             p_path = promotion_lib.promotion_path(
                 project_path, delta_item.id
             )
@@ -515,6 +521,14 @@ def process_project(project_path: Path) -> str:
     heartbeat = locking.HeartbeatThread(project_lock)
     heartbeat.start()
     try:
+        # v1.3.12 PROMOTION-TASK-PREFIX: read the promotion task ID
+        # prefix once per cycle. Default `"vec_long_"` matches Phase 1+2
+        # backlogs; Phase 3 sets `task_prefix: "vec_p3_"` in the
+        # `promotion:` block of `.cc-autopipe/config.yaml`.
+        task_prefix: str = str(
+            _read_config_promotion(project_path).get("task_prefix", "vec_long_")
+        )
+
         # DETACHED handling per SPEC-v1.md §2.1.3. Runs BEFORE quota
         # pre-flight: a detached cycle is a cheap check_cmd, not a claude
         # spawn — no quota burn, so the 7d cap shouldn't gate it.
@@ -633,20 +647,21 @@ def process_project(project_path: Path) -> str:
             project_path
         )
 
-        # v1.3.5 PROMOTION-PARSER: snapshot every open vec_long_*
-        # [implement] task at cycle start. Post-cycle we'll detect
-        # which (if any) transitioned to [x] in this cycle and run
-        # PROMOTION.md validation against them.
-        pre_open_vec_long: list[backlog_lib.BacklogItem] = []
+        # v1.3.5 PROMOTION-PARSER: snapshot every open [implement] task
+        # at cycle start whose ID matches `task_prefix`. Post-cycle we'll
+        # detect which (if any) transitioned to [x] in this cycle and
+        # run PROMOTION.md validation against them. v1.3.12 made the
+        # prefix configurable via the `promotion:` block in config.yaml.
+        pre_open_promo_tasks: list[backlog_lib.BacklogItem] = []
         try:
             for it in backlog_lib.parse_open_tasks(project_path / "backlog.md"):
                 if (
-                    it.id.startswith("vec_long_")
+                    it.id.startswith(task_prefix)
                     and it.task_type == "implement"
                 ):
-                    pre_open_vec_long.append(it)
+                    pre_open_promo_tasks.append(it)
         except Exception:  # noqa: BLE001 — telemetry must not crash
-            pre_open_vec_long = []
+            pre_open_promo_tasks = []
 
         rc, stdout, stderr = _run_claude(project_path, cmd, timeout)
 
@@ -687,12 +702,12 @@ def process_project(project_path: Path) -> str:
                     reason=_research_reason,
                 )
 
-        # v1.3.5 PROMOTION-PARSER: detect vec_long_* tasks that
-        # transitioned to [x] in this cycle. Validate each PROMOTION.md
-        # against the v2.0 section list, fire on_promotion_success on
-        # PROMOTED+complete, quarantine on PROMOTED+missing-sections,
-        # log-only on REJECTED.
-        if pre_open_vec_long:
+        # v1.3.5 PROMOTION-PARSER: detect [implement] tasks (filtered
+        # by task_prefix) that transitioned to [x] in this cycle.
+        # Validate each PROMOTION.md against the v2.0 section list, fire
+        # on_promotion_success on PROMOTED+complete, quarantine on
+        # PROMOTED+missing-sections, log-only on REJECTED.
+        if pre_open_promo_tasks:
             try:
                 bl_items = backlog_lib.parse_all_tasks(
                     project_path / "backlog.md"
@@ -700,7 +715,7 @@ def process_project(project_path: Path) -> str:
                 now_done: dict[str, backlog_lib.BacklogItem] = {
                     bl.id: bl for bl in bl_items if bl.status == "x"
                 }
-                for pre_item in pre_open_vec_long:
+                for pre_item in pre_open_promo_tasks:
                     after = now_done.get(pre_item.id)
                     if after is None:
                         # Task still open or in-progress, no verdict yet.
@@ -792,7 +807,7 @@ def process_project(project_path: Path) -> str:
             except Exception as exc:  # noqa: BLE001 — telemetry must not crash
                 _log(f"{project_path.name}: promotion validation error: {exc!r}")
 
-        _post_cycle_delta_scan(project_path, pre_open_vec_long)
+        _post_cycle_delta_scan(project_path, pre_open_promo_tasks, task_prefix)
 
         # v1.2 Bug D: task_switched event when current_task.id changes
         # cycle-over-cycle. None → non-None is task_started; non-None →
