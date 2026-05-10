@@ -40,6 +40,15 @@ improver:
   enabled: true
   trigger_every_n_successes: 5
 
+# v1.3.12 PROMOTION-TASK-PREFIX: backlog ID prefix the orchestrator uses
+# to locate PROMOTION.md candidates after each cycle. Only [implement]
+# tasks whose ID starts with this prefix are validated. Phase 3 sets
+# this to "vec_p3_"; Phase 1 + 2 projects keep "vec_long_". A project
+# with no PROMOTION-style workflow can leave it untouched (no matching
+# tasks → no validation runs).
+promotion:
+  task_prefix: "vec_long_"
+
 # v1.3.1 DETACH-CONFIG: defaults for cc-autopipe-detach. Resolution
 # chain (highest priority first):
 #   1. CLI arg               --check-every / --max-wait
