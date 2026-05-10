@@ -87,7 +87,13 @@ if ! printf '%s' "$RAW" | jq -e '
     EXTRAS=$(jq -nc --argjson rc "$RC" --arg out "$OUTPUT_TRIM" \
         '{rc: $rc, output: $out}')
     log_failure "verify_malformed" "$EXTRAS"
-    python3 "$STATE_PY" inc-failures "$PROJECT" >/dev/null 2>&1 || true
+    # v1.3.12 VERIFY-MALFORMED-BACKOFF: verify.sh outputting non-JSON is
+    # a bash script bug (typically `|| echo 0` instead of `|| true`),
+    # not a Claude logic failure. Route to a separate counter so the
+    # auto-escalation ladder (Opus + phase=failed) does NOT fire on a
+    # script typo. After 3 consecutive malformed events, state.py
+    # writes HUMAN_NEEDED.md with a specific fix.
+    python3 "$STATE_PY" inc-malformed "$PROJECT" >/dev/null 2>&1 || true
     python3 "$STATE_PY" log-event "$PROJECT" verify_malformed rc="$RC" \
         >/dev/null 2>&1 || true
     exit 0
