@@ -1,8 +1,44 @@
 # Build Status
 
-**Updated:** 2026-05-10T18:48:00Z
+**Updated:** 2026-05-11T03:00:00Z
 **Current branch:** main
-**Current stage:** **v1.3.12 HOTFIX COMPLETE.** Two groups
+**Current stage:** **v1.3.13 HOTFIX COMPLETE.** Two groups
+(NEUTRAL-VERDICT: `"NEUTRAL"` added to `CANONICAL_MAP` (→
+`"CONDITIONAL"`), `VERDICT_KEYWORD_RE` (tier 1),
+`BOLD_METADATA_VERDICT_RE` (tier 4), and `ACCEPTANCE_KEYWORD_RE`
+group-3 in `src/lib/promotion.py`; AI-trade Phase 3 DA-track tasks
+that close with `**Status**: NEUTRAL` now log
+`promotion_conditional` instead of being silently dropped as
+`promotion_verdict_unrecognized`. PHASE3-METRICS: `parse_metrics()`
+extended with `auc` and `sharpe` fields (markdown-bold-wrap +
+hyphen-tolerant regexes); the pre-existing DM p-value regex was
+tightened in the same step so `**DM p-value**: 0.031` parses
+correctly. `_composite()` in `src/lib/leaderboard.py` is now
+phase-detecting: Phase 2 formula when `sum_fixed` non-None, Phase 3
+formula `0.6*auc_adj + 0.3*sharpe_adj + 0.1*dm_adj` otherwise.
+LEADERBOARD.md column header unchanged — Phase 3 rows render empty
+cells for Phase-2-only metrics and populate `DM_p` + `composite`.
+`tools/retroactive_promotion_validate.py` gains `--reprocess` so
+existing leaderboard entries that were written with composite=0.0000
+(the 4 `vec_p3_la_*` rows) can be re-scored in place; combined with
+`append_entry`'s per-task idempotency the row is overwritten with
+the corrected metrics. Empirical driver: AI-trade Phase 3
+retroactive validation surfaced 12 DA-track NEUTRAL tasks silently
+dropped + 4 Phase 3 ML classification entries collapsing to
+composite=0 in LEADERBOARD.md. 857 → **871 tests passing** (+14: 4
+NEUTRAL verdict cases + 5 parse_metrics Phase 3 + 5 composite Phase
+3; one parse_metrics file has 6 cases — the 14 / 15 discrepancy
+arises because the bold-wrap test consolidates a Phase 2 fixture
+that was being moved). 1 new smoke (`run-phase3-promotion-smoke.sh`)
+green; all v1.3.12 hotfix smokes still green (8 pre-existing v0.5-era
+stage smoke failures — a, b, c, d, e, f, k, l — unchanged from
+v1.3.12 baseline, not regressions). Operator action required: run
+`python3 tools/retroactive_promotion_validate.py /path/to/ai-trade
+--prefix vec_p3_ --reprocess` to re-score the 4 existing
+`vec_p3_la_*` entries; NEUTRAL events will replay on the next
+regular cycle automatically.
+
+**Earlier stage:** **v1.3.12 HOTFIX COMPLETE.** Two groups
 (PROMOTION-TASK-PREFIX: new `_read_config_promotion` +
 `PROMOTION_DEFAULTS` in `src/orchestrator/prompt.py` reading the
 `promotion: task_prefix:` block from `.cc-autopipe/config.yaml` via
