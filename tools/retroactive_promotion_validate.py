@@ -90,6 +90,12 @@ def main() -> None:
                         help="Backlog task ID prefix to scan (default: vec_p3_)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would be done without writing anything")
+    parser.add_argument(
+        "--reprocess",
+        action="store_true",
+        help="Re-validate tasks that already have a promotion_validated event "
+             "(overwrites existing leaderboard entry with corrected metrics)",
+    )
     args = parser.parse_args()
 
     _setup_path()
@@ -108,10 +114,11 @@ def main() -> None:
         print(f"ERROR: backlog.md not found at {backlog_path}", file=sys.stderr)
         sys.exit(1)
 
-    already_done = _load_already_validated(project)
-    print(f"Project:  {project}")
-    print(f"Prefix:   {args.prefix}")
-    print(f"Dry-run:  {args.dry_run}")
+    already_done = set() if args.reprocess else _load_already_validated(project)
+    print(f"Project:   {project}")
+    print(f"Prefix:    {args.prefix}")
+    print(f"Dry-run:   {args.dry_run}")
+    print(f"Reprocess: {args.reprocess}")
     print(f"Already validated (skipped): {len(already_done)}")
     print()
 
