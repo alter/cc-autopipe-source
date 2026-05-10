@@ -14,6 +14,8 @@ Also exposes a small CLI used by the bash hooks:
     python3 state.py log-event <project> <event_name> [k=v ...]
     python3 state.py set-session-id <project> <session_id>
     python3 state.py inc-failures <project>
+    python3 state.py inc-malformed <project>
+    python3 state.py reset-malformed <project>
     python3 state.py update-verify <project> --passed BOOL --score FLOAT --prd-complete BOOL
     python3 state.py set-paused <project> <resume_at_iso> <reason>
 """
@@ -30,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 STATE_FILENAME = "state.json"
 PROGRESS_FILENAME = "progress.jsonl"
 FAILURES_FILENAME = "failures.jsonl"
@@ -60,6 +62,13 @@ FAILURES_FILENAME = "failures.jsonl"
 # (PROMPT_v1.3.4 §R2 said 4→5 but v1.3.3 already shipped at 5; we bump
 # 5→6 here so old v1.3.3 state files migrate via the same dataclass-
 # defaults path used everywhere else.)
+#
+# v1.3.4 → v1.3.12 schema bump (PROMPT_v1.3.12-hotfix.md, group
+# VERIFY-MALFORMED-BACKOFF). Additive only:
+#   - State.consecutive_malformed: int                   (default 0)
+# Tracks consecutive `verify_malformed` events separately from the
+# logic-failure path so a buggy verify.sh (`|| echo 0` instead of
+# `|| true`) never burns the auto-escalation budget.
 #
 # Pre-v3 state files migrate transparently — `read()` fills defaults via
 # the dataclass field defaults; `write()` then persists schema_version=
@@ -234,6 +243,11 @@ class State:
     # the cycle, even when verify.sh rc=1 makes the cycle look stuck.
     # None when no backlog file exists or the cycle hasn't started yet.
     cycle_backlog_x_count_at_start: Optional[int] = None
+    # v1.3.12 VERIFY-MALFORMED-BACKOFF: consecutive `verify_malformed`
+    # events. Tracked separately from `consecutive_failures` so a buggy
+    # verify.sh script (the classic `|| echo 0` double-zero) cannot burn
+    # the auto-escalation budget. Reset by a passing verify.
+    consecutive_malformed: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -283,6 +297,7 @@ class State:
             "consecutive_transient_failures": self.consecutive_transient_failures,
             "last_transient_at": self.last_transient_at,
             "cycle_backlog_x_count_at_start": self.cycle_backlog_x_count_at_start,
+            "consecutive_malformed": self.consecutive_malformed,
         }
         d.update(self.extras)
         return d
@@ -499,6 +514,84 @@ def inc_failures(project_path: str | os.PathLike[str]) -> int:
     return s.consecutive_failures
 
 
+# v1.3.12 VERIFY-MALFORMED-BACKOFF threshold. Three consecutive
+# `verify_malformed` events strongly suggest verify.sh is structurally
+# broken (the classic `|| echo 0` double-zero bug); a HUMAN_NEEDED.md
+# is written so the operator sees a specific fix.
+MALFORMED_HUMAN_NEEDED_THRESHOLD = 3
+
+
+def _write_malformed_human_needed(project_path: Path, count: int) -> None:
+    """Write `.cc-autopipe/HUMAN_NEEDED.md` with verify.sh fix guidance.
+
+    Called once `consecutive_malformed >= MALFORMED_HUMAN_NEEDED_THRESHOLD`
+    so the operator sees the specific bash bug (`|| echo 0` →
+    `|| true`) rather than spending hours triaging Opus auto-escalations.
+    The file is NOT auto-deleted — the human must read it, fix verify.sh,
+    and reset the malformed counter.
+    """
+    p = project_path / ".cc-autopipe" / "HUMAN_NEEDED.md"
+    ts = _now_iso()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        f"# HUMAN_NEEDED — verify.sh producing invalid JSON ({count} consecutive)\n\n"
+        f"Generated: {ts}\n\n"
+        "## Symptom\n\n"
+        f"`verify_malformed` fired {count} times in a row. "
+        "verify.sh is outputting non-JSON, causing the engine to log "
+        "failures for every cycle even though Claude's work may be "
+        "correct.\n\n"
+        "## Most common cause\n\n"
+        "```bash\n"
+        "# WRONG — grep -c exits rc=1 on zero matches AND prints '0';\n"
+        "# '|| echo 0' then prints a second '0' → two lines → invalid JSON\n"
+        "UNCHECKED=$(grep -c '^- \\[ \\]' \"$PRD\" || echo 0)\n\n"
+        "# CORRECT\n"
+        "UNCHECKED=$(grep -c '^- \\[ \\]' \"$PRD\" 2>/dev/null || true)\n"
+        "```\n\n"
+        "## Fix\n\n"
+        "1. Replace every `|| echo 0` in `.cc-autopipe/verify.sh` with `|| true`.\n"
+        "2. Run `.cc-autopipe/verify.sh` manually — confirm it outputs valid JSON.\n"
+        "3. Delete this file.\n"
+        "4. Reset the malformed counter: "
+        "`python3 ~/.cc-autopipe/lib/state.py reset-malformed <project-path>`\n",
+        encoding="utf-8",
+    )
+
+
+def inc_malformed(project_path: str | os.PathLike[str]) -> int:
+    """Increment `consecutive_malformed`. Does NOT touch `consecutive_failures`.
+
+    A `verify_malformed` event is a verify.sh script bug (non-JSON
+    output), not a Claude logic failure. Routing it through this
+    counter prevents the auto-escalation ladder (Opus + `phase=failed`)
+    from firing on a `|| echo 0` typo. After
+    `MALFORMED_HUMAN_NEEDED_THRESHOLD` consecutive malformed events
+    we write `HUMAN_NEEDED.md` with a specific fix recipe; the human
+    must read it and reset the counter.
+    """
+    s = read(project_path)
+    s.consecutive_malformed += 1
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+    if s.consecutive_malformed >= MALFORMED_HUMAN_NEEDED_THRESHOLD:
+        _write_malformed_human_needed(Path(project_path), s.consecutive_malformed)
+    return s.consecutive_malformed
+
+
+def reset_malformed(project_path: str | os.PathLike[str]) -> int:
+    """Reset `consecutive_malformed` to 0. Returns the new (always 0).
+
+    Also called automatically by `update_verify` when verify passes; the
+    CLI surface is for the human to call after fixing verify.sh.
+    """
+    s = read(project_path)
+    s.consecutive_malformed = 0
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+    return s.consecutive_malformed
+
+
 def update_verify(
     project_path: str | os.PathLike[str],
     passed: bool,
@@ -534,6 +627,11 @@ def update_verify(
     elif passed:
         s.consecutive_failures = 0
         s.consecutive_in_progress = 0
+        # v1.3.12 VERIFY-MALFORMED-BACKOFF: a passing verify proves
+        # verify.sh is producing valid JSON again, so the malformed
+        # streak ends here. A genuine `passed=False` does NOT reset
+        # this counter — only well-formed JSON does.
+        s.consecutive_malformed = 0
     else:
         s.consecutive_failures += 1
         s.consecutive_in_progress = 0
@@ -671,6 +769,15 @@ def main(argv: list[str]) -> int:
     p_inc = sub.add_parser("inc-failures")
     p_inc.add_argument("project")
 
+    # v1.3.12 VERIFY-MALFORMED-BACKOFF: separate counter from
+    # consecutive_failures so verify.sh script bugs don't drive the
+    # auto-escalation ladder.
+    p_inc_mal = sub.add_parser("inc-malformed")
+    p_inc_mal.add_argument("project")
+
+    p_reset_mal = sub.add_parser("reset-malformed")
+    p_reset_mal.add_argument("project")
+
     p_upd = sub.add_parser("update-verify")
     p_upd.add_argument("project")
     p_upd.add_argument("--passed", required=True, type=_parse_bool)
@@ -733,6 +840,16 @@ def main(argv: list[str]) -> int:
 
     if args.cmd == "inc-failures":
         n = inc_failures(args.project)
+        print(n)
+        return 0
+
+    if args.cmd == "inc-malformed":
+        n = inc_malformed(args.project)
+        print(n)
+        return 0
+
+    if args.cmd == "reset-malformed":
+        n = reset_malformed(args.project)
         print(n)
         return 0
 
