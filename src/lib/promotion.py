@@ -495,6 +495,8 @@ def parse_metrics(path: Path) -> dict[str, Any]:
         "max_dd": None,
         "dm_p_value": None,
         "dsr": None,
+        "auc": None,     # v1.3.13: Phase 3 ROC AUC in [0, 1]
+        "sharpe": None,  # v1.3.13: Phase 3 annualised Sharpe ratio
     }
     if not path.exists():
         return out
@@ -538,6 +540,27 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     m = re.search(r"\bDSR\b\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
     if m:
         out["dsr"] = float(m.group(1))
+
+    # v1.3.13 Phase 3 — ROC AUC (inline `AUC: 0.86` or `ROC AUC: 0.86`).
+    # Table-cell form `| AUC | 0.86 |` matches the same pattern: the
+    # post-keyword `[|:=]?` accepts the trailing `|`, and `\s*` swallows
+    # spaces before the value.
+    m = re.search(
+        r"\b(?:ROC[_\s]?)?AUC\b\s*[|:=]?\s*(\d+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        out["auc"] = float(m.group(1))
+
+    # v1.3.13 Phase 3 — Sharpe ratio (may be negative).
+    m = re.search(
+        r"\bSharpe(?:[_\s]ratio)?\b\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        out["sharpe"] = float(m.group(1))
 
     return out
 
