@@ -75,7 +75,16 @@ Heading patterns recognized for the Verdict tier (Tier 1):
 Verdict keywords (in heading or body) for Tier 1:
     PROMOTED, ACCEPT, ACCEPTED, PASS, PASSED, STABLE → PROMOTED
     REJECTED, REJECT, FAIL, FAILED, LONG_LOSES_MONEY → REJECTED
-    CONDITIONAL, PARTIAL                              → CONDITIONAL
+    CONDITIONAL, PARTIAL, NEUTRAL                     → CONDITIONAL
+
+v1.3.13: NEUTRAL added across tiers 1, 3, and 4. AI-trade Phase 3
+DA-track experiments (information-ceiling probes that close with no
+exploitable edge, no clear bug) report `**Status**: NEUTRAL`. Without
+NEUTRAL in `CANONICAL_MAP` / `VERDICT_KEYWORD_RE` /
+`BOLD_METADATA_VERDICT_RE` / `ACCEPTANCE_KEYWORD_RE`, `parse_verdict`
+returned None and `promotion_verdict_unrecognized` was logged — 12
+DA-track tasks silently dropped on first deploy. NEUTRAL → CONDITIONAL
+keeps the backlog door open for re-probes in different regimes.
 
 Public surface:
     - promotion_path(project, task_id)        -> Path
@@ -167,7 +176,7 @@ VERDICT_HEADING_RE = re.compile(
 
 VERDICT_KEYWORD_RE = re.compile(
     r"\b(PROMOTED|REJECTED|ACCEPTED|ACCEPT|REJECT|PASSED|PASS|FAILED|FAIL|"
-    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY)\b",
+    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY|NEUTRAL)\b",
     re.IGNORECASE,
 )
 
@@ -200,6 +209,7 @@ CANONICAL_MAP = {
     "LONG_LOSES_MONEY": "REJECTED",
     "CONDITIONAL": "CONDITIONAL",
     "PARTIAL": "CONDITIONAL",
+    "NEUTRAL": "CONDITIONAL",  # v1.3.13: inconclusive outcome, no exploitable edge
 }
 
 # v1.3.7 ACCEPTANCE-FALLBACK: tier 3 vocabulary. Headings recognised
@@ -230,7 +240,7 @@ ACCEPTANCE_KEYWORD_RE = re.compile(
     # Group 2 — REJECTED indicators.
     r"(\bcriteria\s+not\s+met\b|\bnot\s+met\b|\bfailed\b|\bfail\b|❌)|"
     # Group 3 — CONDITIONAL indicators.
-    r"(\bpartial(?:ly\s+met)?\b|\bmixed\b|\bconditional\b)"
+    r"(\bpartial(?:ly\s+met)?\b|\bmixed\b|\bconditional\b|\bneutral\b)"
     r")",
     re.IGNORECASE,
 )
@@ -265,14 +275,16 @@ _ACCEPTANCE_NEXT_HEADING_RE = re.compile(r"^#{1,4}\s+", re.MULTILINE)
 # on unrelated bold-metadata lines like `**Note**: ...` or
 # `**Pareto points**: 7 non-dominated`. The keyword vocabulary mirrors
 # tiers 1+3 (PROMOTED / REJECTED / ACCEPT[ED] / REJECT / PASS[ED] /
-# FAIL[ED] / STABLE / CONDITIONAL / PARTIAL / LONG_LOSES_MONEY) so the
-# canonical mapping stays consistent across all tiers.
+# FAIL[ED] / STABLE / CONDITIONAL / PARTIAL / LONG_LOSES_MONEY /
+# NEUTRAL) so the canonical mapping stays consistent across all tiers.
+# v1.3.13: NEUTRAL → CONDITIONAL handles Phase 3 DA-track
+# `**Status**: NEUTRAL` closures.
 BOLD_METADATA_VERDICT_RE = re.compile(
     r"^\s*\*\*\s*"
     r"(?:Status|Result|Outcome|Verdict|Decision|Conclusion)"
     r"\s*\*\*\s*[:\s]+\s*\**\s*"
     r"(PROMOTED|REJECTED|ACCEPT(?:ED)?|REJECT|PASS(?:ED)?|FAIL(?:ED)?|"
-    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY)\b",
+    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY|NEUTRAL)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
