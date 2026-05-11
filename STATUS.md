@@ -1,8 +1,74 @@
 # Build Status
 
-**Updated:** 2026-05-11T18:00:00Z
+**Updated:** 2026-05-11T20:30:00Z
 **Current branch:** main
-**Current stage:** **v1.4.0 COMPLETE.** Five groups landed (~9 commits,
+**Current stage:** **v1.4.1 HOTFIX COMPLETE.** Three groups landed in
+7 commits, +9 unit tests, +1 smoke. PROMOTION.md parser hardening
+against silent failures uncovered in v1.4.0 by inspection against real
+AI-trade Phase 3 file shapes. **TABLE-CELL-HARDENING**: new
+`_coerce_table_cell()` helper in `src/lib/promotion.py` replaces the
+inline `float(raw.rstrip('%').lstrip('+'))` cell coercion in
+`_parse_table_metrics`. Handles real Phase 3 cell shapes that the
+v1.4.0 path silently swallowed (ValueError caught by the inline
+try/except): bold markers (`**0.78762**` — Phase 3 NN tables), Unicode
+minus (`−3.32`, U+2212 — Phase 3 LA Δ rows), en-dash / em-dash
+(U+2013 / U+2014), em-dash placeholders (`—` / `--`), trailing emoji
+(`0.86003 ✓`), N/A markers, and the bold + leading-plus + trailing-
+percent combo (`**+692.84%**`). Also drops the bare `"dd": "max_dd"`
+alias from `_TABLE_COLUMN_ALIASES` — date-format columns
+(`Date (dd-MM)`, `dd/yyyy`) were falsely claimed as max_dd and fed
+date numerals into the leaderboard composite. `max_dd` and `max dd`
+remain. **QUARANTINE-FILENAME-CONSISTENCY**: `quarantine_invalid` now
+routes both the marker filename and the operator-facing CAND reference
+through `_promotion_basename(task_id)` (Form 1: only `vec_` stripped,
+canonical engine-emit path). Pre-v1.4.1 the marker pointed operators
+at `CAND_vec_p3_meta_*` while the engine read from `CAND_meta_*` via
+the v1.4.0 MULTI-PREFIX-STRIP candidate-path probe — operators
+followed the breadcrumb to a file the engine never reads. Body heading
+still shows the FULL task_id (operator readability). Legacy
+`UNVALIDATED_PROMOTION_vec_long_*` markers on production disks are
+left untouched (write-once at quarantine time, operator-owned).
+**TIER1-NEGATION-GUARD**: `_parse_verdict_tier1` split into three
+ordered passes — REJECTED (REJECTED/REJECT/FAILED/FAIL/LONG_LOSES_MONEY)
+wins unconditionally, then CONDITIONAL (CONDITIONAL/PARTIAL/NEUTRAL),
+then PROMOTED (PROMOTED/ACCEPTED/ACCEPT/PASSED/PASS/STABLE) with an
+8-char negation lookbehind. Pre-v1.4.1 the single-regex alternation
+captured the FIRST verdict keyword in section regardless of polarity;
+a section with `did NOT pass — Result: REJECTED` silently captured
+`pass` as PROMOTED. Three new module-level regexes
+(`VERDICT_KEYWORD_REJECT_RE` / `_CONDITIONAL_RE` / `_PROMOTE_RE`) +
+`_NEGATION_PREFIXES` + `_match_promote_keyword` helper. ASCII-only;
+non-English negations are out of scope per stdlib-only constraint. The
+legacy `VERDICT_KEYWORD_RE` is preserved for external callers but
+`_parse_verdict_tier1` no longer uses it. Mirrors the Tier 4 RESULT-
+OVER-STATUS two-pass shape from v1.4.0. One existing fixture-based
+test (`test_tier4_loses_to_tier1_verdict_heading`) was updated:
+`## Verdict\n\n### PASS — measurement OK\n\n**Status**: FAIL` now
+resolves to REJECTED (Pass 1 catches `FAIL`) rather than PROMOTED —
+the Tier-1-beats-Tier-4 ordering invariant the test was written for
+still holds; only the winning tier-1 verdict has flipped polarity.
+**Operator action required**: re-run
+`python3 tools/retroactive_promotion_validate.py
+/path/to/AI-trade --prefix vec_p3_ --reprocess` to re-score Phase 3
+LA-track leaderboard entries against the hardened table parser.
+Expect: LA-track entries that previously had `composite=0.3000` now
+show `sum_fixed` populated and composite computed via the Phase 2
+formula; new quarantine markers write to
+`UNVALIDATED_PROMOTION_p3_<rest>.md` matching `CAND_p3_<rest>_PROMOTION.md`
+shape; Phase 1/2 reports closing with `## Verdict\n\nThis task did NOT
+pass.\n\nResult: REJECTED` resolve to REJECTED via Tier 1 Pass 1
+rather than silently capturing `pass` as PROMOTED. 891 → **904 tests
+passing** (+13: 5 table-cell coercion + 2 real-Phase3-table-shapes +
+2 quarantine basename + 4 tier1 negation; one fixture-expectation
+update in test_promotion.py for the Tier 1 cascade behaviour change,
+two integration fixtures in test_promotion_flow.py and
+test_post_cycle_delta_scan.py updated to the v1.4.1 Form-1 basename).
+35/43 → **36/44 smokes** (+1 new: `run-table-cell-real-shapes-smoke.sh`);
+the 8 failing v0.5-era stages (a/b/c/d/e/f/k/l) remain baseline noise
+unchanged from v1.4.0. See V141_BUILD_DONE.md for full per-group
+details.
+
+**Earlier stage:** **v1.4.0 COMPLETE.** Five groups landed (~9 commits,
 +19 unit tests, +2 smokes). PROMOTION.md format standardization +
 parser robustness — addresses five separate silent failures observed
 in AI-trade Phase 3 production. **METRICS-BLOCK-CONVENTION**: new
