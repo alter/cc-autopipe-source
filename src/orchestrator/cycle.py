@@ -100,9 +100,7 @@ def _count_backlog_x(project_path: Path) -> int | None:
         text = backlog.read_text(encoding="utf-8")
     except OSError:
         return None
-    return sum(
-        1 for ln in text.splitlines() if ln.lstrip().startswith("- [x]")
-    )
+    return sum(1 for ln in text.splitlines() if ln.lstrip().startswith("- [x]"))
 
 
 def _check_in_cycle_progress(
@@ -247,15 +245,13 @@ def _maybe_arm_sentinel_via_promotion(
     Baseline is now snapshotted via `_safe_baseline_mtime` (pre-cycle
     mtime) so a same-cycle Claude append still clears pending.
     """
-    if (
-        post_task_id is None
-        or not post_task_id.startswith(("vec_", "phase_gate_"))
-    ):
+    if post_task_id is None or not post_task_id.startswith(("vec_", "phase_gate_")):
         return False
     p_promo = promotion_lib.promotion_path(project_path, post_task_id)
     if not p_promo.exists():
         return False
     import time as _time  # noqa: PLC0415
+
     try:
         mtime_age = _time.time() - p_promo.stat().st_mtime
     except OSError:
@@ -396,21 +392,18 @@ def _post_cycle_delta_scan(
     a delta-scan crash must not take the cycle down.
     """
     try:
-        bl_items_post = backlog_lib.parse_all_tasks(
-            project_path / "backlog.md"
-        )
+        bl_items_post = backlog_lib.parse_all_tasks(project_path / "backlog.md")
         pre_ids = {pi.id for pi in pre_open_promo_tasks}
         delta_closed_promo_tasks = [
-            bl for bl in bl_items_post
+            bl
+            for bl in bl_items_post
             if bl.status == "x"
             and bl.id.startswith(task_prefix)
             and bl.task_type == "implement"
             and bl.id not in pre_ids
         ]
         for delta_item in delta_closed_promo_tasks:
-            p_path = promotion_lib.promotion_path(
-                project_path, delta_item.id
-            )
+            p_path = promotion_lib.promotion_path(project_path, delta_item.id)
             verdict = promotion_lib.parse_verdict(p_path)
             if verdict == "PROMOTED":
                 state.log_event(
@@ -428,9 +421,7 @@ def _post_cycle_delta_scan(
                     task_id=delta_item.id,
                     all_present=ok,
                     missing=",".join(missing),
-                    strict=promotion_lib.requires_full_v2_validation(
-                        delta_item.id
-                    ),
+                    strict=promotion_lib.requires_full_v2_validation(delta_item.id),
                     origin="post_cycle_delta",
                 )
                 if ok:
@@ -443,16 +434,10 @@ def _post_cycle_delta_scan(
                         "promotion_validated",
                         task_id=delta_item.id,
                         origin="post_cycle_delta",
-                        **{
-                            k: v
-                            for k, v in metrics.items()
-                            if v is not None
-                        },
+                        **{k: v for k, v in metrics.items() if v is not None},
                     )
                 else:
-                    promotion_lib.quarantine_invalid(
-                        project_path, delta_item, missing
-                    )
+                    promotion_lib.quarantine_invalid(project_path, delta_item, missing)
             elif verdict == "REJECTED":
                 state.log_event(
                     project_path,
@@ -481,9 +466,7 @@ def _post_cycle_delta_scan(
                     origin="post_cycle_delta",
                 )
     except Exception as exc:  # noqa: BLE001 — telemetry must not crash
-        _log(
-            f"{project_path.name}: post-cycle delta scan error: {exc!r}"
-        )
+        _log(f"{project_path.name}: post-cycle delta scan error: {exc!r}")
 
 
 def process_project(project_path: Path) -> str:
@@ -554,7 +537,7 @@ def process_project(project_path: Path) -> str:
         # we don't burn one on a paused decision. Cache TTL is 60s, so
         # repeat cycles within a minute share the same quota read.
         preflight = _preflight_quota(project_path, s)
-        if preflight in ("paused_5h", "paused_7d"):
+        if preflight == "paused_7d":
             return "paused"
 
         # v1.3 C2: pre-cycle disk check + auto-cleanup. Only runs after
@@ -643,9 +626,7 @@ def process_project(project_path: Path) -> str:
         # [research] task BEFORE the cycle so we can detect artifact-
         # based completion afterwards. After the cycle Claude has
         # likely marked the task `[x]` so it's no longer top-open.
-        pre_research_item = research_completion_lib.find_top_research_task(
-            project_path
-        )
+        pre_research_item = research_completion_lib.find_top_research_task(project_path)
 
         # v1.3.5 PROMOTION-PARSER: snapshot every open [implement] task
         # at cycle start whose ID matches `task_prefix`. Post-cycle we'll
@@ -655,10 +636,7 @@ def process_project(project_path: Path) -> str:
         pre_open_promo_tasks: list[backlog_lib.BacklogItem] = []
         try:
             for it in backlog_lib.parse_open_tasks(project_path / "backlog.md"):
-                if (
-                    it.id.startswith(task_prefix)
-                    and it.task_type == "implement"
-                ):
+                if it.id.startswith(task_prefix) and it.task_type == "implement":
                     pre_open_promo_tasks.append(it)
         except Exception:  # noqa: BLE001 — telemetry must not crash
             pre_open_promo_tasks = []
@@ -677,8 +655,10 @@ def process_project(project_path: Path) -> str:
         # pending: log informational event without bumping any failure
         # counter — claude just hasn't finished yet.
         if pre_research_item is not None and rc == 0:
-            _research_ok, _research_reason = research_completion_lib.completion_satisfied(
-                project_path, pre_research_item
+            _research_ok, _research_reason = (
+                research_completion_lib.completion_satisfied(
+                    project_path, pre_research_item
+                )
             )
             if _research_ok:
                 if not s.last_passed:
@@ -709,9 +689,7 @@ def process_project(project_path: Path) -> str:
         # PROMOTED+missing-sections, log-only on REJECTED.
         if pre_open_promo_tasks:
             try:
-                bl_items = backlog_lib.parse_all_tasks(
-                    project_path / "backlog.md"
-                )
+                bl_items = backlog_lib.parse_all_tasks(project_path / "backlog.md")
                 now_done: dict[str, backlog_lib.BacklogItem] = {
                     bl.id: bl for bl in bl_items if bl.status == "x"
                 }
@@ -720,9 +698,7 @@ def process_project(project_path: Path) -> str:
                     if after is None:
                         # Task still open or in-progress, no verdict yet.
                         continue
-                    p_path = promotion_lib.promotion_path(
-                        project_path, pre_item.id
-                    )
+                    p_path = promotion_lib.promotion_path(project_path, pre_item.id)
                     verdict = promotion_lib.parse_verdict(p_path)
                     if verdict == "PROMOTED":
                         # v1.3.8 PROMOTION-HOOK-DIAGNOSTICS: emit a
@@ -758,11 +734,7 @@ def process_project(project_path: Path) -> str:
                                 project_path,
                                 "promotion_validated",
                                 task_id=pre_item.id,
-                                **{
-                                    k: v
-                                    for k, v in metrics.items()
-                                    if v is not None
-                                },
+                                **{k: v for k, v in metrics.items() if v is not None},
                             )
                         else:
                             promotion_lib.quarantine_invalid(
@@ -912,9 +884,7 @@ def process_project(project_path: Path) -> str:
         try:
             _maybe_arm_sentinel_via_promotion(project_path, post_task_id, s)
         except Exception as exc:  # noqa: BLE001 — telemetry must not crash
-            _log(
-                f"{project_path.name}: promotion-mtime fallback error: {exc!r}"
-            )
+            _log(f"{project_path.name}: promotion-mtime fallback error: {exc!r}")
 
         # Post-cycle phase transition per SPEC-v1.md §2.3.4 — only fires
         # when prd.md declares `### Phase N:` headers AND the current
@@ -1131,9 +1101,7 @@ def process_project(project_path: Path) -> str:
             cycle_start_dt.timestamp() if cycle_start_dt is not None else 0.0
         )
         try:
-            fs_progress = _check_in_cycle_progress(
-                project_path, cycle_start_unix, s
-            )
+            fs_progress = _check_in_cycle_progress(project_path, cycle_start_unix, s)
         except Exception as exc:  # noqa: BLE001 — telemetry must not crash
             _log(f"{project_path.name}: progress probe error: {exc!r}")
             fs_progress = {
@@ -1171,9 +1139,7 @@ def process_project(project_path: Path) -> str:
                         iteration=s.iteration,
                         new_promotions=fs_progress["new_promotion_files"],
                         backlog_x_delta=fs_progress["backlog_x_delta"],
-                        current_task_grew=fs_progress[
-                            "current_task_stages_grew"
-                        ],
+                        current_task_grew=fs_progress["current_task_stages_grew"],
                     )
                 else:
                     s.phase = "failed"
