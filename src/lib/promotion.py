@@ -253,6 +253,64 @@ ACCEPTANCE_KEYWORD_RE = re.compile(
 # up a stray ✅ deep in a body table.
 _ACCEPTANCE_NEXT_HEADING_RE = re.compile(r"^#{1,4}\s+", re.MULTILINE)
 
+# v1.4.0 METRICS-BLOCK-CONVENTION: canonical labelled-key parser. The
+# block format is documented in src/orchestrator/prompt.py
+# (_implement_task_prompt_block). Field names must match the engine's
+# metric keys exactly:
+#   verdict, sum_fixed, regime_parity, max_dd, dm_p_value, dsr, auc, sharpe
+# This block is the PRIMARY source for both verdict (Tier 0) and metrics
+# (pre-fill before the v1.3.x regex extractors). Free-form prose, tables,
+# and bold-metadata stay as best-effort fallback for legacy / human-
+# written PROMOTION.md files.
+_METRICS_BLOCK_HEADING_RE = re.compile(
+    r"^#{2,4}\s+Metrics\s+for\s+leaderboard\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+_METRICS_BLOCK_FIELD_RE = re.compile(
+    r"^\s*[-*]\s*\*\*\s*(?P<key>[a-zA-Z_]+)\s*\*\*\s*[:=]\s*(?P<value>[^\n]+?)\s*$",
+    re.MULTILINE,
+)
+
+_METRICS_BLOCK_KEYS: set[str] = {
+    "verdict", "sum_fixed", "regime_parity", "max_dd",
+    "dm_p_value", "dsr", "auc", "sharpe",
+}
+
+
+def _parse_metrics_block(text: str) -> dict[str, str]:
+    """Extract labelled key-value pairs from a `## Metrics for leaderboard` block.
+
+    Returns a dict mapping recognised keys to RAW string values. Caller is
+    responsible for coercing numeric fields. Returns {} when the block is
+    absent. Block is bounded by its heading and the next `##`/`###`/`####`
+    heading (or end-of-file).
+    """
+    heading = _METRICS_BLOCK_HEADING_RE.search(text)
+    if not heading:
+        return {}
+    tail = text[heading.end():]
+    next_heading = re.search(r"^#{2,4}\s+", tail, re.MULTILINE)
+    section = tail[:next_heading.start()] if next_heading else tail
+    out: dict[str, str] = {}
+    for m in _METRICS_BLOCK_FIELD_RE.finditer(section):
+        key = m.group("key").lower()
+        if key in _METRICS_BLOCK_KEYS:
+            out[key] = m.group("value").strip()
+    return out
+
+
+def _coerce_metric_value(raw: str) -> float | None:
+    """'692.84%' → 692.84, '-8.2' → -8.2, 'N/A' → None, '' → None."""
+    s = raw.strip().rstrip("%").lstrip("+").strip()
+    if not s or s.lower() in ("n/a", "na", "none", "null", "-"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 # v1.3.9 BOLD-METADATA-VERDICT (tier 4): inline `**Field**: KEYWORD`
 # bold-metadata patterns observed in AI-trade Phase 2 v2.1 measurement-
 # task PROMOTION reports — `CAND_elo_rating`, `CAND_tournament_*`,
@@ -376,6 +434,19 @@ def _parse_verdict_acceptance(text: str) -> str | None:
     return None
 
 
+def _parse_verdict_block(text: str) -> str | None:
+    """Tier 0 (v1.4.0): `## Metrics for leaderboard` block `**verdict**: X`.
+
+    Primary source. Returns None when the block is absent or has no
+    parseable verdict; engine falls through to Tier 1-4.
+    """
+    block = _parse_metrics_block(text)
+    raw = block.get("verdict")
+    if not raw:
+        return None
+    return CANONICAL_MAP.get(raw.strip().upper())
+
+
 def _parse_verdict_tier4_bold_metadata(text: str) -> str | None:
     """Tier 4 (v1.3.9): inline `**Field**: KEYWORD` bold-metadata pattern.
 
@@ -395,7 +466,9 @@ def _parse_verdict_tier4_bold_metadata(text: str) -> str | None:
 def parse_verdict(path: Path) -> str | None:
     """Return canonical verdict 'PROMOTED' | 'REJECTED' | 'CONDITIONAL' | None.
 
-    Four-tier fallback (v1.3.9):
+    Five-tier fallback (v1.4.0):
+      0. `## Metrics for leaderboard` block `**verdict**:` field — primary
+         source written by Claude under the v1.4.0 prompt contract.
       1. Verdict heading + body keyword (v1.3.6 lenient parse).
       2. Legacy strict `**Verdict: <X>**` pattern (v1.3.5 backward compat).
       3. Acceptance / Conclusion / Result / Outcome / Status heading +
@@ -416,6 +489,11 @@ def parse_verdict(path: Path) -> str | None:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+    # Tier 0 (v1.4.0): labelled `## Metrics for leaderboard` block.
+    result = _parse_verdict_block(text)
+    if result is not None:
+        return result
 
     # Tier 1: Verdict heading + body keyword (v1.3.6).
     result = _parse_verdict_tier1(text)
@@ -505,65 +583,82 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     except OSError:
         return out
 
-    m = re.search(
-        r"sum[_\s]?fixed\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*%",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["sum_fixed"] = float(m.group(1))
+    # v1.4.0 PRIMARY: labelled `## Metrics for leaderboard` block.
+    # Wins over every other extractor when present. Each subsequent
+    # legacy regex / cascade is guarded by `if out[<key>] is None`,
+    # so a labelled value is never overwritten.
+    block = _parse_metrics_block(text)
+    for k in ("sum_fixed", "regime_parity", "max_dd", "dm_p_value",
+              "dsr", "auc", "sharpe"):
+        if k in block:
+            out[k] = _coerce_metric_value(block[k])
 
-    m = re.search(
-        r"regime[_\s]?parity\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["regime_parity"] = float(m.group(1))
+    if out["sum_fixed"] is None:
+        m = re.search(
+            r"sum[_\s]?fixed\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*%",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["sum_fixed"] = float(m.group(1))
 
-    m = re.search(
-        r"max[_\s]?DD\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*%",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["max_dd"] = float(m.group(1))
+    if out["regime_parity"] is None:
+        m = re.search(
+            r"regime[_\s]?parity\s*[:=]?\s*(\d+(?:\.\d+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["regime_parity"] = float(m.group(1))
+
+    if out["max_dd"] is None:
+        m = re.search(
+            r"max[_\s]?DD\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*%",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["max_dd"] = float(m.group(1))
 
     # v1.3.13: hyphen + markdown-bold-close support added —
     # `**DM p-value**: 0.031` is the canonical Phase 3 format.
-    m = re.search(
-        r"DM[_\s\-]?p(?:[_\s\-]?value)?\**\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["dm_p_value"] = float(m.group(1))
+    if out["dm_p_value"] is None:
+        m = re.search(
+            r"DM[_\s\-]?p(?:[_\s\-]?value)?\**\s*[:=]?\s*(\d+(?:\.\d+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["dm_p_value"] = float(m.group(1))
 
-    m = re.search(r"\bDSR\b\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
-    if m:
-        out["dsr"] = float(m.group(1))
+    if out["dsr"] is None:
+        m = re.search(r"\bDSR\b\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        if m:
+            out["dsr"] = float(m.group(1))
 
     # v1.3.13 Phase 3 — ROC AUC. Handles inline `AUC: 0.86`,
     # `ROC AUC: 0.86`, markdown-bold `**AUC**: 0.86`, and table-cell
     # `| AUC | 0.86 |`. The post-keyword `\**` consumes a trailing
     # markdown-bold close; `[|:=]?` accepts the table cell separator.
-    m = re.search(
-        r"\b(?:ROC[_\s]?)?AUC\b\**\s*[|:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["auc"] = float(m.group(1))
+    if out["auc"] is None:
+        m = re.search(
+            r"\b(?:ROC[_\s]?)?AUC\b\**\s*[|:=]?\s*(\d+(?:\.\d+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["auc"] = float(m.group(1))
 
     # v1.3.13 Phase 3 — Sharpe ratio (may be negative). Same
     # markdown-bold-close tolerance as AUC.
-    m = re.search(
-        r"\bSharpe(?:[_\s]ratio)?\b\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        out["sharpe"] = float(m.group(1))
+    if out["sharpe"] is None:
+        m = re.search(
+            r"\bSharpe(?:[_\s]ratio)?\b\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            out["sharpe"] = float(m.group(1))
 
     return out
 
