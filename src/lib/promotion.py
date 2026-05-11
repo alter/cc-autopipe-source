@@ -26,10 +26,14 @@ fires only when the prior one returned None.
   Tier 3 (v1.3.7, unchanged):  Acceptance/Conclusion/Result/Outcome/
                                Status heading + verdict-equivalent
                                keyword (or ✅/❌ marker).
-  Tier 4 (v1.3.9, new):        inline `**Field**: KEYWORD` bold-
-                               metadata pattern (Status / Result /
-                               Outcome / Verdict / Decision /
-                               Conclusion field names only).
+  Tier 4 (v1.3.9 + v1.4.0):    inline `**Field**: KEYWORD` bold-
+                               metadata pattern. v1.4.0 split into
+                               two passes: PRIMARY scans verdict-
+                               semantic fields (Result / Verdict /
+                               Outcome / Decision / Conclusion);
+                               STATUS pass falls back to `**Status**`
+                               only. Verdict-semantic always wins
+                               when both are present in the file.
 
 Tier 3 exists because measurement / infrastructure tasks legitimately
 omit a Verdict heading and close with ## Acceptance (criteria checklist)
@@ -337,10 +341,27 @@ def _coerce_metric_value(raw: str) -> float | None:
 # NEUTRAL) so the canonical mapping stays consistent across all tiers.
 # v1.3.13: NEUTRAL → CONDITIONAL handles Phase 3 DA-track
 # `**Status**: NEUTRAL` closures.
-BOLD_METADATA_VERDICT_RE = re.compile(
+# v1.4.0 RESULT-OVER-STATUS split. Two regexes, two passes. Verdict-
+# semantic fields (Result/Verdict/Outcome/Decision/Conclusion) win over
+# Status (which Phase 3 conventions use for BIAS audit sign-off, not for
+# the promotion verdict). Symmetry: a file with ONLY `**Status**: NEUTRAL`
+# still parses correctly via the second pass.
+# Both `**Field**:` (colon outside bold close) and `**Field:**` (colon
+# inside bold close) shapes are observed in AI-trade Phase 3 production
+# (e.g. `**Result:** REJECTED` on NN-track files). `\s*:?\s*\*\*\s*:?\s*`
+# accepts either form: optional colon before close, mandatory `**`, then
+# optional colon after.
+BOLD_METADATA_VERDICT_PRIMARY_RE = re.compile(
     r"^\s*\*\*\s*"
-    r"(?:Status|Result|Outcome|Verdict|Decision|Conclusion)"
-    r"\s*\*\*\s*[:\s]+\s*\**\s*"
+    r"(?:Result|Outcome|Verdict|Decision|Conclusion)"
+    r"\s*:?\s*\*\*\s*:?\s*\**\s*"
+    r"(PROMOTED|REJECTED|ACCEPT(?:ED)?|REJECT|PASS(?:ED)?|FAIL(?:ED)?|"
+    r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY|NEUTRAL)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+BOLD_METADATA_VERDICT_STATUS_RE = re.compile(
+    r"^\s*\*\*\s*Status\s*:?\s*\*\*\s*:?\s*\**\s*"
     r"(PROMOTED|REJECTED|ACCEPT(?:ED)?|REJECT|PASS(?:ED)?|FAIL(?:ED)?|"
     r"STABLE|CONDITIONAL|PARTIAL|LONG_LOSES_MONEY|NEUTRAL)\b",
     re.IGNORECASE | re.MULTILINE,
@@ -448,19 +469,24 @@ def _parse_verdict_block(text: str) -> str | None:
 
 
 def _parse_verdict_tier4_bold_metadata(text: str) -> str | None:
-    """Tier 4 (v1.3.9): inline `**Field**: KEYWORD` bold-metadata pattern.
+    """Tier 4 (v1.3.9 + v1.4.0 two-pass): bold-metadata fallback.
 
-    Searches for `**Status**: PASS` / `**Result**: FAIL` / `**Outcome**:
-    REJECTED` etc. anywhere in the file. First match wins. Restricted
-    to closure-synonym field names (Status / Result / Outcome / Verdict /
-    Decision / Conclusion) so unrelated bold metadata (e.g.
-    `**Note**: ...`, `**Pareto points**: 7`) does NOT trigger this tier.
+    First pass: verdict-semantic fields (Result / Verdict / Outcome /
+    Decision / Conclusion). Second pass: Status field (Phase 3 BIAS
+    audit reuses Status for `PASS ✓`; verdict-semantic always wins
+    when both are present in the same file).
+
+    Restricted to closure-synonym field names so unrelated bold
+    metadata (e.g. `**Note**: ...`, `**Pareto points**: 7`) does NOT
+    trigger this tier.
     """
-    match = BOLD_METADATA_VERDICT_RE.search(text)
-    if match is None:
-        return None
-    raw = match.group(1).upper()
-    return CANONICAL_MAP.get(raw)
+    primary = BOLD_METADATA_VERDICT_PRIMARY_RE.search(text)
+    if primary is not None:
+        return CANONICAL_MAP.get(primary.group(1).upper())
+    status = BOLD_METADATA_VERDICT_STATUS_RE.search(text)
+    if status is not None:
+        return CANONICAL_MAP.get(status.group(1).upper())
+    return None
 
 
 def parse_verdict(path: Path) -> str | None:
