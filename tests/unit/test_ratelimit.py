@@ -1,8 +1,10 @@
 """Unit tests for src/lib/ratelimit.py.
 
-Covers Stage E DoD items:
-- ratelimit.py implements 5min/15min/1h ladder
-- ratelimit.py resets counter after 6h with no 429
+v1.5.0: ladder collapsed to flat 15min. Pre-v1.5.0 covered the
+5min/15min/1h escalating ladder plus 6h reset window; both removed.
+register_429() now always returns FALLBACK_WAIT_SEC=900 regardless of
+count or elapsed time. count + last_429_ts are still persisted for
+postmortem audit but no longer feed the wait calculation.
 """
 
 from __future__ import annotations
@@ -32,19 +34,28 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Ladder progression
+# Flat 15min fallback (v1.5.0)
 # ---------------------------------------------------------------------------
 
 
-def test_first_call_returns_5min(isolated_home: Path) -> None:
-    assert ratelimit.register_429() == 300
+def test_first_call_returns_15min(isolated_home: Path) -> None:
+    assert ratelimit.register_429() == ratelimit.FALLBACK_WAIT_SEC == 900
 
 
-def test_ladder_progresses_5_15_60_60(isolated_home: Path) -> None:
-    assert ratelimit.register_429() == 300
+def test_register_429_flat_across_many_calls(isolated_home: Path) -> None:
+    """Five 429s in succession all return the same flat 15min."""
+    for _ in range(5):
+        assert ratelimit.register_429() == 900
+
+
+def test_register_429_flat_after_long_gap(isolated_home: Path) -> None:
+    """v1.5.0 has no 6h reset window — flat is flat. Push last_429_ts back
+    by a week; the next call still returns 900, not anything else."""
+    ratelimit.register_429()
+    state = ratelimit.load_state()
+    state["last_429_ts"] -= 7 * 86400  # one week ago
+    ratelimit.save_state(state)
     assert ratelimit.register_429() == 900
-    assert ratelimit.register_429() == 3600
-    assert ratelimit.register_429() == 3600  # caps at 1h
 
 
 def test_state_persisted_between_calls(isolated_home: Path) -> None:
@@ -78,30 +89,11 @@ def test_load_state_coerces_bad_types(isolated_home: Path) -> None:
     assert state["last_429_ts"] == 0.0
 
 
-# ---------------------------------------------------------------------------
-# 6h reset window
-# ---------------------------------------------------------------------------
-
-
-def test_reset_after_6h_with_no_429(isolated_home: Path) -> None:
-    """If the last 429 was >6h ago, the next call starts fresh at 5min."""
-    ratelimit.register_429()
-    ratelimit.register_429()
-    ratelimit.register_429()
-    # Push the last_429_ts back by 7h.
-    state = ratelimit.load_state()
-    state["last_429_ts"] -= 25200
-    ratelimit.save_state(state)
-    assert ratelimit.register_429() == 300
-
-
-def test_reset_does_not_trigger_at_5h(isolated_home: Path) -> None:
-    """Reset window is 6h — at 5h, the ladder still progresses."""
-    ratelimit.register_429()
-    state = ratelimit.load_state()
-    state["last_429_ts"] -= 18000  # 5h
-    ratelimit.save_state(state)
-    assert ratelimit.register_429() == 900  # still 2nd step
+def test_no_ladder_or_reset_constants() -> None:
+    """v1.5.0: LADDER_SEC and RESET_AFTER_SEC constants removed."""
+    assert not hasattr(ratelimit, "LADDER_SEC")
+    assert not hasattr(ratelimit, "RESET_AFTER_SEC")
+    assert ratelimit.FALLBACK_WAIT_SEC == 900
 
 
 # ---------------------------------------------------------------------------
@@ -114,22 +106,19 @@ def test_get_resume_at_prefers_quota(isolated_home: Path) -> None:
     resume = ratelimit.get_resume_at(quota_resume_at=quota_resets)
     # SPEC §9.4 demands a 60s safety margin.
     assert resume == quota_resets + timedelta(seconds=60)
-    # And the ladder state was NOT advanced.
+    # And the audit state was NOT advanced.
     assert ratelimit.load_state()["count"] == 0
 
 
-def test_get_resume_at_falls_back_to_ladder(isolated_home: Path) -> None:
+def test_get_resume_at_falls_back_to_flat_15min(isolated_home: Path) -> None:
     before = datetime.now(timezone.utc)
     resume = ratelimit.get_resume_at(quota_resume_at=None)
-    after = datetime.now(timezone.utc)
     delta = (resume - before).total_seconds()
-    # First step is 5min ± a few seconds for test execution time.
-    assert 295 <= delta <= 305
+    # v1.5.0 flat 15min ± a few seconds for test execution time.
+    assert 895 <= delta <= 905
     assert resume.tzinfo is not None
-    # Ladder state advanced.
+    # Audit state advanced.
     assert ratelimit.load_state()["count"] == 1
-    # And `after` is sane.
-    assert after >= before
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +142,15 @@ def _run_cli(
     return cp
 
 
-def test_cli_register_429_advances_ladder(tmp_path: Path) -> None:
+def test_cli_register_429_returns_flat_15min(tmp_path: Path) -> None:
+    """v1.5.0: CLI register-429 returns 900 every time, regardless of count."""
     home = tmp_path / "uhome"
     cp1 = _run_cli(home, "register-429", expect_rc=0)
     cp2 = _run_cli(home, "register-429", expect_rc=0)
     cp3 = _run_cli(home, "register-429", expect_rc=0)
-    assert cp1.stdout.strip() == "300"
+    assert cp1.stdout.strip() == "900"
     assert cp2.stdout.strip() == "900"
-    assert cp3.stdout.strip() == "3600"
+    assert cp3.stdout.strip() == "900"
 
 
 def test_cli_state_returns_json(tmp_path: Path) -> None:
