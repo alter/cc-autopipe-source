@@ -304,6 +304,77 @@ def _parse_metrics_block(text: str) -> dict[str, str]:
     return out
 
 
+# v1.4.0 TABLE-METRICS — markdown-table column aliases. Maps lower-
+# cased header cells to canonical metric keys. Defense-in-depth for
+# files that follow the v1.4.0 contract loosely (e.g. Phase 3 LA tasks
+# that include a `| sf | Sharpe(bar) | Sharpe(daily) |` table but
+# forget to populate every labelled-block field).
+_TABLE_COLUMN_ALIASES: dict[str, str] = {
+    "sf": "sum_fixed",
+    "sum_fixed": "sum_fixed",
+    "sum fixed": "sum_fixed",
+    "regime_parity": "regime_parity",
+    "regime parity": "regime_parity",
+    "max_dd": "max_dd",
+    "max dd": "max_dd",
+    "dd": "max_dd",
+    "dm_p": "dm_p_value",
+    "dm p": "dm_p_value",
+    "dm p-value": "dm_p_value",
+    "dm_p_value": "dm_p_value",
+    "dsr": "dsr",
+    "auc": "auc",
+    "roc auc": "auc",
+    "roc_auc": "auc",
+    "sharpe(daily)": "sharpe",
+    "daily sharpe": "sharpe",
+    "sharpe daily": "sharpe",
+}
+
+
+def _parse_table_metrics(text: str) -> dict[str, float]:
+    """Best-effort markdown-table parser.
+
+    Returns the FIRST table whose header contains a recognised metric
+    alias, parsed cell-by-cell from the first data row. Empty dict
+    when no usable table is found. Intentionally narrow: requires a
+    leading `|`, trailing `|`, at least 3 column separators, a
+    `---`-bearing alignment row, and a data row with the same shape.
+    """
+    lines = text.split("\n")
+    n = len(lines)
+    for i in range(n - 2):
+        header = lines[i].strip()
+        if not (header.startswith("|") and header.endswith("|")
+                and header.count("|") >= 3):
+            continue
+        cells = [c.strip().lower() for c in header.strip("|").split("|")]
+        col_to_metric: dict[int, str] = {}
+        for j, cell in enumerate(cells):
+            metric = _TABLE_COLUMN_ALIASES.get(cell)
+            if metric is not None:
+                col_to_metric[j] = metric
+        if not col_to_metric:
+            continue
+        if "---" not in lines[i + 1]:
+            continue
+        data_line = lines[i + 2].strip()
+        if not (data_line.startswith("|") and data_line.endswith("|")):
+            continue
+        data_cells = [c.strip() for c in data_line.strip("|").split("|")]
+        result: dict[str, float] = {}
+        for col_idx, metric in col_to_metric.items():
+            if col_idx >= len(data_cells):
+                continue
+            raw = data_cells[col_idx].rstrip("%").lstrip("+").strip()
+            try:
+                result[metric] = float(raw)
+            except ValueError:
+                continue
+        return result
+    return {}
+
+
 def _coerce_metric_value(raw: str) -> float | None:
     """'692.84%' → 692.84, '-8.2' → -8.2, 'N/A' → None, '' → None."""
     s = raw.strip().rstrip("%").lstrip("+").strip()
@@ -782,6 +853,15 @@ def parse_metrics(path: Path) -> dict[str, Any]:
                 continue
             out["sharpe"] = float(m.group(1))
             break
+
+    # v1.4.0 TABLE-METRICS fallback: fill any remaining None slots from
+    # the first markdown table whose header contains a recognised alias.
+    # The `out.get(k) is None` guard preserves priority: labelled block
+    # > legacy regex > Sharpe cascade > table fallback.
+    table = _parse_table_metrics(text)
+    for k, v in table.items():
+        if out.get(k) is None:
+            out[k] = v
 
     return out
 
