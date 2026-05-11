@@ -745,16 +745,43 @@ def parse_metrics(path: Path) -> dict[str, Any]:
         if m:
             out["auc"] = float(m.group(1))
 
-    # v1.3.13 Phase 3 — Sharpe ratio (may be negative). Same
-    # markdown-bold-close tolerance as AUC.
+    # v1.4.0 DAILY-SHARPE cascade. Only fires when GROUP 1's metrics
+    # block didn't supply sharpe.
+    #
+    # Priority 1: explicit daily form — `Sharpe(daily)`, `Sharpe daily`,
+    # `daily Sharpe`, `daily-Sharpe`. Used by Phase 3 LA tasks that also
+    # carry an inflated `Per-bar Sharpe 90.8` note higher in the file.
+    #
+    # Priority 2: bare Sharpe (Phase 2 / Phase 3 NN), with lookbehind /
+    # lookahead exclusion of per-bar contexts. The PROMPT's narrower
+    # `\bSharpe\b` shape was widened to keep the v1.3.13 markdown-bold-
+    # close + `ratio` tolerance (`**Sharpe ratio**: 1.45` is a v1.3.13
+    # test fixture); the per-bar exclusion still does the load-bearing
+    # work for the inflation-note case.
     if out["sharpe"] is None:
         m = re.search(
-            r"\bSharpe(?:[_\s]ratio)?\b\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
+            r"(?:Sharpe[\s_(]+daily[\s)]*|daily[\s_-]+Sharpe)"
+            r"\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
             text,
             re.IGNORECASE,
         )
         if m:
             out["sharpe"] = float(m.group(1))
+
+    if out["sharpe"] is None:
+        for m in re.finditer(
+            r"\bSharpe(?:[_\s]ratio)?\b\**\s*[|:=]?\s*([+-]?\d+(?:\.\d+)?)",
+            text,
+            re.IGNORECASE,
+        ):
+            start = m.start()
+            before = text[max(0, start - 12):start].lower()
+            if "per-bar " in before or "per_bar " in before:
+                continue
+            if "(bar)" in text[m.end():m.end() + 5].lower():
+                continue
+            out["sharpe"] = float(m.group(1))
+            break
 
     return out
 
