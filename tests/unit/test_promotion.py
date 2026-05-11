@@ -499,13 +499,22 @@ def test_tier4_field_name_guard_unrelated_bold_metadata_ignored(
 
 def test_tier4_loses_to_tier1_verdict_heading(tmp_path: Path) -> None:
     """When BOTH `## Verdict` (with PASS) AND a `**Status**: FAIL` line
-    are present, tier 1 wins — fallback ordering must not regress."""
+    are present, Tier 1 wins — fallback ordering must not regress.
+
+    v1.4.1 TIER1-NEGATION-GUARD: Tier 1 itself now runs an ordered
+    REJECTED → CONDITIONAL → PROMOTED cascade. The `**Status**: FAIL`
+    line falls inside the Verdict section (no level-2 heading bounds
+    it) and Pass 1's `FAIL` match wins over Pass 3's `PASS` candidate.
+    Result is REJECTED, not PROMOTED — but the Tier-1-beats-Tier-4
+    ordering invariant the test was written for still holds: Tier 4's
+    `**Status**` reading never runs because Tier 1 already returned.
+    """
     p = _write_promo(
         tmp_path,
         "x",
         "## Verdict\n\n### PASS — measurement OK\n\n**Status**: FAIL\n",
     )
-    assert promotion.parse_verdict(p) == "PROMOTED"
+    assert promotion.parse_verdict(p) == "REJECTED"
 
 
 def test_tier4_loses_to_tier2_legacy_strict(tmp_path: Path) -> None:
