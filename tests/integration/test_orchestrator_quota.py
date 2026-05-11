@@ -1,10 +1,15 @@
 """Integration tests for orchestrator pre-flight + stop-failure + quota.
 
-Covers Stage E DoD items (post-Q14 threshold revision):
-- orchestrator pre-flight check pauses project at >=95% 5h
-- orchestrator pre-flight check pauses ALL projects at >=95% 7d
-- orchestrator pre-flight warns at 85% 5h / 90% 7d (no pause)
+Covers Stage E DoD items (post-Q14 / v1.5.0 threshold revision):
+- orchestrator pre-flight check pauses ALL projects at >=98% 7d
+- orchestrator pre-flight warns at 95% 7d (no pause)
 - stop-failure.sh uses quota.py first, falls back to ratelimit.py
+
+v1.5.0: the 5h pre-check was removed — the engine now uses the 5h
+window 100% and reacts to actual 429 responses via stop-failure.sh.
+Tests asserting 5h pause/warn behaviour live in
+test_preflight_5h_removed.py (their inverse: 5h saturation alone
+must not pause).
 
 Pre-populates quota-cache.json directly so the orchestrator's
 read_cached() returns the value we want without ever fetching.
@@ -87,69 +92,15 @@ def _run_orch_one_loop(env: dict[str, str], timeout: float = 15.0):
 
 
 # ---------------------------------------------------------------------------
-# Pre-flight 5h
-# ---------------------------------------------------------------------------
-
-
-def test_preflight_pauses_project_at_95pct_5h(tmp_path: Path) -> None:
-    user_home = tmp_path / "uhome"
-    project = tmp_path / "proj"
-    _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.97, seven_day=0.20)
-
-    env = _orch_env(user_home)
-    cp = _run_orch_one_loop(env)
-    assert cp.returncode == 0, cp.stderr
-
-    s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert s["phase"] == "paused"
-    assert s["paused"]["reason"] == "5h_pre_check"
-    # iteration NOT bumped (the cycle was a no-op due to pre-flight pause)
-    assert s["iteration"] == 0
-
-
-def test_preflight_warns_at_85pct_5h_but_proceeds(tmp_path: Path) -> None:
-    user_home = tmp_path / "uhome"
-    project = tmp_path / "proj"
-    _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.85, seven_day=0.20)
-
-    env = _orch_env(user_home)
-    cp = _run_orch_one_loop(env)
-    assert cp.returncode == 0, cp.stderr
-    assert "5h quota at 85%" in cp.stderr
-
-    s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert s["phase"] == "active"
-    assert s["iteration"] == 1  # cycle ran
-
-
-def test_preflight_proceeds_at_70pct_5h_no_warn(tmp_path: Path) -> None:
-    user_home = tmp_path / "uhome"
-    project = tmp_path / "proj"
-    _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.70, seven_day=0.20)
-
-    env = _orch_env(user_home)
-    cp = _run_orch_one_loop(env)
-    assert cp.returncode == 0, cp.stderr
-    assert "5h quota at" not in cp.stderr
-
-    s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert s["phase"] == "active"
-    assert s["iteration"] == 1
-
-
-# ---------------------------------------------------------------------------
 # Pre-flight 7d
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_pauses_at_95pct_7d_with_tg(tmp_path: Path) -> None:
+def test_preflight_pauses_at_98pct_7d_with_tg(tmp_path: Path) -> None:
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.96)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.99)
 
     env = _orch_env(user_home)
     cp = _run_orch_one_loop(env)
@@ -163,16 +114,16 @@ def test_preflight_pauses_at_95pct_7d_with_tg(tmp_path: Path) -> None:
     assert (user_home / "7d-tg.last").exists()
 
 
-def test_preflight_warns_at_90pct_7d_but_proceeds(tmp_path: Path) -> None:
+def test_preflight_warns_at_95pct_7d_but_proceeds(tmp_path: Path) -> None:
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.92)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.96)
 
     env = _orch_env(user_home)
     cp = _run_orch_one_loop(env)
     assert cp.returncode == 0, cp.stderr
-    assert "7d quota at 92%" in cp.stderr
+    assert "7d quota at 96%" in cp.stderr
 
     s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
     assert s["phase"] == "active"
@@ -186,7 +137,7 @@ def test_preflight_7d_pauses_all_projects(tmp_path: Path) -> None:
     proj3 = tmp_path / "p3"
     for p in (proj1, proj2, proj3):
         _init_project(p, user_home)
-    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.95)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.99)
 
     env = _orch_env(user_home)
     cp = _run_orch_one_loop(env)
@@ -205,7 +156,7 @@ def test_preflight_7d_tg_dedup_within_window(tmp_path: Path) -> None:
     proj2 = tmp_path / "p2"
     for p in (proj1, proj2):
         _init_project(p, user_home)
-    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.95)
+    _seed_quota_cache(user_home, five_hour=0.30, seven_day=0.99)
 
     env = _orch_env(user_home)
     _run_orch_one_loop(env)
@@ -220,20 +171,6 @@ def test_preflight_7d_tg_dedup_within_window(tmp_path: Path) -> None:
     # be touched again.
     _run_orch_one_loop(env)
     assert sentinel.stat().st_mtime == mtime_after_first_run
-
-
-def test_preflight_7d_takes_priority_over_5h(tmp_path: Path) -> None:
-    """When both thresholds tripped, 7d branch wins."""
-    user_home = tmp_path / "uhome"
-    project = tmp_path / "proj"
-    _init_project(project, user_home)
-    _seed_quota_cache(user_home, five_hour=0.99, seven_day=0.95)
-
-    env = _orch_env(user_home)
-    _run_orch_one_loop(env)
-
-    s = json.loads((project / ".cc-autopipe" / "state.json").read_text())
-    assert s["paused"]["reason"] == "7d_pre_check"
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +253,8 @@ def test_stop_failure_uses_quota_resets_at_when_cache_present(
 
 
 def test_stop_failure_falls_back_to_ladder_without_cache(tmp_path: Path) -> None:
-    """No quota cache + QUOTA_DISABLED=1 forces the ladder path. First
-    invocation lands at the 5min step."""
+    """No quota cache + QUOTA_DISABLED=1 forces the ladder path.
+    v1.5.0: ladder collapsed to flat 15min."""
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
@@ -341,14 +278,15 @@ def test_stop_failure_falls_back_to_ladder_without_cache(tmp_path: Path) -> None
         tzinfo=timezone.utc
     )
     delta = (resume - datetime.now(timezone.utc)).total_seconds()
-    assert 290 <= delta <= 320, f"expected ~5min ladder step, got {delta}s"
+    # v1.5.0 flat 15min; was 5min in v1.4.x ladder.
+    assert 880 <= delta <= 920, f"expected ~15min flat fallback, got {delta}s"
 
     log = (user_home / "log" / "aggregate.jsonl").read_text()
     assert '"resolved_via":"ladder' in log
 
 
 def test_stop_failure_ladder_progression(tmp_path: Path) -> None:
-    """Three rate_limits in a row advance the ladder 5 → 15 → 60 min."""
+    """Three rate_limits in a row: v1.5.0 flat 15min for every step."""
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
@@ -375,22 +313,28 @@ def test_stop_failure_ladder_progression(tmp_path: Path) -> None:
         ).replace(tzinfo=timezone.utc)
         deltas.append((resume - datetime.now(timezone.utc)).total_seconds())
 
-    # Tolerances: ±15s for clock drift between sample and assert.
-    assert 285 <= deltas[0] <= 315, f"step 0: {deltas[0]}"
-    assert 885 <= deltas[1] <= 915, f"step 1: {deltas[1]}"
-    assert 3585 <= deltas[2] <= 3615, f"step 2: {deltas[2]}"
+    # v1.5.0: each invocation returns the flat 15min wait. Pre-v1.5.0
+    # the ladder advanced 5 → 15 → 60.
+    for i, d in enumerate(deltas):
+        assert 880 <= d <= 920, f"step {i}: expected ~15min, got {d}s"
 
 
-def test_preflight_uses_5h_resets_at_for_resume(tmp_path: Path) -> None:
-    """Pre-flight pause uses quota.five_hour_resets_at for state.paused.resume_at."""
+def test_preflight_uses_7d_resets_at_for_resume(tmp_path: Path) -> None:
+    """Pre-flight pause uses quota.seven_day_resets_at for state.paused.resume_at.
+
+    v1.5.0: was test_preflight_uses_5h_resets_at_for_resume. With the 5h
+    pause branch removed, the 7d branch is the only path that produces
+    a paused-by-preflight state, so this test now exercises the 7d
+    resume-at handover.
+    """
     user_home = tmp_path / "uhome"
     project = tmp_path / "proj"
     _init_project(project, user_home)
     _seed_quota_cache(
         user_home,
-        five_hour=0.97,
-        seven_day=0.20,
-        five_resets_in_h=3.5,
+        five_hour=0.10,
+        seven_day=0.99,
+        seven_resets_in_d=2.5,
     )
 
     env = _orch_env(user_home)
@@ -400,7 +344,7 @@ def test_preflight_uses_5h_resets_at_for_resume(tmp_path: Path) -> None:
     resume = datetime.strptime(s["paused"]["resume_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
         tzinfo=timezone.utc
     )
-    expected = datetime.now(timezone.utc) + timedelta(hours=3.5)
+    expected = datetime.now(timezone.utc) + timedelta(days=2.5)
     delta = abs((resume - expected).total_seconds())
     # Pre-flight uses quota's resets_at directly without 60s margin
     # (the 60s is in stop-failure on 429; pre-flight pauses BEFORE

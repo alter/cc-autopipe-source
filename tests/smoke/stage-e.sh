@@ -46,7 +46,10 @@ done
 ok "all 4 hook test files pass"
 
 # 4. End-to-end: pre-populate quota cache, observe pre-flight pause.
-log "pre-flight pauses project at >95% 5h"
+# v1.5.0: 5h pre-check removed entirely. 5h saturation alone must NOT
+# pause the project — the engine relies on Claude CLI's 429 response
+# (reactive path in stop-failure.sh) instead.
+log "5h saturation alone does NOT pause (v1.5.0 reactive policy)"
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 USER_HOME="$SCRATCH/uhome"
@@ -58,7 +61,7 @@ CC_AUTOPIPE_HOME="$REPO_ROOT/src" \
 CC_AUTOPIPE_USER_HOME="$USER_HOME" \
     bash "$REPO_ROOT/src/helpers/cc-autopipe" init "$PROJECT" >/dev/null
 
-# Build a quota cache with 5h utilization at 97%.
+# Build a quota cache with 5h utilization at 100% and 7d safely low.
 "$PY" -c "
 import json
 from datetime import datetime, timedelta, timezone
@@ -66,7 +69,7 @@ from pathlib import Path
 five_resets = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
 seven_resets = (datetime.now(timezone.utc) + timedelta(days=6)).strftime('%Y-%m-%dT%H:%M:%SZ')
 Path('$USER_HOME/quota-cache.json').write_text(json.dumps({
-    'five_hour':  {'utilization': 0.97, 'resets_at': five_resets},
+    'five_hour':  {'utilization': 1.00, 'resets_at': five_resets},
     'seven_day':  {'utilization': 0.30, 'resets_at': seven_resets},
 }))
 "
@@ -84,16 +87,11 @@ PHASE=$("$PY" -c "
 import json
 print(json.load(open('$PROJECT/.cc-autopipe/state.json'))['phase'])
 ")
-[ "$PHASE" = "paused" ] || die "expected phase=paused, got $PHASE"
-REASON=$("$PY" -c "
-import json
-print(json.load(open('$PROJECT/.cc-autopipe/state.json'))['paused']['reason'])
-")
-[ "$REASON" = "5h_pre_check" ] || die "expected 5h_pre_check, got $REASON"
-ok "pre-flight 5h pause verified"
+[ "$PHASE" = "active" ] || die "expected phase=active with 5h saturation in v1.5.0, got $PHASE"
+ok "5h-only saturation does not pause (v1.5.0 reactive)"
 
 # 5. End-to-end: 7d threshold pauses + sentinel created.
-log "pre-flight pauses ALL projects at >=95% 7d with TG dedup"
+log "pre-flight pauses ALL projects at >=98% 7d with TG dedup (v1.5.0)"
 "$PY" -c "
 import json
 from datetime import datetime, timedelta, timezone
@@ -102,11 +100,11 @@ five_resets = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime('%Y-%m-
 seven_resets = (datetime.now(timezone.utc) + timedelta(days=6)).strftime('%Y-%m-%dT%H:%M:%SZ')
 Path('$USER_HOME/quota-cache.json').write_text(json.dumps({
     'five_hour':  {'utilization': 0.30, 'resets_at': five_resets},
-    'seven_day':  {'utilization': 0.95, 'resets_at': seven_resets},
+    'seven_day':  {'utilization': 0.99, 'resets_at': seven_resets},
 }))
 "
 
-# Reset project to active (the previous step paused it).
+# Reset project to active (the previous step did not pause, but be safe).
 "$PY" -c "
 import json
 from pathlib import Path
