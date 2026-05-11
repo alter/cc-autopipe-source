@@ -1,8 +1,56 @@
 # Build Status
 
-**Updated:** 2026-05-11T03:00:00Z
+**Updated:** 2026-05-11T18:00:00Z
 **Current branch:** main
-**Current stage:** **v1.3.13 HOTFIX COMPLETE.** Two groups
+**Current stage:** **v1.4.0 COMPLETE.** Five groups landed (~9 commits,
++19 unit tests, +2 smokes). PROMOTION.md format standardization +
+parser robustness — addresses five separate silent failures observed
+in AI-trade Phase 3 production. **METRICS-BLOCK-CONVENTION**: new
+contract — Claude is instructed (via
+`src/orchestrator/prompt.py:_implement_task_prompt_block()`) to
+include a `## Metrics for leaderboard` block with labelled fields
+(verdict, sum_fixed, regime_parity, max_dd, dm_p_value, dsr, auc,
+sharpe). Engine parses via `_parse_metrics_block()` +
+`_parse_verdict_block()` as Tier 0 / primary source in `parse_verdict`
+and `parse_metrics`. Each v1.3.x regex extractor wrapped with
+`if out[<key>] is None:` so labelled values are never overwritten.
+**RESULT-OVER-STATUS**: Tier 4 bold-metadata split into two passes —
+`BOLD_METADATA_VERDICT_PRIMARY_RE` (Result/Verdict/Outcome/Decision/
+Conclusion) wins over `BOLD_METADATA_VERDICT_STATUS_RE` (Status only).
+Both regexes accept either `**Field**:` or `**Field:**` shape (Phase 3
+NN files use the colon-inside form). Fixes silent misclassification of
+REJECTED NN-track tasks (CfC, H3, DLinear, Chronos, HyperLSTM, S5) as
+PROMOTED. **MULTI-PREFIX-STRIP**: `_promotion_basename` extended via
+`_TASK_ID_PREFIXES` (vec_long_, vec_p1_…p4_, vec_). `promotion_path()`
+probes a candidate chain (Form 1 canonical → Form 2 phase-stripped →
+Form 3 no-strip) and returns the first existing path. New
+`promotion_path_candidates()` exposes the chain. Fixes
+`promotion_verdict_missing` for Phase 3 meta/nn/lv tasks where Claude
+omits the `p3_` prefix. **DAILY-SHARPE**: 2-priority cascade in
+`parse_metrics`. Priority 1: `Sharpe(daily) | daily Sharpe |
+daily-Sharpe`. Priority 2: bare Sharpe (with v1.3.13 ratio +
+markdown-bold-close tolerance) excluding per-bar contexts via
+lookbehind/lookahead. Fixes Phase 3 LA `sharpe = 90.8` (inflated
+per-bar) capture. **TABLE-METRICS**: `_TABLE_COLUMN_ALIASES` +
+`_parse_table_metrics()` reads metric values from the first markdown
+table with a recognised column alias (sf, Sharpe(daily), AUC, etc.).
+Called last in `parse_metrics`; only fills `None` slots. Defense-in-
+depth for files that follow the v1.4.0 contract loosely. **Operator
+action required**: re-run
+`python3 tools/retroactive_promotion_validate.py
+/path/to/AI-trade --prefix vec_p3_ --reprocess` to re-score Phase 3
+leaderboard entries against the new parsers. Expect: LA-track entries
+gain non-zero `sum_fixed` columns and composite > 0.3; NN-track
+REJECTED entries (CfC, H3, DLinear, etc.) correctly recognised and
+NOT appended; meta-track entries (`vec_p3_meta_*`) finally produce
+`promotion_validated` instead of `promotion_verdict_missing`. 872 →
+**891 tests passing** (+19: 5 metrics-block + 3 result-over-status +
+4 multi-prefix + 3 sharpe-cascade + 4 table-fallback). 35/43 smokes
+(+2 new: metrics-block, multi-prefix-filename); the 8 failing v0.5-
+era stages (a/b/c/d/e/f/k/l) are baseline noise unchanged from
+v1.3.12. See V140_BUILD_DONE.md for full per-group details.
+
+**Earlier stage:** **v1.3.13 HOTFIX COMPLETE.** Two groups
 (NEUTRAL-VERDICT: `"NEUTRAL"` added to `CANONICAL_MAP` (→
 `"CONDITIONAL"`), `VERDICT_KEYWORD_RE` (tier 1),
 `BOLD_METADATA_VERDICT_RE` (tier 4), and `ACCEPTANCE_KEYWORD_RE`
