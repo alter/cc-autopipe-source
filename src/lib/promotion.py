@@ -1094,18 +1094,33 @@ def quarantine_invalid(
     cycle's prompt will surface the missing sections via the standard
     backlog top-N injection. Operator (or claude on the next turn)
     completes the missing sections, then re-marks [x].
+
+    v1.4.1 QUARANTINE-FILENAME-CONSISTENCY: marker filename and CAND
+    reference both go through `_promotion_basename(task_id)` so the
+    write-side paths match the engine's Form 1 (canonical) read-side
+    resolution introduced in v1.4.0 MULTI-PREFIX-STRIP. Pre-v1.4.1
+    quarantine markers used the raw task_id (e.g.
+    `UNVALIDATED_PROMOTION_vec_p3_meta_anti_winner_bias.md`) which
+    pointed operators at a CAND path that no longer exists (the
+    engine reads from `CAND_meta_anti_winner_bias_PROMOTION.md` via
+    the candidate-path probe). Legacy markers on production disks
+    are left untouched — they were write-once at quarantine time
+    and operators own them.
     """
     import state as _state  # noqa: PLC0415
 
-    quar = project / "data" / "debug" / f"UNVALIDATED_PROMOTION_{getattr(item, 'id')}.md"
+    task_id = getattr(item, "id", "")
+    basename = _promotion_basename(task_id)
+
+    quar = project / "data" / "debug" / f"UNVALIDATED_PROMOTION_{basename}.md"
     quar.parent.mkdir(parents=True, exist_ok=True)
     body = (
-        f"# Unvalidated promotion: {getattr(item, 'id')}\n\n"
+        f"# Unvalidated promotion: {task_id}\n\n"
         "Verdict was PROMOTED but the following v2.0 PROMOTION sections "
         "are missing:\n\n"
         + "\n".join(f"- {s}" for s in missing)
         + "\n\nEngine reverted backlog mark to [~]. Add missing sections "
-        f"to `data/debug/CAND_{getattr(item, 'id')}_PROMOTION.md`, then "
+        f"to `data/debug/CAND_{basename}_PROMOTION.md`, then "
         "re-mark [x].\n"
     )
     quar.write_text(body, encoding="utf-8")
