@@ -309,6 +309,12 @@ def _parse_metrics_block(text: str) -> dict[str, str]:
 # files that follow the v1.4.0 contract loosely (e.g. Phase 3 LA tasks
 # that include a `| sf | Sharpe(bar) | Sharpe(daily) |` table but
 # forget to populate every labelled-block field).
+#
+# v1.4.1: bare `"dd"` removed. AI-trade documentation tables frequently
+# use `dd` for date-format columns (`Date (dd-MM)`, `dd/yyyy`) or
+# unrelated abbreviations; the alias claimed those headers as `max_dd`
+# and corrupted the leaderboard with date numerals. `max_dd` and
+# `max dd` remain (those are unambiguous v1.3.x extractor names).
 _TABLE_COLUMN_ALIASES: dict[str, str] = {
     "sf": "sum_fixed",
     "sum_fixed": "sum_fixed",
@@ -317,7 +323,6 @@ _TABLE_COLUMN_ALIASES: dict[str, str] = {
     "regime parity": "regime_parity",
     "max_dd": "max_dd",
     "max dd": "max_dd",
-    "dd": "max_dd",
     "dm_p": "dm_p_value",
     "dm p": "dm_p_value",
     "dm p-value": "dm_p_value",
@@ -332,6 +337,54 @@ _TABLE_COLUMN_ALIASES: dict[str, str] = {
 }
 
 
+def _coerce_table_cell(raw: str) -> float | None:
+    """Coerce a markdown-table data cell to float.
+
+    v1.4.1 TABLE-CELL-HARDENING. Handles real Phase 3 PROMOTION.md cell
+    shapes that the v1.4.0 inline `float(raw.rstrip('%').lstrip('+'))`
+    silently dropped:
+      - Bold markers:        `**0.78762**` → 0.78762   (Phase 3 NN tables)
+      - Unicode minus:       `−3.32`       → -3.32     (U+2212; Phase 3 LA Δ rows)
+      - En-dash / em-dash:   `–4.1` / `—5` → -4.1 / -5 (U+2013 / U+2014)
+      - Trailing percent:    `692.84%`     → 692.84
+      - Leading plus:        `+0.00576`    → 0.00576
+      - Em-dash placeholder: `—` / `--`    → None
+      - N/A markers:         `N/A` / `-`   → None
+      - Trailing emoji:      `0.86003 ✓`   → 0.86003   (strip trailing non-numeric)
+
+    Returns None when the cell is empty, a placeholder, or doesn't reduce
+    to a parseable float.
+    """
+    s = raw.strip()
+    while s.startswith("**") and s.endswith("**") and len(s) >= 4:
+        s = s[2:-2].strip()
+    s = s.strip("*_").strip()
+    if not s or s.lower() in ("n/a", "na", "none", "null", "—", "--", "-"):
+        return None
+    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
+    head: list[str] = []
+    seen_digit = False
+    for i, ch in enumerate(s):
+        if ch.isdigit():
+            seen_digit = True
+            head.append(ch)
+        elif ch in "+-." and not seen_digit:
+            head.append(ch)
+        elif ch in "+-." and seen_digit and (i == 0 or s[i - 1].isdigit()):
+            head.append(ch)
+        elif ch.lower() == "e" and seen_digit:
+            head.append(ch)
+        else:
+            break
+    cleaned = "".join(head).rstrip("+-.").rstrip("%")
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def _parse_table_metrics(text: str) -> dict[str, float]:
     """Best-effort markdown-table parser.
 
@@ -340,6 +393,10 @@ def _parse_table_metrics(text: str) -> dict[str, float]:
     when no usable table is found. Intentionally narrow: requires a
     leading `|`, trailing `|`, at least 3 column separators, a
     `---`-bearing alignment row, and a data row with the same shape.
+
+    v1.4.1: data-cell coercion delegated to `_coerce_table_cell` so
+    bold markers, Unicode minus, em-dash placeholders and trailing
+    emoji don't silently swallow the metric.
     """
     lines = text.split("\n")
     n = len(lines)
@@ -366,11 +423,9 @@ def _parse_table_metrics(text: str) -> dict[str, float]:
         for col_idx, metric in col_to_metric.items():
             if col_idx >= len(data_cells):
                 continue
-            raw = data_cells[col_idx].rstrip("%").lstrip("+").strip()
-            try:
-                result[metric] = float(raw)
-            except ValueError:
-                continue
+            val = _coerce_table_cell(data_cells[col_idx])
+            if val is not None:
+                result[metric] = val
         return result
     return {}
 
