@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""ratelimit.py — backoff ladder for cases where quota.py returns None.
+"""ratelimit.py — flat 15min fallback for cases where 429 parsing + quota
+both return None.
 
-Refs: SPEC.md §6.4, §9.3
+Refs: SPEC.md §6.4, §9.3 (v1.5.0 supersedes the escalating ladder)
 
-Strategy: when 429 hits and we don't have a precise resets_at from
-quota.py, climb a 5min/15min/1h ladder. After 6h with no further 429,
-the counter resets — a single transient throttle shouldn't drag the
-project into hour-long pauses for the rest of the build.
+v1.5.0 policy: flat 15-minute fallback. The pre-v1.5.0 5min/15min/60min
+escalating ladder turned a third transient throttle in a 6h window into
+an hour-long pause; in practice the precise reset time parsed from the
+429 message body or Retry-After header (stop-failure.sh) supplies the
+actual wait. Flat 15min keeps the fallback predictable, and a parsing
+miss never costs an hour of work.
+
+State is still persisted (count + last_429_ts) for postmortem audit, but
+the returned wait no longer depends on count.
 
 State persisted at ~/.cc-autopipe/ratelimit.json:
     {"count": 2, "last_429_ts": 1714363800.0}
 
 CLI surface (used by stop-failure.sh per SPEC §9.3):
-    python3 ratelimit.py register-429    Print wait_sec to stdout, advance ladder
+    python3 ratelimit.py register-429    Print wait_sec (always 900), bump count
     python3 ratelimit.py state           Print current state JSON
     python3 ratelimit.py reset           Force count → 0
 """
@@ -27,8 +33,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-LADDER_SEC = [300, 900, 3600]  # 5min, 15min, 1h
-RESET_AFTER_SEC = 21600  # 6h with no 429 → reset count
+# v1.5.0: flat 15-minute fallback. See module docstring for rationale.
+FALLBACK_WAIT_SEC = 900  # 15 minutes
 
 STATE_FILENAME = "ratelimit.json"
 
@@ -86,29 +92,25 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def register_429(now: float | None = None) -> int:
-    """Advance the ladder by one step. Returns wait_sec.
+    """Return the flat 15-minute fallback wait. Bumps audit counters.
 
-    Resets count to 0 if >6h has elapsed since the last 429 — a
-    transient throttle six hours ago shouldn't poison the next backoff.
+    v1.5.0: count + last_429_ts still persisted for postmortem visibility,
+    but the returned wait is no longer a function of count.
     """
     if now is None:
         now = time.time()
     state = load_state()
-    if now - state["last_429_ts"] > RESET_AFTER_SEC:
-        state["count"] = 0
-    idx = min(state["count"], len(LADDER_SEC) - 1)
-    wait_sec = LADDER_SEC[idx]
-    state["count"] += 1
+    state["count"] = int(state.get("count", 0)) + 1
     state["last_429_ts"] = now
     save_state(state)
-    return wait_sec
+    return FALLBACK_WAIT_SEC
 
 
 def get_resume_at(quota_resume_at: datetime | None = None) -> datetime:
     """Returns the absolute UTC time at which the project should resume.
 
     Prefers the precise resets_at from quota.py when available; falls
-    back to advancing the ladder. SPEC §9.4 mandates a 60s safety
+    back to the flat 15-minute wait. SPEC §9.4 mandates a 60s safety
     margin to avoid hitting the limit immediately on resume.
     """
     if quota_resume_at is not None:
