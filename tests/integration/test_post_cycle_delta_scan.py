@@ -201,7 +201,11 @@ def test_strategy_prefix_missing_sections_quarantines(
     PROMOTION has verdict PROMOTED but NO v2 sections → quarantined.
     Expect: v2_sections_check(strict=True, all_present=False),
     NO promotion_validated, promotion_invalid event,
-    UNVALIDATED_PROMOTION_vec_long_synth_meta_v1.md exists.
+    UNVALIDATED_PROMOTION_long_synth_meta_v1.md exists.
+
+    v1.4.1 QUARANTINE-FILENAME-CONSISTENCY: marker filename uses
+    `_promotion_basename(task_id)` (Form 1: only `vec_` stripped) so
+    the write-side path matches the engine's read-side resolution.
     """
     user_home = tmp_path / "uhome"
     monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
@@ -229,8 +233,10 @@ def test_strategy_prefix_missing_sections_quarantines(
     assert len(invalid) == 1
     assert invalid[0]["task_id"] == "vec_long_synth_meta_v1"
 
-    # Quarantine marker file written
-    quar = project / "data" / "debug" / "UNVALIDATED_PROMOTION_vec_long_synth_meta_v1.md"
+    # Quarantine marker file written. v1.4.1 uses Form 1 basename
+    # (`_promotion_basename` strips `vec_`) so the marker path matches
+    # the engine's read-side candidate-path probe.
+    quar = project / "data" / "debug" / "UNVALIDATED_PROMOTION_long_synth_meta_v1.md"
     assert quar.exists(), "quarantine marker file not created"
 
 

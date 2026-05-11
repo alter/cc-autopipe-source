@@ -160,9 +160,12 @@ grep -q '\[~\] \[implement\] \[P1\] vec_long_lgbm' "$PROJ2/backlog.md" \
     || die "backlog [x] should be reverted to [~]\n$(cat "$PROJ2/backlog.md")"
 ok "backlog reverted [x]→[~]"
 
-[ -f "$PROJ2/data/debug/UNVALIDATED_PROMOTION_vec_long_lgbm.md" ] \
-    || die "UNVALIDATED_PROMOTION_*.md missing"
-ok "UNVALIDATED_PROMOTION_<id>.md quarantine marker written"
+# v1.4.1 QUARANTINE-FILENAME-CONSISTENCY: marker uses Form 1
+# basename (`_promotion_basename` strips `vec_`), so the file lands
+# at UNVALIDATED_PROMOTION_long_lgbm.md, not _vec_long_lgbm.md.
+[ -f "$PROJ2/data/debug/UNVALIDATED_PROMOTION_long_lgbm.md" ] \
+    || die "UNVALIDATED_PROMOTION_long_lgbm.md (Form 1 basename) missing"
+ok "UNVALIDATED_PROMOTION_<basename>.md quarantine marker written"
 
 INVALID_COUNT=$(grep -c '"event":"promotion_invalid"' "$AGG" || true)
 [ "$INVALID_COUNT" -eq 1 ] \

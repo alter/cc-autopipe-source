@@ -205,11 +205,22 @@ def test_quarantine_invalid_reverts_x_to_tilde(
     assert "[~] [implement] [P1] vec_long_lgbm" in body
     assert "[x] [implement] [P1] vec_long_lgbm" not in body
 
+    # v1.4.1 QUARANTINE-FILENAME-CONSISTENCY: marker filename uses
+    # `_promotion_basename(task_id)` (Form 1: only `vec_` stripped) so
+    # the write-side path matches the engine's read-side resolution
+    # introduced in v1.4.0 MULTI-PREFIX-STRIP. `vec_long_lgbm` →
+    # `UNVALIDATED_PROMOTION_long_lgbm.md`.
     quar = (
-        project / "data" / "debug" / "UNVALIDATED_PROMOTION_vec_long_lgbm.md"
+        project / "data" / "debug" / "UNVALIDATED_PROMOTION_long_lgbm.md"
     )
     assert quar.exists()
-    assert "Walk-forward stability" in quar.read_text(encoding="utf-8")
+    body_text = quar.read_text(encoding="utf-8")
+    assert "Walk-forward stability" in body_text
+    # Body heading retains the full task_id (operator readability).
+    assert "# Unvalidated promotion: vec_long_lgbm" in body_text
+    # CAND reference uses the Form 1 basename so the operator opens
+    # the file the engine actually reads.
+    assert "`data/debug/CAND_long_lgbm_PROMOTION.md`" in body_text
 
     events = [e for e in _read_aggregate(user_home) if e.get("event")]
     invalid = [e for e in events if e["event"] == "promotion_invalid"]
