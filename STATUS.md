@@ -1,8 +1,54 @@
 # Build Status
 
-**Updated:** 2026-05-11T20:30:00Z
+**Updated:** 2026-05-11T21:00:00Z
 **Current branch:** main
-**Current stage:** **v1.4.1 HOTFIX COMPLETE.** Three groups landed in
+**Current stage:** **v1.5.0 COMPLETE — reactive rate-limit policy.** Three
+groups landed in 8 commits, +30 unit/integration tests, +1 smoke. 904 →
+**923 tests passing**; 36/44 → **37/45 smokes** (+1 new
+`run-reactive-rate-limit-smoke.sh`; the 8 failing v0.5-era stages
+a/b/c/d/e/f/k/l remain baseline noise unchanged from v1.4.1).
+**PREFLIGHT-5H-REMOVAL**: `_preflight_quota` in
+`src/orchestrator/preflight.py` no longer checks the 5h rolling window.
+The 5h pause + warn branches and `PREFLIGHT_5H_PAUSE` /
+`PREFLIGHT_5H_WARN` constants are gone; function returns one of `"ok"`,
+`"warn_7d"`, `"paused_7d"`. `src/orchestrator/cycle.py` line 557
+simplified from `if preflight in ("paused_5h", "paused_7d"):` to
+`if preflight == "paused_7d":`. Engine now uses 100% of the rolling 5h
+window; rate-limit pauses are driven entirely by Claude CLI's 429
+responses via the reactive path in `stop-failure.sh` + `ratelimit.py`.
+The burned cost of a false-start cycle (one `claude -p` invocation that
+exits 429 immediately) is negligible vs. the productive cycles unlocked
+by riding the 5h window to actual exhaustion. **PREFLIGHT-7D-BUMP**:
+`PREFLIGHT_7D_PAUSE` 0.95 → 0.98, `PREFLIGHT_7D_WARN` 0.90 → 0.95.
+Weekly quota rides closer to the wall; ~1 day cushion remains. Folded
+into the GROUP 1 preflight rewrite; threshold change is revertable
+independently of the 5h removal. **REACTIVE-429-PARSE-FIRST**:
+`src/hooks/stop-failure.sh` parses retry-after from the 429
+`error_details` itself BEFORE consulting `quota.py` cache. Three forms
+recognised, evaluated in this order: (1) ISO 8601 timestamp anywhere in
+the message (`Resets at 2026-05-11T18:10:00Z`); (2) relative-time prose
+(`retry after 15 minutes`, `in 600 seconds`) — evaluated AHEAD of the
+header form so prose carrying a unit is not misread as `Retry-After:
+15s`; (3) `Retry-After:` / `X-RateLimit-Reset:` header (seconds, no
+unit). All three feed `state.paused.resume_at` with a 60s safety
+margin; aggregate event records `resolved_via=parsed_message`. `DETAILS`
+is passed to embedded python via env var, not interpolated into a
+HEREDOC, so arbitrary shell metacharacters in the message stay safe.
+`src/lib/ratelimit.py`: escalating 5min/15min/60min ladder collapsed to
+flat 15min via `FALLBACK_WAIT_SEC = 900`. `LADDER_SEC` and
+`RESET_AFTER_SEC` constants removed. `register_429` still persists
+`count` + `last_429_ts` for postmortem audit but the wait no longer
+depends on count. CLI surface (`register-429` / `state` / `reset`) and
+state file format unchanged. `stop-failure.sh` last-resort fallback
+shortened 1h → 15min via inline `timedelta(minutes=15)`. With
+parse-first and flat-15min ladder in front of it, the last-resort path
+is practically unreachable but kept defensively. **Operator action
+required**: none — restart `cc-autopipe.service` to pick up the new
+policy. Existing PAUSED projects auto-resume at their scheduled
+`resume_at` regardless of resolution path. See V150_BUILD_DONE.md for
+full per-group details.
+
+**Earlier stage:** **v1.4.1 HOTFIX COMPLETE.** Three groups landed in
 7 commits, +9 unit tests, +1 smoke. PROMOTION.md parser hardening
 against silent failures uncovered in v1.4.0 by inspection against real
 AI-trade Phase 3 file shapes. **TABLE-CELL-HARDENING**: new
