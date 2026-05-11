@@ -184,6 +184,59 @@ VERDICT_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# v1.4.1 TIER1-NEGATION-GUARD. The original `VERDICT_KEYWORD_RE` is a
+# single alternation; `re.search` returns the FIRST match regardless of
+# polarity. A Verdict section containing free prose like
+# `This task did NOT pass — Result: REJECTED` silently captured `pass`
+# as PROMOTED before the REJECTED keyword was ever reached. Tier 3 and
+# Tier 4 already guard against this (group ordering, two-pass regex);
+# Tier 1 had no equivalent protection.
+#
+# Three ordered regexes mirror Tier 4's RESULT-OVER-STATUS shape:
+# REJECTED keywords win, then CONDITIONAL, then PROMOTED (with an
+# 8-char negation lookbehind that filters `not pass` / `n't pass` /
+# `fail to pass` / `did not pass` etc.).
+#
+# The legacy `VERDICT_KEYWORD_RE` is preserved for external callers
+# and any tests that import it directly; `_parse_verdict_tier1` no
+# longer uses it.
+VERDICT_KEYWORD_REJECT_RE = re.compile(
+    r"\b(REJECTED|REJECT|FAILED|FAIL|LONG_LOSES_MONEY)\b",
+    re.IGNORECASE,
+)
+
+VERDICT_KEYWORD_CONDITIONAL_RE = re.compile(
+    r"\b(CONDITIONAL|PARTIAL|NEUTRAL)\b",
+    re.IGNORECASE,
+)
+
+VERDICT_KEYWORD_PROMOTE_RE = re.compile(
+    r"\b(PROMOTED|ACCEPTED|ACCEPT|PASSED|PASS|STABLE)\b",
+    re.IGNORECASE,
+)
+
+# Words that, when they appear in the 8-char window before a PROMOTED
+# keyword, negate it. ASCII-only intentionally; Unicode negation forms
+# would need the third-party `regex` module which the project's
+# stdlib-only constraint forbids. Non-English negations are out of
+# scope — mixed-language reports should use the labelled metrics block.
+_NEGATION_PREFIXES: tuple[str, ...] = (
+    "not ", "no ", "n't ", "fail to ", "doesn't ",
+    "didn't ", "won't ", "wouldn't ",
+)
+
+
+def _match_promote_keyword(section: str) -> str | None:
+    """Find the first PROMOTED-class keyword whose preceding 8-char
+    window contains no negation marker. Returns the matched keyword
+    (raw, upper-case) or None when every candidate is negated."""
+    for m in VERDICT_KEYWORD_PROMOTE_RE.finditer(section):
+        before = section[max(0, m.start() - 8):m.start()].lower()
+        if any(neg in before for neg in _NEGATION_PREFIXES):
+            continue
+        return m.group(1)
+    return None
+
 
 def _next_heading_re(verdict_level: int) -> re.Pattern[str]:
     """Match the next heading at the same level as the Verdict heading or
@@ -582,13 +635,21 @@ def promotion_path(project: Path, task_id: str) -> Path:
 
 
 def _parse_verdict_tier1(text: str) -> str | None:
-    """Tier 1 (v1.3.6): Verdict heading + body keyword.
+    """Tier 1 (v1.3.6 + v1.4.1 negation guard): Verdict heading + body keyword.
 
-    Lenient two-pass discovery. First find a Verdict heading at any level
-    (optionally prefixed `Stage X:`), then scan up to 20 lines (or until
-    the next same-or-higher-level heading) for a verdict keyword.
-    First keyword wins. Returns None when no Verdict heading exists or
-    the section under it has no recognised keyword.
+    Lenient discovery. Find a Verdict heading at any level (optionally
+    prefixed `Stage X:`), then scan up to 20 lines (or until the next
+    same-or-higher-level heading) for a verdict keyword.
+
+    v1.4.1 TIER1-NEGATION-GUARD: keyword search split into three
+    ordered passes — REJECTED → CONDITIONAL → PROMOTED. PROMOTED pass
+    uses an 8-char negation lookbehind so `did NOT pass` /
+    `n't pass` / `fail to pass` are filtered out and the REJECTED
+    keyword later in the section wins. Mirrors the Tier 4 RESULT-OVER-
+    STATUS two-pass shape introduced in v1.4.0.
+
+    Returns None when no Verdict heading exists or the section under
+    it has no recognised keyword (after negation filtering).
     """
     heading_match = VERDICT_HEADING_RE.search(text)
     if not heading_match:
@@ -608,11 +669,22 @@ def _parse_verdict_tier1(text: str) -> str | None:
     lines = section.split("\n")[:20]
     section_capped = "\n".join(lines)
 
-    keyword_match = VERDICT_KEYWORD_RE.search(section_capped)
-    if not keyword_match:
-        return None
-    raw = keyword_match.group(1).upper()
-    return CANONICAL_MAP.get(raw)
+    # Pass 1: REJECTED-class keywords win unconditionally.
+    m = VERDICT_KEYWORD_REJECT_RE.search(section_capped)
+    if m:
+        return CANONICAL_MAP.get(m.group(1).upper())
+
+    # Pass 2: CONDITIONAL-class keywords (PARTIAL / NEUTRAL).
+    m = VERDICT_KEYWORD_CONDITIONAL_RE.search(section_capped)
+    if m:
+        return CANONICAL_MAP.get(m.group(1).upper())
+
+    # Pass 3: PROMOTED-class keywords with the negation guard.
+    raw = _match_promote_keyword(section_capped)
+    if raw is not None:
+        return CANONICAL_MAP.get(raw.upper())
+
+    return None
 
 
 def _parse_verdict_acceptance(text: str) -> str | None:
