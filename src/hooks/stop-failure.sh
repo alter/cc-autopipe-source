@@ -6,12 +6,16 @@
 # Output: state mutations, TG alert on rate_limit / failed
 # Exit:   0
 #
-# 429 resume_at resolution per SPEC §9.3:
-#   1. Try quota.py — if it gives us five_hour.resets_at, use that
+# 429 resume_at resolution (v1.5.0):
+#   1. Parse retry-after from $DETAILS itself — ISO 8601 timestamp,
+#      Retry-After header, or relative-time prose. Authoritative when
+#      present: the 429 response IS the rate-limit signal, quota.py's
+#      cache can lag by up to 60s.
+#   2. Try quota.py — if it gives us five_hour.resets_at, use that
 #      (with the §9.4 60s safety margin already applied by the engine
 #      when the orchestrator's pre-flight kicks in).
-#   2. Fall back to ratelimit.py register-429 ladder (5/15/60 min).
-#   3. As a last resort if both are unavailable, default to now+1h.
+#   3. Fall back to ratelimit.py register-429 (v1.5.0: flat 15min).
+#   4. Last resort: 15min flat fallback (v1.5.0; was 1h pre-v1.5.0).
 
 set -u
 
@@ -31,25 +35,83 @@ DETAILS=$(printf '%s' "$INPUT" | jq -r '.error_details // empty' 2>/dev/null)
 
 PROJECT_NAME=$(basename "$PROJECT")
 
+# v1.5.0: parse retry-after from the 429 message itself. Anthropic can
+# surface the precise reset time via the response body or the
+# Retry-After header; that's authoritative — quota.py's cache may lag
+# by up to 60s. Order (prose AHEAD of bare-seconds header form so that
+# "retry after 15 minutes" reads as 15min, not 15s):
+#   1. ISO 8601 timestamp in error_details (e.g. "Resets at 2026-05-11T18:10:00Z")
+#   2. Relative-time prose ("in 15 minutes", "retry after 600 seconds")
+#   3. Retry-After / X-RateLimit-Reset header (seconds, no unit)
+# All three feed into the existing RESUME_AT pipeline. DETAILS is passed
+# via env var (not interpolated into a HEREDOC) to keep arbitrary shell
+# metacharacters in the message safe.
+PARSED_RESUME_AT=""
+if [ "$ERROR" = "rate_limit" ] || [ "$ERROR" = "429" ] || [ "$ERROR" = "RATE_LIMIT" ]; then
+    PARSED_RESUME_AT=$(DETAILS="$DETAILS" python3 -c "
+import os, re, sys
+from datetime import datetime, timedelta, timezone
+
+text = os.environ.get('DETAILS', '') or ''
+
+# 1. ISO 8601 timestamp.
+m = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(Z|[+-]\d{2}:?\d{2})?', text)
+if m:
+    raw = m.group(1) + (m.group(2) or 'Z')
+    raw = raw.replace('Z', '+00:00')
+    try:
+        dt = (datetime.fromisoformat(raw) + timedelta(seconds=60)).astimezone(timezone.utc)
+        print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        sys.exit(0)
+    except ValueError:
+        pass
+
+# 2. Relative-time prose ('retry after 15 minutes', 'in 600 seconds').
+#    Runs ahead of the bare-seconds header form so 'retry after 15 minutes'
+#    is read as 15min, not as Retry-After: 15.
+m = re.search(r'(?:retry\s+after|in)\s+(\d+)\s+(second|minute|hour)s?', text, re.I)
+if m:
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    secs = n * {'second': 1, 'minute': 60, 'hour': 3600}[unit]
+    dt = (datetime.now(timezone.utc) + timedelta(seconds=secs + 60)).astimezone(timezone.utc)
+    print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    sys.exit(0)
+
+# 3. Retry-After / X-RateLimit-Reset header (seconds, no unit).
+m = re.search(r'(?:retry[-_]after|x[-_]ratelimit[-_]reset)[:\s]+(\d+)', text, re.I)
+if m:
+    secs = int(m.group(1)) + 60
+    dt = (datetime.now(timezone.utc) + timedelta(seconds=secs)).astimezone(timezone.utc)
+    print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    sys.exit(0)
+" 2>/dev/null || echo "")
+fi
+
 case "$ERROR" in
     rate_limit|429|RATE_LIMIT)
         QUOTA_PY="$CC_AUTOPIPE_HOME/lib/quota.py"
         RATELIMIT_PY="$CC_AUTOPIPE_HOME/lib/ratelimit.py"
 
-        # Try quota first per SPEC §9.3.
-        QUOTA_JSON=$(python3 "$QUOTA_PY" read 2>/dev/null || true)
         RESUME_AT=""
-        QUOTA_RESETS_AT=""
-        if [ -n "$QUOTA_JSON" ]; then
-            QUOTA_RESETS_AT=$(printf '%s' "$QUOTA_JSON" | jq -r '.five_hour.resets_at // empty' 2>/dev/null || echo "")
+        RESOLVE_VIA=""
+
+        # v1.5.0: parsed retry-after wins over everything else.
+        if [ -n "$PARSED_RESUME_AT" ]; then
+            RESUME_AT="$PARSED_RESUME_AT"
+            RESOLVE_VIA="parsed_message"
         fi
 
-        if [ -n "$QUOTA_RESETS_AT" ]; then
-            # Convert quota's resets_at to canonical "...Z" (UTC) with
-            # the SPEC §9.4 60s safety margin. Python parses both
-            # Z-suffix and +00:00 offset forms; keep timezone UTC the
-            # whole way so the printed Z suffix is honest.
-            RESUME_AT=$(python3 -c "
+        # Try quota cache next.
+        if [ -z "$RESUME_AT" ]; then
+            QUOTA_JSON=$(python3 "$QUOTA_PY" read 2>/dev/null || true)
+            QUOTA_RESETS_AT=""
+            if [ -n "$QUOTA_JSON" ]; then
+                QUOTA_RESETS_AT=$(printf '%s' "$QUOTA_JSON" | jq -r '.five_hour.resets_at // empty' 2>/dev/null || echo "")
+            fi
+
+            if [ -n "$QUOTA_RESETS_AT" ]; then
+                RESUME_AT=$(python3 -c "
 import sys
 from datetime import datetime, timedelta, timezone
 raw = '$QUOTA_RESETS_AT'.replace('Z', '+00:00')
@@ -59,11 +121,14 @@ try:
 except Exception:
     sys.exit(1)
 " 2>/dev/null || echo "")
-            RESOLVE_VIA="quota"
+                if [ -n "$RESUME_AT" ]; then
+                    RESOLVE_VIA="quota"
+                fi
+            fi
         fi
 
         if [ -z "$RESUME_AT" ]; then
-            # Fall back to ratelimit ladder.
+            # Fall back to ratelimit. v1.5.0: flat 15min via FALLBACK_WAIT_SEC.
             WAIT_SEC=$(python3 "$RATELIMIT_PY" register-429 2>/dev/null || echo "")
             if [ -n "$WAIT_SEC" ]; then
                 RESUME_AT=$(python3 -c "
@@ -75,13 +140,12 @@ print((datetime.now(timezone.utc) + timedelta(seconds=$WAIT_SEC)).strftime('%Y-%
         fi
 
         if [ -z "$RESUME_AT" ]; then
-            # Last-resort 1h fallback (matches Stage C's behaviour when
-            # both quota and ratelimit are completely unavailable).
+            # Last-resort fallback. v1.5.0: 15min flat (was 1h pre-v1.5.0).
             RESUME_AT=$(python3 -c "
 from datetime import datetime, timedelta, timezone
-print((datetime.now(timezone.utc) + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+print((datetime.now(timezone.utc) + timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
-            RESOLVE_VIA="fallback(1h)"
+            RESOLVE_VIA="fallback(15min)"
         fi
 
         python3 "$STATE_PY" set-paused "$PROJECT" "$RESUME_AT" "rate_limit" \
