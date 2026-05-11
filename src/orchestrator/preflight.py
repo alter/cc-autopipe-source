@@ -24,13 +24,19 @@ DISK_CONFIG_DEFAULTS: dict[str, object] = {
     "disk_keep_checkpoints_per_dir": 3,
 }
 
-# Pre-flight thresholds. Deviates from SPEC §9.2 — see OPEN_QUESTIONS.md Q14.
-# Engine pauses only when quota is dangerously close to exhaustion; 90% 7d
-# was triggering false-positive pauses with 4 days of headroom remaining.
-PREFLIGHT_5H_PAUSE = 0.95
-PREFLIGHT_5H_WARN = 0.85
-PREFLIGHT_7D_PAUSE = 0.95
-PREFLIGHT_7D_WARN = 0.90
+# Pre-flight thresholds. Deviates from SPEC §9.2 — see OPEN_QUESTIONS.md Q14,
+# superseded for the 5h dimension by v1.5.0 (Q22): 5h pre-check removed
+# entirely. The engine no longer pauses based on cached 5h quota — it runs
+# until Claude CLI returns 429 from the API. Reactive handling lives in
+# src/hooks/stop-failure.sh + ratelimit.py. Net effect: 100% of the rolling
+# 5h window is usable; one cycle's failed `claude -p` invocation is the cost
+# of using the API as the authoritative rate-limit signal.
+#
+# 7d thresholds bumped in v1.5.0: pause 0.95 → 0.98, warn 0.90 → 0.95.
+# Weekly quota rides closer to the wall; the precise seven_day_resets_at
+# still gives a clean auto-resume.
+PREFLIGHT_7D_PAUSE = 0.98
+PREFLIGHT_7D_WARN = 0.95
 
 
 def _resume_paused_if_due(s: state.State) -> bool:
@@ -41,9 +47,9 @@ def _resume_paused_if_due(s: state.State) -> bool:
     if s.phase != "paused" or s.paused is None:
         return False
     try:
-        resume_at = datetime.strptime(
-            s.paused.resume_at, "%Y-%m-%dT%H:%M:%SZ"
-        ).replace(tzinfo=timezone.utc)
+        resume_at = datetime.strptime(s.paused.resume_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except ValueError:
         return False
     if datetime.now(timezone.utc) >= resume_at:
@@ -54,23 +60,20 @@ def _resume_paused_if_due(s: state.State) -> bool:
 
 
 def _preflight_quota(project_path: Path, s: state.State) -> str:
-    """Pause the project (or all projects) if we're close to a quota limit.
+    """Pause the project if we're close to the 7d (weekly) quota limit.
+
+    v1.5.0: 5h pre-check removed entirely. The 5h rolling window is
+    handled reactively via the stop-failure.sh + ratelimit.py path
+    triggered by Claude CLI's 429 responses.
 
     Returns one of:
       "ok"         — quota fine OR quota.py returned None (caller proceeds)
-      "warn_5h"    — between 85% and 95% on 5h, still proceeds
-      "warn_7d"    — between 90% and 95% on 7d, still proceeds
-      "paused_5h"  — >=95% 5h, project paused until 5h resets
-      "paused_7d"  — >=95% 7d, project paused until 7d resets, TG sent
+      "warn_7d"    — between 95% and 98% on 7d, still proceeds
+      "paused_7d"  — >=98% 7d, project paused until 7d resets, TG sent
     """
     q = quota_lib.read_cached()
     if q is None:
         return "ok"
-
-    if q.five_hour_pct >= PREFLIGHT_7D_PAUSE and q.seven_day_pct >= PREFLIGHT_7D_PAUSE:
-        # Both thresholds tripped — prefer 7d since it's the longer pause
-        # and the broader signal (account-wide quota).
-        pass
 
     if q.seven_day_pct >= PREFLIGHT_7D_PAUSE:
         resume_at = q.seven_day_resets_at
@@ -96,38 +99,12 @@ def _preflight_quota(project_path: Path, s: state.State) -> str:
             )
         return "paused_7d"
 
-    if q.five_hour_pct >= PREFLIGHT_5H_PAUSE:
-        resume_at = q.five_hour_resets_at
-        if resume_at is None:
-            resume_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        s.phase = "paused"
-        s.paused = state.Paused(
-            resume_at=resume_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            reason="5h_pre_check",
-        )
-        state.write(project_path, s)
-        state.log_event(
-            project_path,
-            "paused",
-            reason="5h_pre_check",
-            five_hour_pct=q.five_hour_pct,
-            resume_at=s.paused.resume_at,
-        )
-        return "paused_5h"
-
     if q.seven_day_pct >= PREFLIGHT_7D_WARN:
         _log(
             f"{project_path.name}: 7d quota at "
             f"{int(q.seven_day_pct * 100)}% — warning, proceeding"
         )
         return "warn_7d"
-
-    if q.five_hour_pct >= PREFLIGHT_5H_WARN:
-        _log(
-            f"{project_path.name}: 5h quota at "
-            f"{int(q.five_hour_pct * 100)}% — warning, proceeding"
-        )
-        return "warn_5h"
 
     return "ok"
 
@@ -159,9 +136,7 @@ def _read_disk_config(project_path: Path) -> dict[str, object]:
     except (TypeError, ValueError):
         out["disk_min_free_gb"] = float(DISK_CONFIG_DEFAULTS["disk_min_free_gb"])
     try:
-        out["disk_keep_checkpoints_per_dir"] = int(
-            out["disk_keep_checkpoints_per_dir"]
-        )
+        out["disk_keep_checkpoints_per_dir"] = int(out["disk_keep_checkpoints_per_dir"])
     except (TypeError, ValueError):
         out["disk_keep_checkpoints_per_dir"] = int(
             DISK_CONFIG_DEFAULTS["disk_keep_checkpoints_per_dir"]
@@ -188,9 +163,9 @@ def _preflight_disk(project_path: Path, s: state.State) -> str:
 
         s.phase = "paused"
         s.paused = state.Paused(
-            resume_at=(
-                datetime.now(timezone.utc) + timedelta(hours=1)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            resume_at=(datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
             reason="disk_full",
         )
         state.write(project_path, s)
@@ -228,9 +203,9 @@ def _preflight_disk(project_path: Path, s: state.State) -> str:
 
     s.phase = "paused"
     s.paused = state.Paused(
-        resume_at=(
-            datetime.now(timezone.utc) + timedelta(hours=1)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        resume_at=(datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
         reason="disk_full",
     )
     state.write(project_path, s)
