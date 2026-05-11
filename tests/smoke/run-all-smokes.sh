@@ -63,6 +63,7 @@ HOTFIX_SMOKES=(
     metrics-block
     multi-prefix-filename
     table-cell-real-shapes
+    reactive-rate-limit
 )
 # v1.3.3 smokes use real CLI commands (no Python heredoc) and live
 # under tests/smoke/v133/test_<name>.sh. Stage names start with `v133-`
