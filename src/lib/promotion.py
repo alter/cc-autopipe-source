@@ -368,21 +368,91 @@ BOLD_METADATA_VERDICT_STATUS_RE = re.compile(
 )
 
 
-def _promotion_basename(task_id: str) -> str:
-    """AI-trade convention: PROMOTION files drop 'vec_long_' / 'vec_' prefix.
-    'vec_long_only_baseline' -> 'long_only_baseline'
-    'vec_meta'               -> 'meta'
+# v1.4.0 MULTI-PREFIX-STRIP — AI-trade Phase 3 conventions split task_id
+# into two semantic prefixes (`vec_<phase>_<track>_<descr>`), but the
+# PROMOTION.md filename omits either the phase, the track, or both
+# depending on which sub-team / iteration produced it. Engine tolerates
+# all three forms; the canonical form (`vec_` stripped) is tried first
+# so new content lands at the predictable path.
+_TASK_ID_PREFIXES: tuple[str, ...] = (
+    "vec_long_",   # Phase 2 legacy
+    "vec_p1_",     # Phase 1
+    "vec_p2_",     # Phase 2 v2.x
+    "vec_p3_",     # Phase 3
+    "vec_p4_",     # Future Phase 4
+    "vec_",        # bare vec_ — keep last so longer prefixes win
+)
+
+
+def _promotion_basename_candidates(task_id: str) -> list[str]:
+    """Yield filename basenames to try, in priority order.
+
+    For `vec_p3_meta_anti_winner_bias` returns:
+      1. `p3_meta_anti_winner_bias` (strip `vec_` only — canonical)
+      2. `meta_anti_winner_bias`    (strip `vec_p3_` — phase prefix included)
+      3. `vec_p3_meta_anti_winner_bias` (no stripping — defensive fallback)
+
+    For `vec_long_synth_v3` returns:
+      1. `long_synth_v3` (strip `vec_`)
+      2. `synth_v3`      (strip `vec_long_`)
+      3. `vec_long_synth_v3`
     """
-    base = task_id
-    for pfx in ('vec_long_', 'vec_'):
-        if base.startswith(pfx):
-            base = base[len(pfx):]
+    out: list[str] = []
+    # Form 1: strip only `vec_` (canonical).
+    if task_id.startswith("vec_"):
+        out.append(task_id[len("vec_"):])
+    # Form 2: strip the full phase/track prefix.
+    for pfx in _TASK_ID_PREFIXES:
+        if task_id.startswith(pfx):
+            stripped = task_id[len(pfx):]
+            if stripped and stripped not in out:
+                out.append(stripped)
             break
-    return base
+    # Form 3: defensive — no stripping at all.
+    if task_id not in out:
+        out.append(task_id)
+    return out
+
+
+def _promotion_basename(task_id: str) -> str:
+    """Canonical basename for engine-emitted / write-side paths.
+
+    Returns the first candidate (`vec_` stripped). Read-side callers
+    should use `promotion_path()` (which probes all candidates) or
+    `promotion_path_candidates()` (which exposes the full chain).
+    """
+    return _promotion_basename_candidates(task_id)[0]
+
+
+def promotion_path_candidates(project: Path, task_id: str) -> list[Path]:
+    """All filename forms to probe when reading a PROMOTION.md.
+
+    Used by read-side callers (parse_verdict, parse_metrics via the
+    cycle scan and the retroactive validator). Write-side callers use
+    `promotion_path()` for the canonical form.
+    """
+    base = project / "data" / "debug"
+    return [
+        base / f"CAND_{candidate}_PROMOTION.md"
+        for candidate in _promotion_basename_candidates(task_id)
+    ]
 
 
 def promotion_path(project: Path, task_id: str) -> Path:
-    return project / 'data' / 'debug' / f'CAND_{_promotion_basename(task_id)}_PROMOTION.md'
+    """Return the FIRST existing candidate path; if none exist, return
+    the canonical (Form 1, `vec_`-stripped) path so write-side callers
+    get a deterministic target.
+
+    Read-side callers (parse_verdict / parse_metrics) call `.exists()`
+    on the result, which now does the multi-candidate probe internally.
+    No call site needs to change — but `promotion_path_candidates()` is
+    available for callers that want to enumerate explicitly.
+    """
+    candidates = promotion_path_candidates(project, task_id)
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0]
 
 
 def _parse_verdict_tier1(text: str) -> str | None:
