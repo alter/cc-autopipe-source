@@ -77,7 +77,9 @@ def test_strategy_promotion_emits_entered_spawned_completed(
         encoding="utf-8",
     )
     item = _FakeItem(id="vec_long_synth_v1", priority=1)
-    promotion.on_promotion_success(p, item, metrics={"sum_fixed": 12.3})
+    promotion.on_promotion_success(
+        p, item, metrics={"verdict": "PROMOTED", "sum_fixed": 12.3}
+    )
 
     entered = _events_named(user_home, "on_promotion_success_entered")
     spawned = _events_named(user_home, "ablation_children_spawned")
@@ -106,7 +108,7 @@ def test_promotion_no_backlog_emits_skipped_then_completed(
     monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
     p = _project(tmp_path)
     item = _FakeItem(id="vec_long_synth_v1", priority=1)
-    promotion.on_promotion_success(p, item, metrics={})
+    promotion.on_promotion_success(p, item, metrics={"verdict": "PROMOTED"})
 
     assert (
         len(_events_named(user_home, "on_promotion_success_entered")) == 1
@@ -137,7 +139,7 @@ def test_promotion_failed_in_ablation_logs_stage_specific_event(
 
     monkeypatch.setattr(promotion, "_ablation_children_for", _boom)
     item = _FakeItem(id="vec_long_synth_v1", priority=1)
-    promotion.on_promotion_success(p, item, metrics={})
+    promotion.on_promotion_success(p, item, metrics={"verdict": "PROMOTED"})
 
     assert (
         len(_events_named(user_home, "on_promotion_success_entered")) == 1
@@ -178,7 +180,7 @@ def test_promotion_failed_in_leaderboard_logs_stage_event(
 
     monkeypatch.setattr(leaderboard, "append_entry", _boom)
     item = _FakeItem(id="vec_long_synth_v1", priority=1)
-    promotion.on_promotion_success(p, item, metrics={})
+    promotion.on_promotion_success(p, item, metrics={"verdict": "PROMOTED"})
 
     assert (
         len(_events_named(user_home, "ablation_children_spawned")) == 1
@@ -213,6 +215,7 @@ def test_strategy_promotion_completed_with_real_leaderboard_call(
         p,
         item,
         metrics={
+            "verdict": "PROMOTED",
             "sum_fixed": 100.0,
             "regime_parity": 0.2,
             "max_dd": -5.0,

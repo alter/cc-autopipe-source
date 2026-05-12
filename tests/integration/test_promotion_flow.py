@@ -158,7 +158,7 @@ def test_promoted_inserts_before_done_section(
         user_home=user_home,
     )
     item = SimpleNamespace(id="vec_long_lgbm", priority=1)
-    promotion.on_promotion_success(project, item, {})
+    promotion.on_promotion_success(project, item, {"verdict": "PROMOTED"})
 
     body = (project / "backlog.md").read_text(encoding="utf-8")
     ab_pos = body.index("vec_long_lgbm_ab_drop_top")
@@ -177,7 +177,7 @@ def test_promoted_priority_p3_caps_to_p3(tmp_path: Path, monkeypatch) -> None:
         user_home=user_home,
     )
     item = SimpleNamespace(id="vec_long_lgbm", priority=3)
-    promotion.on_promotion_success(project, item, {})
+    promotion.on_promotion_success(project, item, {"verdict": "PROMOTED"})
     body = (project / "backlog.md").read_text(encoding="utf-8")
     # All five children should be P3, not P4.
     assert "[P4]" not in body
@@ -383,7 +383,7 @@ def test_atomic_write_no_partial_state(tmp_path: Path, monkeypatch) -> None:
         user_home=user_home,
     )
     item = SimpleNamespace(id="vec_long_lgbm", priority=1)
-    promotion.on_promotion_success(project, item, {})
+    promotion.on_promotion_success(project, item, {"verdict": "PROMOTED"})
 
     # No leftover .tmp files.
     assert list(project.glob("backlog.md.tmp*")) == []
