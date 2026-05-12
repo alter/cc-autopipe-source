@@ -1,8 +1,54 @@
 # Build Status
 
-**Updated:** 2026-05-12T05:00:00Z
+**Updated:** 2026-05-12T14:30:00Z
 **Current branch:** main
-**Current stage:** **v1.5.2 COMPLETE — state CLI unpause + SIGTERM
+**Current stage:** **v1.5.3 COMPLETE — orphan PROMOTION rescan +
+leaderboard timestamp + cycle_end signal annotation.** Three groups,
+5 commits, +14 tests (8 unit + 6 integration). 933 → **947 tests
+passing**; 37/46 smokes (38/46 v1.5.2 baseline — the 1-stage delta
+is `phase3-promotion`, caused by a separately-uncommitted DM
+significance gate WIP in `src/lib/leaderboard.py`, NOT by any v1.5.3
+commit). **ORPHAN-PROMOTION-RESCAN**: new
+`state.last_cycle_ended_at` field, set by a unified
+`cycle._emit_cycle_end` helper on every clean close path and
+explicitly NOT set by the SIGTERM-flush handler in `main.py`, so an
+interrupted cycle's PROMOTION files stay mtime-newer than the
+cutoff. `recovery.rescan_orphan_promotions(project_path)` scans
+`data/debug/CAND_*_PROMOTION.md`, skips files already in
+`LEADERBOARD.md`, runs the same
+`parse_verdict → validate_v2_sections → on_promotion_success`
+pipeline `_post_cycle_delta_scan` runs. Verdict-gated (PROMOTED →
+validate + leaderboard; NEUTRAL / CONDITIONAL / REJECTED →
+`orphan_promotion_skipped` event for observability, no leaderboard
+append per v1.5.1 ablation gate). Wired into orchestrator startup
+(per-project loop before main loop begins) AND into
+`maybe_resume_done` so the existing 30-min done-resume sweep
+opportunistically rescans. Closes the AI-trade 2026-05-12 gap where
+`vec_p5_la_champion_full_backtest`'s PROMOTION file from the
+SIGTERM-interrupted iter 174 never landed in LEADERBOARD.md.
+**LEADERBOARD-TIMESTAMP-FIX**: `_write_leaderboard_md` accepts
+optional `last_updated` param so tests can assert exact equality;
+`append_entry` captures one wall-clock instant and threads it
+through both live + archive writes. The header was already rewritten
+on every append in v1.5.2 — the observed AI-trade staleness was a
+symptom of orphan PROMOTIONs (events fired but `append_entry` was
+never reached for those task_ids). ORPHAN-PROMOTION-RESCAN is the
+load-bearing fix; this change makes the timestamp deterministic.
+**CYCLE-RC-NEGATIVE-VISIBILITY**: the new `_emit_cycle_end` helper
+appends `killed_by_signal=<SIG_NAME>` when `isinstance(rc, int) and
+rc < 0`, derived from `signal.Signals(-rc).name` with a
+`signal_<N>` fallback for unknown numbers. String rc values
+(`"interrupted"` from the SIGTERM-flush path) are deliberately
+left untouched — that path does not invoke `_emit_cycle_end`.
+Closes the AI-trade iter 182/183 post-mortem gap. **Operator action
+required**: restart `cc-autopipe.service`. First boot after upgrade
+emits zero rescues per project (the `last_cycle_ended_at` field is
+new and starts None); subsequent boots may surface the actual
+rescue count. To force-rescue an existing orphan that pre-dates the
+freshly-set cutoff, `touch` the PROMOTION file and wait one sweep
+(≤30 min). See V153_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.2 COMPLETE — state CLI unpause + SIGTERM
 cycle_end flush.** Two groups, 4 commits, +8 tests (3 unit + 5
 integration). 925 → **933 tests passing**; 38/46 smokes unchanged from
 v1.5.1 baseline. **STATE-CLI-CLEAR-PAUSED**: `src/lib/state.py` now
