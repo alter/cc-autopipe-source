@@ -65,10 +65,16 @@ def test_done_with_no_open_tasks_skipped(tmp_path: Path, monkeypatch) -> None:
     user_home = tmp_path / "uhome"
     monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
     p = _project(tmp_path)
-    (p / "backlog.md").write_text(
+    body = (
         "- [x] [implement] [P1] vec_long_baseline — done\n"
-        "## Done\n",
-        encoding="utf-8",
+        "## Done\n"
+    )
+    (p / "backlog.md").write_text(body, encoding="utf-8")
+    # v1.5.7 BACKLOG-WRITE-GATE: pre-seed snapshot so the existing [x]
+    # row is legacy amnesty (ok_orphan_pre_v157), not a NEW transition
+    # that would otherwise be reverted by the gate.
+    (p / ".cc-autopipe" / "backlog_snapshot.md").write_text(
+        body, encoding="utf-8"
     )
     _write_done_state(p)
 
@@ -90,11 +96,17 @@ def test_done_with_new_open_task_resumes(tmp_path: Path, monkeypatch) -> None:
     user_home = tmp_path / "uhome"
     monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
     p = _project(tmp_path)
-    (p / "backlog.md").write_text(
+    body = (
         "- [x] [implement] [P1] vec_long_baseline — done\n"
         "- [ ] [implement] [P1] vec_new_idea — operator-added\n"
-        "## Done\n",
-        encoding="utf-8",
+        "## Done\n"
+    )
+    (p / "backlog.md").write_text(body, encoding="utf-8")
+    # v1.5.7 BACKLOG-WRITE-GATE: snapshot pre-seeded so the historical
+    # [x] row stays legacy amnesty (open_tasks count == 1, the newly
+    # appended [ ] row).
+    (p / ".cc-autopipe" / "backlog_snapshot.md").write_text(
+        body, encoding="utf-8"
     )
     s = state.State.fresh(p.name)
     s.phase = "done"
@@ -247,7 +259,11 @@ def test_sweep_done_projects_aggregate_count(
 
     # done + still complete
     p2 = _project(tmp_path, "p2")
-    (p2 / "backlog.md").write_text("- [x] [implement] [P1] vec_b\n## Done\n")
+    p2_body = "- [x] [implement] [P1] vec_b\n## Done\n"
+    (p2 / "backlog.md").write_text(p2_body)
+    # v1.5.7 BACKLOG-WRITE-GATE: snapshot pre-seeded so vec_b counts as
+    # legacy amnesty and doesn't trip the gate into reverting + reviving.
+    (p2 / ".cc-autopipe" / "backlog_snapshot.md").write_text(p2_body)
     s2 = state.State.fresh(p2.name)
     s2.phase = "done"
     s2.prd_complete = True

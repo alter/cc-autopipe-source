@@ -53,10 +53,17 @@ def test_inject_when_drained_after_expiry(
     monkeypatch.setenv("CC_AUTOPIPE_USER_HOME", str(user_home))
     p = _project(tmp_path)
     backlog = p / "backlog.md"
-    backlog.write_text(
+    body = (
         "# Backlog\n\n"
-        "- [x] [implement] [P1] vec_old — done\n",
-        encoding="utf-8",
+        "- [x] [implement] [P1] vec_old — done\n"
+    )
+    backlog.write_text(body, encoding="utf-8")
+    # v1.5.7 BACKLOG-WRITE-GATE: pre-seed snapshot so vec_old is legacy
+    # amnesty; without this, the gate would revert vec_old to `[ ]` on
+    # first sweep, leave the backlog non-drained, and skip the
+    # meta-expand inject this test is actually covering.
+    (p / ".cc-autopipe" / "backlog_snapshot.md").write_text(
+        body, encoding="utf-8"
     )
     now = datetime.now(timezone.utc)
     s = state.State.fresh(p.name)
