@@ -255,6 +255,11 @@ class State:
     # verify.sh script (the classic `|| echo 0` double-zero) cannot burn
     # the auto-escalation budget. Reset by a passing verify.
     consecutive_malformed: int = 0
+    # v1.5.6 IDLE-INJECT-EXPAND-BACKLOG: timestamp of the last
+    # `meta_expand_backlog` injection (per project). Throttles the
+    # injector to once per 4h so a defiant agent that ignores the
+    # meta-task can't cause spam loops.
+    last_meta_expand_at: Optional[str] = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -306,6 +311,7 @@ class State:
             "last_transient_at": self.last_transient_at,
             "cycle_backlog_x_count_at_start": self.cycle_backlog_x_count_at_start,
             "consecutive_malformed": self.consecutive_malformed,
+            "last_meta_expand_at": self.last_meta_expand_at,
         }
         d.update(self.extras)
         return d
