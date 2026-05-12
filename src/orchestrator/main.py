@@ -28,6 +28,7 @@ Refs: SPEC.md §6.1, §8.3, §8.4, §15.1
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
@@ -152,8 +153,88 @@ def _read_projects_list(user_home: Path) -> list[Path]:
     ]
 
 
+def _has_in_flight_cycle(project_path: Path) -> bool:
+    """v1.5.2 CYCLE-END-ON-SIGTERM probe.
+
+    True iff the project's `progress.jsonl` ends with a `cycle_start` that
+    has no following `cycle_end` event. Reads the whole file (small —
+    one line per cycle event) and tracks the latest index of each.
+
+    Best-effort: any I/O or parse error → False.
+    """
+    progress = project_path / ".cc-autopipe" / "memory" / "progress.jsonl"
+    if not progress.exists():
+        return False
+    last_start = -1
+    last_end = -1
+    try:
+        with progress.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                name = ev.get("event")
+                if name == "cycle_start":
+                    last_start = i
+                elif name == "cycle_end":
+                    last_end = i
+    except OSError:
+        return False
+    return last_start > last_end
+
+
+def _flush_in_flight_cycles(user_home: Path) -> None:
+    """v1.5.2 CYCLE-END-ON-SIGTERM: close dangling cycle_start events.
+
+    Iterates projects.list and, for each project whose progress.jsonl
+    ends with an unmatched cycle_start, emits a synthetic
+    `cycle_end iteration=<current> rc=interrupted phase=<current_phase>
+    score=null interrupted_by=sigterm` event so per-cycle telemetry
+    cannot have a dangling cycle_start when systemd SIGKILLs the
+    orchestrator after TimeoutStopSec expires.
+
+    Best-effort: never raises, never blocks. <500ms target — only one
+    state read + one log_event append per affected project.
+    """
+    try:
+        projects = _read_projects_list(user_home)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"flush_in_flight_cycles: projects.list unreadable: {exc!r}")
+        return
+    for project_path in projects:
+        try:
+            if not _has_in_flight_cycle(project_path):
+                continue
+            s = state.read(project_path)
+            state.log_event(
+                project_path,
+                "cycle_end",
+                iteration=s.iteration,
+                phase=s.phase,
+                rc="interrupted",
+                score=None,
+                interrupted_by="sigterm",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Per-project failure must not block other projects' flush.
+            _log(f"flush_in_flight_cycles: skipping {project_path}: {exc!r}")
+
+
 def _install_signal_handlers() -> None:
     def handler(signum: int, _frame: object) -> None:
+        # v1.5.2 CYCLE-END-ON-SIGTERM: flush BEFORE setting the shutdown
+        # flag so the synthetic cycle_end lands even if systemd's
+        # TimeoutStopSec elapses while we're still inside this handler.
+        # Best-effort and guarded — never raise from inside a signal
+        # handler.
+        try:
+            _flush_in_flight_cycles(_user_home())
+        except Exception as exc:  # noqa: BLE001
+            _log(f"flush_in_flight_cycles unexpected error: {exc!r}")
         set_shutdown(True)
         _log(f"received signal {signum}, shutting down at next safe point")
 
