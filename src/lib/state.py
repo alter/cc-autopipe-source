@@ -192,6 +192,12 @@ class State:
     prd_complete: bool = False
     consecutive_failures: int = 0
     last_cycle_started_at: Optional[str] = None
+    # v1.5.3 ORPHAN-PROMOTION-RESCAN: timestamp of the most recent
+    # successfully-completed cycle_end (excluding SIGTERM-interrupted
+    # flushes). Used as the mtime cutoff when scanning data/debug for
+    # PROMOTION files that were never validated because their parent
+    # cycle was killed before post_cycle_delta ran.
+    last_cycle_ended_at: Optional[str] = None
     last_progress_at: Optional[str] = None
     threshold: float = 0.85
     paused: Optional[Paused] = None
@@ -263,6 +269,7 @@ class State:
             "prd_complete": self.prd_complete,
             "consecutive_failures": self.consecutive_failures,
             "last_cycle_started_at": self.last_cycle_started_at,
+            "last_cycle_ended_at": self.last_cycle_ended_at,
             "last_progress_at": self.last_progress_at,
             "threshold": self.threshold,
             "paused": asdict(self.paused) if self.paused else None,

@@ -74,6 +74,55 @@ TRANSIENT_BACKOFF_SEC = (30, 60, 120, 300, 600)
 MAX_TRANSIENT_RETRIES = 5
 
 
+def _emit_cycle_end(
+    project_path: Path,
+    s: "state.State",
+    *,
+    rc: object,
+    score: object,
+    update_last_ended: bool,
+    **extra: object,
+) -> None:
+    """Emit a `cycle_end` event with v1.5.3 annotations.
+
+    v1.5.3 CYCLE-RC-NEGATIVE-VISIBILITY: when `rc` is a negative int the
+    subprocess was killed by signal `|rc|`. Annotate the event with the
+    signal name (`SIGHUP`, `SIGTERM`, etc.) so post-mortem analysis does
+    not have to translate raw rc values by hand.
+
+    v1.5.3 ORPHAN-PROMOTION-RESCAN: when `update_last_ended` is True,
+    set `state.last_cycle_ended_at` and persist before logging. This is
+    the cutoff used by recovery.rescan_orphan_promotions to decide which
+    `data/debug/CAND_*_PROMOTION.md` files were potentially orphaned by
+    a SIGTERM-interrupted cycle. The SIGTERM-flush path in main.py
+    deliberately does NOT call this helper so an interrupted cycle's
+    files stay eligible for next-startup rescue.
+    """
+    import signal as _signal  # noqa: PLC0415
+
+    payload: dict[str, object] = {
+        "iteration": s.iteration,
+        "phase": s.phase,
+        "rc": rc,
+        "score": score,
+    }
+    payload.update(extra)
+    if isinstance(rc, int) and not isinstance(rc, bool) and rc < 0:
+        try:
+            payload["killed_by_signal"] = _signal.Signals(-rc).name
+        except ValueError:
+            payload["killed_by_signal"] = f"signal_{-rc}"
+    if update_last_ended:
+        s.last_cycle_ended_at = _now_iso()
+        try:
+            state.write(project_path, s)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not crash cycle
+            _log(
+                f"{project_path.name}: failed to persist last_cycle_ended_at: {exc!r}"
+            )
+    state.log_event(project_path, "cycle_end", **payload)
+
+
 # v1.3.6 SENTINEL-PATTERNS fallback: arm the knowledge.md sentinel when
 # a fresh PROMOTION.md was just written with a parseable verdict, even
 # if CURRENT_TASK.md `stages_completed` lacks a verdict-pattern stage.
@@ -1021,13 +1070,12 @@ def process_project(project_path: Path) -> str:
                     # Continue down to log_failure / consecutive_failures++.
                 else:
                     _interruptible_sleep(wait)
-                    state.log_event(
+                    _emit_cycle_end(
                         project_path,
-                        "cycle_end",
-                        iteration=s.iteration,
-                        phase=s.phase,
+                        s,
                         rc=rc,
                         score=s.last_score,
+                        update_last_ended=True,
                         outcome="transient_retry_scheduled",
                     )
                     return s.phase
@@ -1236,13 +1284,12 @@ def process_project(project_path: Path) -> str:
             except Exception as exc:  # noqa: BLE001
                 _log(f"{project_path.name}: research mode error: {exc!r}")
 
-        state.log_event(
+        _emit_cycle_end(
             project_path,
-            "cycle_end",
-            iteration=s.iteration,
-            phase=s.phase,
+            s,
             rc=rc,
             score=s.last_score,
+            update_last_ended=True,
         )
         _log(
             f"{project_path.name}: cycle_end iteration={s.iteration} "
