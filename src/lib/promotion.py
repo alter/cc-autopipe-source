@@ -862,6 +862,7 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     contribution but never raises on missing keys.
     """
     out: dict[str, Any] = {
+        "verdict": None,        # v1.5.1: canonical verdict for ablation gate
         "sum_fixed": None,
         "regime_parity": None,
         "max_dd": None,
@@ -886,6 +887,18 @@ def parse_metrics(path: Path) -> dict[str, Any]:
               "dsr", "auc", "sharpe"):
         if k in block:
             out[k] = _coerce_metric_value(block[k])
+
+    # v1.5.1 ABLATION-VERDICT-GATE: propagate the labelled-block
+    # `**verdict**:` field (authoritative for the v1.4.0 metrics
+    # convention) into the metrics dict. on_promotion_success reads
+    # this to decide whether to spawn ablation children. Block value
+    # wins; otherwise fall back to the full parse_verdict cascade so
+    # legacy reports (no labelled block) still produce a verdict.
+    raw_v = block.get("verdict")
+    if raw_v:
+        out["verdict"] = CANONICAL_MAP.get(raw_v.strip().upper())
+    if out["verdict"] is None:
+        out["verdict"] = parse_verdict(path)
 
     if out["sum_fixed"] is None:
         m = re.search(
@@ -1046,7 +1059,8 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def on_promotion_success(project: Path, item: Any, metrics: dict[str, Any]) -> None:
-    """Atomic backlog mutation: append 5 ablation children. Fire LB hook.
+    """Atomic backlog mutation: append 5 ablation children IFF verdict
+    is PROMOTED. Fire LB hook regardless of verdict.
 
     `item` may be a backlog.BacklogItem or any object exposing `id` and
     `priority` attributes. The leaderboard hook (lib.leaderboard) is
@@ -1058,12 +1072,30 @@ def on_promotion_success(project: Path, item: Any, metrics: dict[str, Any]) -> N
     PROMOTED task lands. AI-trade Phase 2 v2.0 production observed 4
     PROMOTED measurement tasks that produced no ablation children and
     no leaderboard append — without per-stage events, root-causing was
-    impossible. Events emitted (in order):
+    impossible.
+
+    v1.5.1 ABLATION-VERDICT-GATE: spawn ablation children only when
+    `metrics["verdict"] == "PROMOTED"`. AI-trade Phase 4 production
+    (2026-05-11/12) produced hundreds of legitimate NEUTRAL verdicts
+    ("no exploitable edge"); each silently spawned 5 ablation children,
+    children validated as NEUTRAL → +5 more, backlog grew from ~600
+    done / 11K open to ~38K done / 38K `_ab_` children and the engine
+    burned --max-turns reopening orphan ablation work. The gate lives
+    inside the hook so a single defense-in-depth check covers every
+    call site without changing the public signature. The leaderboard
+    hook still runs for ALL verdicts (NEUTRAL/CONDITIONAL/PROMOTED
+    feed ELO + post-mortem audit). A missing/unrecognised verdict is
+    conservatively treated as non-PROMOTED — better to drop ablation
+    spawn than to grow the backlog on a parse failure.
+
+    Events emitted (in order):
       - on_promotion_success_entered      (always)
-      - promotion_children_skipped         (no backlog) OR
-        ablation_children_spawned          (success path)
+      - ablation_skipped_non_promoted      (verdict ≠ PROMOTED) OR
+        promotion_children_skipped         (no backlog) OR
+        ablation_children_spawned          (PROMOTED + backlog)
       - on_promotion_success_failed        (per stage on raise)
-      - on_promotion_success_completed     (only when both stages OK)
+      - on_promotion_success_completed     (only when ablation OK and
+                                            leaderboard OK)
     """
     import state as _state  # noqa: PLC0415
 
@@ -1074,55 +1106,68 @@ def on_promotion_success(project: Path, item: Any, metrics: dict[str, Any]) -> N
         task_id=task_id,
     )
 
+    verdict = str(metrics.get("verdict") or "").upper()
+
     ablation_ok = False
-    target = _resolve_backlog_path(project)
-    if target is None:
+    if verdict != "PROMOTED":
         _state.log_event(
             project,
-            "promotion_children_skipped",
+            "ablation_skipped_non_promoted",
             task_id=task_id,
-            reason="backlog_missing",
+            verdict=verdict,
         )
+        # Not a failure — skipping is the desired path for non-PROMOTED.
+        # _completed still fires when leaderboard succeeds.
+        ablation_ok = True
     else:
-        try:
-            children = _ablation_children_for(
-                task_id, int(getattr(item, "priority", 1))
-            )
-            text = target.read_text(encoding="utf-8")
-            # Insert children at end of body, but BEFORE a "## Done"
-            # section if one exists. This keeps the backlog sorted as
-            # active → ablations → done.
-            insertion_marker = "## Done"
-            if insertion_marker in text:
-                head, _, tail = text.partition(insertion_marker)
-                new_text = (
-                    head.rstrip()
-                    + "\n\n"
-                    + "\n".join(children)
-                    + "\n\n"
-                    + insertion_marker
-                    + tail
-                )
-            else:
-                new_text = (
-                    text.rstrip() + "\n\n" + "\n".join(children) + "\n"
-                )
-            _atomic_write(target, new_text)
+        target = _resolve_backlog_path(project)
+        if target is None:
             _state.log_event(
                 project,
-                "ablation_children_spawned",
-                parent=task_id,
-                count=len(children),
-            )
-            ablation_ok = True
-        except Exception as exc:  # noqa: BLE001
-            _state.log_event(
-                project,
-                "on_promotion_success_failed",
+                "promotion_children_skipped",
                 task_id=task_id,
-                stage="ablation_spawn",
-                error=repr(exc),
+                reason="backlog_missing",
             )
+        else:
+            try:
+                children = _ablation_children_for(
+                    task_id, int(getattr(item, "priority", 1))
+                )
+                text = target.read_text(encoding="utf-8")
+                # Insert children at end of body, but BEFORE a "## Done"
+                # section if one exists. This keeps the backlog sorted as
+                # active → ablations → done.
+                insertion_marker = "## Done"
+                if insertion_marker in text:
+                    head, _, tail = text.partition(insertion_marker)
+                    new_text = (
+                        head.rstrip()
+                        + "\n\n"
+                        + "\n".join(children)
+                        + "\n\n"
+                        + insertion_marker
+                        + tail
+                    )
+                else:
+                    new_text = (
+                        text.rstrip() + "\n\n" + "\n".join(children) + "\n"
+                    )
+                _atomic_write(target, new_text)
+                _state.log_event(
+                    project,
+                    "ablation_children_spawned",
+                    parent=task_id,
+                    count=len(children),
+                )
+                ablation_ok = True
+            except Exception as exc:  # noqa: BLE001
+                _state.log_event(
+                    project,
+                    "on_promotion_success_failed",
+                    task_id=task_id,
+                    stage="ablation_spawn",
+                    error=repr(exc),
+                )
 
     # Leaderboard hook is best-effort — a missing module must not
     # prevent the promotion path from completing.
