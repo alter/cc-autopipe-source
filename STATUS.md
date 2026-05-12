@@ -1,8 +1,46 @@
 # Build Status
 
-**Updated:** 2026-05-12T03:50:00Z
+**Updated:** 2026-05-12T05:00:00Z
 **Current branch:** main
-**Current stage:** **v1.5.1 COMPLETE — ablation spawn verdict gate.**
+**Current stage:** **v1.5.2 COMPLETE — state CLI unpause + SIGTERM
+cycle_end flush.** Two groups, 4 commits, +8 tests (3 unit + 5
+integration). 925 → **933 tests passing**; 38/46 smokes unchanged from
+v1.5.1 baseline. **STATE-CLI-CLEAR-PAUSED**: `src/lib/state.py` now
+exposes `clear_paused(project_path)` and `python3 state.py clear-paused
+<project>` — symmetric inverse of `set-paused`. Phase routes to `done`
+if `prd_complete=True` else `active`; idempotent on already-unpaused
+projects (prints `already not paused (phase=<current>)`, writes
+nothing). Emits `paused_cleared` event with `new_phase=<active|done>`
+when state actually changes. Closes the ergonomics gap where the only
+way to undo a manual pause was hand-editing `state.json` with python/jq.
+**CYCLE-END-ON-SIGTERM**: `src/orchestrator/main.py` SIGTERM/SIGINT
+handler now calls `_flush_in_flight_cycles(user_home)` BEFORE
+`set_shutdown(True)`. For each project in `projects.list`, scans
+`.cc-autopipe/memory/progress.jsonl` for an unmatched `cycle_start`
+(last `cycle_start` index > last `cycle_end` index, or no `cycle_end`
+at all); if found, appends one synthetic `cycle_end iteration=N
+phase=<current> rc=interrupted score=null interrupted_by=sigterm`
+event via the standard `state.log_event` path (writes both per-project
+`progress.jsonl` AND `~/.cc-autopipe/log/aggregate.jsonl`). `rc="interrupted"`
+(string) deliberately distinct from any subprocess exit code so
+downstream analytics filter shutdown artifacts cleanly. Best-effort
+throughout: per-line `JSONDecodeError` skipped, per-project exceptions
+logged-and-continued, final outer try/except in the handler so a
+signal-handler raise never breaks `set_shutdown(True)`. Does NOT block
+on the claude subprocess (systemd reaps the tree). Does NOT attempt to
+RESUME the interrupted cycle on next startup — claude session-id resume
+continues to handle work continuity; the synthetic cycle_end only
+closes the telemetry record. Closes the v1.5.0 production gap where
+orchestrator received SIGTERM mid-iter 168 on AI-trade, safe-point
+wait exceeded systemd's `TimeoutStopSec=60s`, SIGKILL forced, work
+survived via session resume in iter 169 but iter 168 had no `cycle_end`
+event → per-cycle leaderboard / activity / aggregate analytics had a
+dangling `cycle_start`. **Operator action required**: none — restart
+`cc-autopipe.service` to pick up the new handler. The next time systemd
+sends SIGTERM, `cycle_end rc=interrupted` will land before SIGKILL.
+See V152_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.1 COMPLETE — ablation spawn verdict gate.**
 One group, 4 commits, +6 unit tests, +1 smoke (`run-ablation-gate-smoke.sh`).
 `promotion.on_promotion_success` now skips ablation spawn unless
 `metrics["verdict"] == "PROMOTED"`. NEUTRAL / CONDITIONAL / unknown
