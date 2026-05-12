@@ -186,10 +186,17 @@ def test_neutral_orphan_skipped_with_event_no_leaderboard(
     assert skipped[0]["task_id"] == "neutral_test"
 
 
-def test_missing_cutoff_skips_rescan(tmp_path: Path, monkeypatch) -> None:
-    """First-ever startup has no last_cycle_ended_at — nothing to do."""
+def test_missing_cutoff_and_no_promotion_files_returns_zero(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """v1.5.4 RESCAN-MIGRATION-GUARD relaxes the v1.5.3 "no cutoff →
+    return 0" rule: when last_cycle_ended_at is None, the function now
+    backfills from aggregate.jsonl and falls back to cutoff=0. This
+    test pins the trivially-safe edge: no cutoff, no aggregate, no
+    PROMOTION files → no work to do and no crash. The semantically
+    interesting "no cutoff, file present" cases live in
+    test_rescan_migration.py."""
     project = _seed_project(tmp_path, monkeypatch)
-    _write_promotion(project, "first_run", PROMOTED_BODY)
     rescued = rescan_orphan_promotions(project)
     assert rescued == 0
     lb_path = project / "data" / "debug" / "LEADERBOARD.md"
