@@ -50,6 +50,7 @@ from orchestrator.daily_report import maybe_write_for_all
 from orchestrator.recovery import (
     RECOVERY_INTERVAL_SEC,
     auto_recover_failed_projects,
+    rescan_orphan_promotions,
     sweep_done_projects,
 )
 import claude_settings  # noqa: E402
@@ -343,6 +344,27 @@ def main(argv: list[str] | None = None) -> int:
             f"singleton_pid={singleton.pid}; "
             f"quota_monitor_interval={monitor_interval}s"
         )
+
+        # v1.5.3 ORPHAN-PROMOTION-RESCAN: at startup, scan every project
+        # for CAND_*_PROMOTION.md files written by a cycle that was
+        # SIGTERM-interrupted before post_cycle_delta could validate
+        # and leaderboard them. Best-effort per project — never blocks
+        # the main loop.
+        try:
+            for _orph_proj in _read_projects_list(user_home):
+                try:
+                    n_rescued = rescan_orphan_promotions(_orph_proj)
+                    if n_rescued:
+                        _log(
+                            f"{_orph_proj.name}: rescued {n_rescued} orphan "
+                            f"PROMOTION(s) on startup"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    _log(
+                        f"{_orph_proj.name}: orphan rescan failed: {exc!r}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"orphan rescan startup sweep error: {exc!r}")
 
         loops = 0
         last_recovery_sweep_at = 0.0
