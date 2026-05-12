@@ -11,6 +11,8 @@ GROUP B (B3 auto-recovery) and GROUP H (META_REFLECT) extend this module.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from datetime import datetime, timezone
@@ -21,6 +23,7 @@ from orchestrator.alerts import _notify_tg
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
 import locking  # noqa: E402
+import promotion as promotion_lib  # noqa: E402
 import state  # noqa: E402
 
 # v1.3 B2: stuck-detection thresholds. Activity-based: a project that
@@ -391,6 +394,134 @@ def maybe_auto_recover(project_path: Path | str) -> bool:
         proj_lock.release()
 
 
+@dataclass
+class _PseudoItem:
+    """Minimal stand-in for backlog.BacklogItem when reconstructing from
+    a filename. promotion.on_promotion_success only uses `.id` and
+    `.priority`. v1.5.3 ORPHAN-PROMOTION-RESCAN."""
+
+    id: str
+    priority: int = 1
+
+
+def _is_in_leaderboard(project_path: Path, task_id: str) -> bool:
+    """Cheap grep-style check against LEADERBOARD.md. v1.5.3."""
+    lb = project_path / "data" / "debug" / "LEADERBOARD.md"
+    if not lb.exists():
+        return False
+    try:
+        text = lb.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"| {task_id} |" in text
+
+
+_ORPHAN_PROMOTION_RE = re.compile(r"^CAND_(.+)_PROMOTION\.md$")
+
+
+def rescan_orphan_promotions(project_path: Path | str) -> int:
+    """Validate `data/debug/CAND_*_PROMOTION.md` files that were not
+    leaderboarded — typically because a SIGTERM interrupted the cycle
+    that wrote them, so post_cycle_delta never ran for their task_id.
+
+    Returns the count of files actually rescued (validated + appended).
+
+    v1.5.3 ORPHAN-PROMOTION-RESCAN. Closes the gap where SIGTERM-
+    interrupted cycles leave PROMOTION files unvalidated because
+    post_cycle_delta filters by in-cycle task_id closure events, not
+    filesystem mtime. Idempotent — already-leaderboarded files are
+    skipped via a simple LEADERBOARD.md membership grep.
+
+    Cutoff: `state.last_cycle_ended_at`. Files with mtime ≤ cutoff
+    already had their chance via the previous cycle's post_cycle_delta;
+    rescuing them would either duplicate work (idempotent skip catches
+    it) or revive ancient quarantined PROMOTIONs.
+    """
+    project_path = Path(project_path)
+    s = state.read(project_path)
+    cutoff_str = getattr(s, "last_cycle_ended_at", None)
+    if not cutoff_str:
+        return 0  # First-ever startup; nothing to rescue against.
+    cutoff_dt = _parse_iso_utc(cutoff_str)
+    if cutoff_dt is None:
+        return 0
+    cutoff = cutoff_dt.timestamp()
+
+    debug_dir = project_path / "data" / "debug"
+    if not debug_dir.is_dir():
+        return 0
+
+    rescued = 0
+    for p in sorted(debug_dir.glob("CAND_*_PROMOTION.md")):
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= cutoff:
+            continue
+
+        m = _ORPHAN_PROMOTION_RE.match(p.name)
+        if not m:
+            continue
+        task_id = m.group(1)
+
+        if _is_in_leaderboard(project_path, task_id):
+            continue
+
+        verdict = promotion_lib.parse_verdict(p)
+        # Only PROMOTED reports get the validate→on_promotion_success
+        # path. NEUTRAL / CONDITIONAL / REJECTED were never destined
+        # for the leaderboard regardless of the SIGTERM interruption,
+        # so we log a single event and move on. This mirrors the
+        # branch structure of _post_cycle_delta_scan in cycle.py.
+        if verdict != "PROMOTED":
+            state.log_event(
+                project_path,
+                "orphan_promotion_skipped",
+                task_id=task_id,
+                verdict=str(verdict or ""),
+                origin="orphan_rescan",
+            )
+            continue
+
+        ok, missing = promotion_lib.validate_v2_sections(p, task_id=task_id)
+        state.log_event(
+            project_path,
+            "promotion_v2_sections_check",
+            task_id=task_id,
+            all_present=ok,
+            missing=",".join(missing),
+            strict=promotion_lib.requires_full_v2_validation(task_id),
+            origin="orphan_rescan",
+        )
+        if not ok:
+            promotion_lib.quarantine_invalid(
+                project_path, _PseudoItem(task_id), missing
+            )
+            continue
+
+        metrics = promotion_lib.parse_metrics(p)
+        promotion_lib.on_promotion_success(
+            project_path, _PseudoItem(task_id), metrics
+        )
+        state.log_event(
+            project_path,
+            "promotion_validated",
+            task_id=task_id,
+            origin="orphan_rescan",
+            **{k: v for k, v in metrics.items() if v is not None},
+        )
+        rescued += 1
+
+    if rescued:
+        state.log_event(
+            project_path,
+            "orphan_promotion_rescan_completed",
+            rescued=rescued,
+        )
+    return rescued
+
+
 def _count_open_backlog(project_path: Path) -> int:
     """Count `- [ ]` open task lines in the project's backlog. Returns 0
     when no backlog exists. Used by `sweep_done_projects` for telemetry —
@@ -477,6 +608,19 @@ def maybe_resume_done(project_path: Path | str) -> bool:
         )
         return False
     try:
+        # v1.5.3 ORPHAN-PROMOTION-RESCAN: piggyback on the 30-min sweep
+        # cadence so SIGTERM-interrupted PROMOTION files get rescued
+        # even when the project sits in phase=done. Best-effort; a
+        # rescan failure does not block the done→active decision.
+        try:
+            n_rescued = rescan_orphan_promotions(project_path)
+            if n_rescued:
+                _log(
+                    f"{project_path.name}: rescued {n_rescued} orphan "
+                    f"PROMOTION(s) during done-resume sweep"
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"{project_path.name}: orphan rescan error: {exc!r}")
         s = state.read(project_path)
         should, reason = _should_resume_done(s, project_path)
         if not should:
