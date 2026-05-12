@@ -12,6 +12,7 @@ GROUP B (B3 auto-recovery) and GROUP H (META_REFLECT) extend this module.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,17 @@ RECOVERY_AGE_SEC = 60 * 60  # only recover after 1h of inactivity
 # append turnaround. Set high enough not to interfere with legitimate
 # slow-running tasks.
 SENTINEL_STUCK_THRESHOLD_SEC = 4 * 3600  # 4 hours
+# v1.5.6 PRD-COMPLETE-EXPIRES: TTL on `prd_complete=True`. After this
+# many hours of idle (measured from state.last_cycle_ended_at), the
+# `phase=done` resume gate auto-clears the flag. Multi-month autonomous
+# research runs cannot be permanently halted by an agent's false-
+# positive completion signal — operator closes a project by removing
+# it from the registry, not by trusting the agent's verdict.
+PRD_COMPLETE_TTL_HOURS = 4
+# v1.5.6 IDLE-INJECT-EXPAND-BACKLOG: throttle window. After injecting a
+# `meta_expand_backlog_<ts>` task, refuse to inject again for this many
+# hours per project so a defiant agent can't trigger a spam loop.
+META_EXPAND_THROTTLE_HOURS = 4
 
 
 def _handle_smart_escalation(
@@ -597,12 +609,131 @@ def rescan_orphan_promotions(project_path: Path | str) -> int:
     return rescued
 
 
+# v1.5.6 IDLE-INJECT-EXPAND-BACKLOG: meta-task template. Constant —
+# do NOT rewrite at runtime. Wording is deliberate: phrased as
+# instructions to the agent, with the same `[ ]` task marker the rest
+# of the engine expects, and explicit constraints reflecting Roman's
+# operator-defined ground truth (no live/paper/shadow trade, no
+# operator-approval gates, no `[~]` blocking, no `prd_complete=True`
+# escape). Per-cycle telemetry will surface whether the agent
+# obeyed.
+META_EXPAND_TASK_TEMPLATE = (
+    "- [ ] [research] [P0] meta_expand_backlog_{ts} — Engine has been "
+    "idle and the backlog has drained. This is a research project: "
+    "completion is NEVER a valid terminal state. Your job this cycle:\n"
+    "\n"
+    "1. Read `.cc-autopipe/knowledge.md` (last 100 lines) and "
+    "`findings_index.md` for recent results.\n"
+    "2. Identify open questions / negative results / regime changes / "
+    "unexplored hypotheses.\n"
+    "3. Add 20-30 NEW `[ ]` tasks to backlog.md derived from these open "
+    "questions.\n"
+    "\n"
+    "CONSTRAINTS:\n"
+    "- NO live / paper / shadow / production / deployment tasks of any "
+    "kind. This is offline research only.\n"
+    "- NO operator authorization requirements. The operator only reads "
+    "results.\n"
+    "- NO `[~]` blocking state — tasks are `[ ]` open or `[x]` closed.\n"
+    "- Each new task: `- [ ] [research|implement] [P0|P1|P2] "
+    "vec_<phase>_<track>_<id> — description. Acceptance: <criterion>.`\n"
+    "- Do NOT write `prd_complete=True` to state.json.\n"
+    "\n"
+    "Acceptance: 20+ new `[ ]` lines appended to backlog.md derived "
+    "from substantive open questions in knowledge.md.\n"
+)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _inject_after_first_heading(text: str, block: str) -> str:
+    """Place `block` immediately after the first markdown heading
+    (`# ...`, `## ...`, `### ...`). If no heading exists, prepend at
+    the top. Preserves the rest of the file verbatim."""
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            j = i + 1
+            # Skip any blank lines directly after the heading so the
+            # injected block sits in its own paragraph.
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            return (
+                "".join(lines[:j])
+                + block.rstrip("\n")
+                + "\n\n"
+                + "".join(lines[j:])
+            )
+    return block.rstrip("\n") + "\n\n" + text
+
+
+def _maybe_inject_expand_backlog(
+    project_path: Path, s: state.State
+) -> bool:
+    """v1.5.6 IDLE-INJECT-EXPAND-BACKLOG. Inject the meta-task into
+    backlog.md when engine is genuinely idle (0 open lines after the
+    `prd_complete` expiry pass). Returns True iff an injection was
+    actually written.
+
+    Throttled to once per META_EXPAND_THROTTLE_HOURS per project via
+    `state.last_meta_expand_at`. If the throttle window hasn't
+    elapsed, returns False without touching the backlog.
+    """
+    last_inject = s.last_meta_expand_at
+    if last_inject:
+        prev = _parse_iso_utc(last_inject)
+        if prev is not None:
+            elapsed_h = (
+                datetime.now(timezone.utc) - prev
+            ).total_seconds() / 3600
+            if elapsed_h < META_EXPAND_THROTTLE_HOURS:
+                return False
+
+    candidates = [
+        project_path / "backlog.md",
+        project_path / ".cc-autopipe" / "backlog.md",
+    ]
+    backlog = next((p for p in candidates if p.exists()), None)
+    if backlog is None:
+        return False
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    task_id = f"meta_expand_backlog_{ts}"
+    meta_task = META_EXPAND_TASK_TEMPLATE.format(ts=ts)
+
+    try:
+        text = backlog.read_text(encoding="utf-8")
+        new_text = _inject_after_first_heading(text, meta_task)
+        _atomic_write(backlog, new_text)
+    except OSError:
+        return False
+
+    s.last_meta_expand_at = _now_iso()
+    state.write(project_path, s)
+    state.log_event(
+        project_path,
+        "meta_expand_backlog_injected",
+        meta_task_id=task_id,
+        backlog_path=str(backlog),
+        throttle_hours=META_EXPAND_THROTTLE_HOURS,
+    )
+    return True
+
+
 def _count_open_backlog(project_path: Path) -> int:
-    """Count `- [ ]` open task lines in the project's backlog. Returns 0
-    when no backlog exists. Used by `sweep_done_projects` for telemetry —
-    NOT for the resume decision (which delegates to detect_prd_complete
-    so the decision matches what the rest of the engine considers
-    complete)."""
+    """Count actionable backlog tasks: `[ ]` open + `[~]` agent-marked.
+
+    v1.5.6 TILDE-IS-OPEN: `[~]` is no longer a valid persistent
+    blocker. AI-trade 2026-05-12 idled 8h after the agent marked two
+    tasks `[~]` to self-block past the resume gate. Engine now reads
+    `[~]` as `[ ]` and emits a `tilde_demoted_to_open` event when any
+    are found, so the operator can spot agents abusing the convention.
+    Returns 0 when no backlog file exists.
+    """
     candidates = [
         project_path / "backlog.md",
         project_path / ".cc-autopipe" / "backlog.md",
@@ -614,28 +745,49 @@ def _count_open_backlog(project_path: Path) -> int:
         text = backlog.read_text(encoding="utf-8")
     except OSError:
         return 0
-    import re  # noqa: PLC0415
-    return len(re.findall(r"^[ \t]*-[ \t]*\[ \]", text, re.MULTILINE))
+    open_count = len(re.findall(r"^[ \t]*-[ \t]*\[ \]", text, re.MULTILINE))
+    tilde_count = len(re.findall(r"^[ \t]*-[ \t]*\[~\]", text, re.MULTILINE))
+    if tilde_count > 0:
+        try:
+            state.log_event(
+                project_path,
+                "tilde_demoted_to_open",
+                count=tilde_count,
+                reason="v1.5.6 — [~] is no longer a valid self-block state",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return open_count + tilde_count
 
 
 def _should_resume_done(s: state.State, project_path: Path) -> tuple[bool, str]:
-    """v1.3.6 PHASE-DONE-RECOVERY: gate `sweep_done_projects` against
-    active enforcement state.
+    """v1.3.6 PHASE-DONE-RECOVERY + v1.5.6 PRD-COMPLETE-EXPIRES +
+    IDLE-INJECT-EXPAND-BACKLOG.
 
-    Returns (should_resume, skip_reason). Mirrors `_should_recover` but
-    targets the `phase=done` → `active` transition: when an operator adds
-    new tasks to a done project's backlog, the engine should resume work
-    without requiring a manual `state.json` edit. Without this, a
-    `phase=done` project on a 3-4 month autonomous run requires manual
-    rescue every time backlog cycles drained → reopened.
+    Returns (should_resume, skip_reason). Mirrors `_should_recover`
+    but targets the `phase=done` → `active` transition. Three engine-
+    level safeguards keep the gate from sitting on a permanently
+    halted project on a multi-month run:
+
+    1. `[~]` lines on the backlog now count as actionable via
+       `_count_open_backlog` (TILDE-IS-OPEN) — agent cannot self-
+       block by marking tasks `[~]`.
+    2. `prd_complete=True` auto-clears after PRD_COMPLETE_TTL_HOURS of
+       idle since the last cycle (PRD-COMPLETE-EXPIRES). The flag is
+       a soft signal from the agent's verify, not a terminal
+       operator decision.
+    3. When the backlog drains to 0 open after expiry, the engine
+       injects a `meta_expand_backlog_<ts>` task forcing the agent
+       to regenerate tasks from `knowledge.md` (IDLE-INJECT-EXPAND-
+       BACKLOG). Throttled per project via `state.last_meta_expand_at`.
 
     Skip reasons:
       - phase != done — boring default, sweep iterates past actives
       - meta_reflect_pending / knowledge_update_pending /
-        research_plan_required — enforcement loops outrank reopen, just
-        like sweep_failed_projects
-      - prd_still_complete — backlog has no open `[ ]`, so there's
-        actually nothing to resume to
+        research_plan_required — enforcement loops outrank reopen
+      - prd_still_complete — prd_complete=True within TTL, 0 open
+      - prd_still_complete_zero_open_meta_throttled — flag has
+        cleared but the meta-task injector is in throttle window
     """
     if s.phase != "done":
         return False, f"phase={s.phase}_not_done"
@@ -645,14 +797,39 @@ def _should_resume_done(s: state.State, project_path: Path) -> tuple[bool, str]:
         return False, "knowledge_update_in_progress"
     if s.research_plan_required:
         return False, "research_plan_pending"
-    # Resume only when the backlog has at least one open `- [ ]` line.
-    # `detect_prd_complete` is unsuitable here because it returns False
-    # for a *missing* backlog, which would erroneously flip a long-done
-    # project that has no backlog file at all into active. The right
-    # signal is "actually has open tasks now" — count open lines
-    # directly. 0 open lines → either backlog missing or PRD truly
-    # complete; either way, nothing to resume to.
-    if _count_open_backlog(project_path) == 0:
+
+    # v1.5.6 PRD-COMPLETE-EXPIRES: stale prd_complete=True auto-clears.
+    expired = False
+    if s.prd_complete and s.last_cycle_ended_at:
+        cycle_end = _parse_iso_utc(s.last_cycle_ended_at)
+        if cycle_end is not None:
+            idle_hours = (
+                datetime.now(timezone.utc) - cycle_end
+            ).total_seconds() / 3600
+            if idle_hours > PRD_COMPLETE_TTL_HOURS:
+                state.log_event(
+                    project_path,
+                    "prd_complete_expired",
+                    idle_hours=round(idle_hours, 2),
+                    ttl_hours=PRD_COMPLETE_TTL_HOURS,
+                    action="forcing prd_complete=False; phase=done → active",
+                )
+                s.prd_complete = False
+                state.write(project_path, s)
+                expired = True
+
+    open_count = _count_open_backlog(project_path)
+    if open_count == 0:
+        # v1.5.6 IDLE-INJECT-EXPAND-BACKLOG: inject only when
+        # prd_complete is effectively False (either it was already
+        # false, or it just expired). A within-TTL prd_complete=True
+        # is the legitimate "just finished" window — leave it alone.
+        if not s.prd_complete and _maybe_inject_expand_backlog(
+            project_path, s
+        ):
+            return True, ""
+        if expired:
+            return False, "prd_still_complete_zero_open_meta_throttled"
         return False, "prd_still_complete"
     return True, ""
 

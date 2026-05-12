@@ -26,11 +26,12 @@ MAX_RESEARCH_ITERS_PER_WINDOW = 3
 
 
 def _is_open_task_line(line: str) -> bool:
-    """A backlog line that counts as open: starts with `- [ ]` (note the
-    space inside brackets — `[x]` and `[~]` and `[!]` are all closed/
-    in-progress markers and don't gate PRD completion)."""
+    """A backlog line that counts as open. v1.5.6 TILDE-IS-OPEN:
+    treats both `- [ ]` and `- [~]` as actionable; `[~]` is no longer
+    accepted as a self-block convention, so PRD completion remains
+    blocked while any `[~]` tasks remain on the backlog."""
     stripped = line.lstrip()
-    return stripped.startswith("- [ ]")
+    return stripped.startswith("- [ ]") or stripped.startswith("- [~]")
 
 
 def detect_prd_complete(project_path: Path) -> bool:

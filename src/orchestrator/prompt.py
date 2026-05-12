@@ -70,11 +70,15 @@ def _read_truncated(path: Path, max_bytes: int) -> str:
 
 
 def _read_top_open_tasks(backlog: Path, n: int) -> str:
+    """v1.5.6 TILDE-IS-OPEN: show both `[ ]` (open) and `[~]`
+    (agent-marked) lines in the top-N prompt block. Engine no longer
+    treats `[~]` as a self-block state, so the agent must see those
+    tasks alongside the truly open ones."""
     if not backlog.exists():
         return ""
     out: list[str] = []
     for line in backlog.read_text(encoding="utf-8").splitlines():
-        if line.startswith("- [ ]"):
+        if line.startswith("- [ ]") or line.startswith("- [~]"):
             out.append(line)
             if len(out) >= n:
                 break
