@@ -11,6 +11,7 @@ GROUP B (B3 auto-recovery) and GROUP H (META_REFLECT) extend this module.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -419,6 +420,44 @@ def _is_in_leaderboard(project_path: Path, task_id: str) -> bool:
 _ORPHAN_PROMOTION_RE = re.compile(r"^CAND_(.+)_PROMOTION\.md$")
 
 
+def _backfill_cutoff_from_aggregate(project_path: Path) -> float | None:
+    """v1.5.4 RESCAN-MIGRATION-GUARD: pre-v1.5.3 state.json has no
+    `last_cycle_ended_at` field. Recover a cutoff by scanning
+    aggregate.jsonl for the most recent `cycle_end` event matching this
+    project's name. Returns UNIX seconds or None if the log is missing
+    or no matching event exists.
+
+    Honors CC_AUTOPIPE_USER_HOME via state._user_home() so tests with
+    isolated homes find their own seeded log."""
+    log = state._user_home() / "log" / "aggregate.jsonl"
+    if not log.exists():
+        return None
+    project_name = project_path.name
+    latest_ts: str | None = None
+    try:
+        with log.open("r", encoding="utf-8") as f:
+            for line in f:
+                if '"event":"cycle_end"' not in line:
+                    continue
+                if f'"project":"{project_name}"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = rec.get("ts")
+                if ts and (latest_ts is None or ts > latest_ts):
+                    latest_ts = ts
+    except OSError:
+        return None
+    if latest_ts is None:
+        return None
+    dt = _parse_iso_utc(latest_ts)
+    if dt is None:
+        return None
+    return dt.timestamp()
+
+
 def rescan_orphan_promotions(project_path: Path | str) -> int:
     """Validate `data/debug/CAND_*_PROMOTION.md` files that were not
     leaderboarded — typically because a SIGTERM interrupted the cycle
@@ -432,20 +471,38 @@ def rescan_orphan_promotions(project_path: Path | str) -> int:
     filesystem mtime. Idempotent — already-leaderboarded files are
     skipped via a simple LEADERBOARD.md membership grep.
 
-    Cutoff: `state.last_cycle_ended_at`. Files with mtime ≤ cutoff
-    already had their chance via the previous cycle's post_cycle_delta;
-    rescuing them would either duplicate work (idempotent skip catches
-    it) or revive ancient quarantined PROMOTIONs.
+    Cutoff resolution (v1.5.4 RESCAN-MIGRATION-GUARD):
+      1. state.last_cycle_ended_at — preferred (set by every healthy
+         cycle close from v1.5.3 onward).
+      2. If missing (pre-v1.5.3 state.json), backfill from the most
+         recent `cycle_end` event in aggregate.jsonl for this project.
+         An `orphan_rescan_cutoff_backfilled` event is logged so the
+         migration is observable.
+      3. If aggregate.jsonl is also missing or has no cycle_end for
+         this project, cutoff=0 (scan every CAND_*_PROMOTION). The
+         `_is_in_leaderboard` membership grep makes that path
+         idempotent — duplicate appends are prevented.
     """
     project_path = Path(project_path)
     s = state.read(project_path)
     cutoff_str = getattr(s, "last_cycle_ended_at", None)
-    if not cutoff_str:
-        return 0  # First-ever startup; nothing to rescue against.
-    cutoff_dt = _parse_iso_utc(cutoff_str)
-    if cutoff_dt is None:
-        return 0
-    cutoff = cutoff_dt.timestamp()
+    cutoff = 0.0
+    if cutoff_str:
+        cutoff_dt = _parse_iso_utc(cutoff_str)
+        if cutoff_dt is not None:
+            cutoff = cutoff_dt.timestamp()
+    else:
+        backfilled = _backfill_cutoff_from_aggregate(project_path)
+        if backfilled is not None:
+            cutoff = backfilled
+            state.log_event(
+                project_path,
+                "orphan_rescan_cutoff_backfilled",
+                cutoff_ts=datetime.fromtimestamp(
+                    backfilled, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                source="aggregate.jsonl",
+            )
 
     debug_dir = project_path / "data" / "debug"
     if not debug_dir.is_dir():
