@@ -207,13 +207,22 @@ def _fmt_composite(v: Any) -> str:
 
 
 def _write_leaderboard_md(
-    path: Path, entries: list[dict[str, Any]], header: str
+    path: Path,
+    entries: list[dict[str, Any]],
+    header: str,
+    last_updated: datetime | None = None,
 ) -> None:
+    # v1.5.3 LEADERBOARD-TIMESTAMP-FIX: caller may pass an explicit
+    # `last_updated` so tests can assert exact equality and so the same
+    # timestamp is used for both the file body and any associated
+    # `leaderboard_updated` event in the same append_entry call.
+    if last_updated is None:
+        last_updated = datetime.now(timezone.utc)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         header,
         "",
-        f"Last updated: {datetime.now(timezone.utc).isoformat()}",
+        f"Last updated: {last_updated.isoformat()}",
         "",
         LEADERBOARD_HEADER,
         LEADERBOARD_SEP,
@@ -309,6 +318,10 @@ def append_entry(
         e["elo"] = elo_data["ratings"].get(e["task_id"], INITIAL_ELO)
     # Composite is the primary sort; ELO is informational.
 
+    # v1.5.3 LEADERBOARD-TIMESTAMP-FIX: capture one wall-clock instant
+    # so the live LEADERBOARD.md, any archived rollover, and the
+    # `leaderboard_updated` event share a single timestamp.
+    now = datetime.now(timezone.utc)
     if len(entries) > TOP_N_RETAINED:
         archive_path = (
             project
@@ -320,7 +333,10 @@ def append_entry(
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         archived = entries[TOP_N_RETAINED:]
         _write_leaderboard_md(
-            archive_path, archived, header="# Archived Leaderboard Entries"
+            archive_path,
+            archived,
+            header="# Archived Leaderboard Entries",
+            last_updated=now,
         )
         entries = entries[:TOP_N_RETAINED]
 
@@ -328,6 +344,7 @@ def append_entry(
         _leaderboard_path(project),
         entries,
         header="# Promotion Leaderboard",
+        last_updated=now,
     )
 
     # Reset knowledge.md sentinel — engine will require lessons-update
