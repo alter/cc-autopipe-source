@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -364,3 +365,98 @@ def append_entry(
 
 def read_top_n(project: Path, n: int = TOP_N_RETAINED) -> list[dict[str, Any]]:
     return _read_existing_entries(project)[:n]
+
+
+# v1.5.5 LEADERBOARD-REPLAY. Filename → body-task-id helper mirrors
+# the orchestrator.recovery._extract_task_id_from_body shape; kept
+# local here so leaderboard.py has no circular import on the
+# orchestrator package.
+_PROMOTION_FILENAME_RE = re.compile(r"^CAND_(.+)_PROMOTION\.md$")
+_PROMOTION_TASK_FIELD_RE = re.compile(
+    r"^\*\*Task:\*\*\s*([A-Za-z0-9_]+)", re.MULTILINE
+)
+
+
+def _extract_task_id_from_body(text: str, fallback_from_filename: str) -> str:
+    """Read `**Task:** <id>` from a PROMOTION body. Returns the
+    fallback when the field is absent."""
+    m = _PROMOTION_TASK_FIELD_RE.search(text)
+    if m:
+        return m.group(1)
+    return fallback_from_filename
+
+
+def _truncate_leaderboard_rows(project: Path) -> None:
+    """Delete LEADERBOARD.md so the next `_write_leaderboard_md` starts
+    from a clean slate. The ELO state file is preserved — its history
+    table is appended only on real promotion events and rebuild_from_files
+    runs `append_entry` per file, which re-derives matchups + ratings.
+
+    Idempotent on missing path. Used by `rebuild_from_files` before
+    rescanning so stale rows from a pre-v1.5.5 corrupted parse are not
+    carried over when the same task_id re-appends with a corrected
+    verdict (`append_entry` deduplicates on task_id, but if the file is
+    intact and the corrupted entry was never replaced — e.g. the
+    PROMOTION file was deleted off disk — the bad row would persist).
+    """
+    lb = _leaderboard_path(project)
+    if lb.exists():
+        lb.unlink()
+
+
+def rebuild_from_files(project_path: Path) -> dict[str, int]:
+    """v1.5.5 LEADERBOARD-REPLAY. One-shot recovery: rescan every
+    `CAND_*_PROMOTION.md` under `data/debug/` and rewrite LEADERBOARD.md
+    from scratch using current parser semantics. Designed to be run
+    once after a parser bug fix (the v1.5.5 CANONICAL_MAP NEUTRAL
+    correction) to regenerate the operator-facing ranking.
+
+    Returns counts: `{scanned, appended, failed}`. Idempotent in the
+    sense that re-running on an unchanged filesystem produces an
+    identical LEADERBOARD.md (the ELO history grows by `appended`
+    matchups each call — composite sort key is unaffected).
+
+    Implementation notes:
+      - Truncates the existing LEADERBOARD.md before rebuilding so
+        stale rows from the pre-fix parse cannot persist.
+      - Reads task_id from the PROMOTION body's `**Task:** <id>` line
+        (mirrors orphan-rescan v1.5.5 fix) with filename fallback.
+      - Calls `validate_v2_sections` so the same v1.4.0 strictness
+        applied on the live path is also applied during replay.
+      - `append_entry` deduplicates by task_id on each call, so
+        multiple promotion files for the same task_id collapse to the
+        last-written entry (matches AI-trade re-promotion semantics).
+    """
+    # Lazy import — promotion lives one level up but the test rig adds
+    # `src/lib` to sys.path before `src/`. Both work; lazy keeps the
+    # import out of module top so a partial deploy without promotion.py
+    # still loads leaderboard.py for read-only callers.
+    import promotion as _promo  # noqa: PLC0415
+
+    project_path = Path(project_path)
+    debug = project_path / "data" / "debug"
+    if not debug.is_dir():
+        return {"scanned": 0, "appended": 0, "failed": 0}
+
+    _truncate_leaderboard_rows(project_path)
+
+    scanned = appended = failed = 0
+    for p in sorted(debug.glob("CAND_*_PROMOTION.md")):
+        scanned += 1
+        try:
+            text = p.read_text(encoding="utf-8")
+            fname_match = _PROMOTION_FILENAME_RE.match(p.name)
+            if fname_match is None:
+                failed += 1
+                continue
+            fname_id = fname_match.group(1)
+            task_id = _extract_task_id_from_body(text, fname_id)
+            ok, _missing = _promo.validate_v2_sections(p, task_id=task_id)
+            if not ok:
+                continue
+            metrics = _promo.parse_metrics(p)
+            append_entry(project_path, task_id, metrics)
+            appended += 1
+        except Exception:  # noqa: BLE001 — best-effort recovery
+            failed += 1
+    return {"scanned": scanned, "appended": appended, "failed": failed}

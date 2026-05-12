@@ -848,6 +848,18 @@ def main(argv: list[str]) -> int:
 
     sub.add_parser("complete-phase").add_argument("project")
 
+    p_rebuild = sub.add_parser(
+        "rebuild-leaderboard",
+        help=(
+            "v1.5.5: regenerate LEADERBOARD.md from every "
+            "CAND_*_PROMOTION.md in data/debug/. One-shot operator "
+            "recovery after the v1.5.5 CANONICAL_MAP fix. Truncates "
+            "the existing file and re-appends from current parser "
+            "semantics; prints {scanned, appended, failed} counts."
+        ),
+    )
+    p_rebuild.add_argument("project")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "read":
@@ -923,6 +935,16 @@ def main(argv: list[str]) -> int:
     if args.cmd == "complete-phase":
         new = complete_phase(args.project)
         print(new)
+        return 0
+
+    if args.cmd == "rebuild-leaderboard":
+        # v1.5.5 LEADERBOARD-REPLAY: scripted contexts call this once
+        # post-deploy; no interactive prompt. Print the counts dict
+        # plain JSON so an operator can pipe into jq / grep.
+        import leaderboard as _lb  # noqa: PLC0415
+
+        counts = _lb.rebuild_from_files(Path(args.project))
+        print(json.dumps(counts))
         return 0
 
     return 2
