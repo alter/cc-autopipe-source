@@ -1,8 +1,48 @@
 # Build Status
 
-**Updated:** 2026-05-12T20:30:00Z
+**Updated:** 2026-05-13T01:50:00Z
 **Current branch:** main
-**Current stage:** **v1.5.5 COMPLETE — CANONICAL_MAP fix + orphan
+**Current stage:** **v1.5.6 COMPLETE — hard engine guarantees against
+agent self-blocking.** Three groups, 5 logical commits (+ docs), +12
+net new tests across four files (`tests/unit/test_tilde_as_open.py`,
+`tests/unit/test_prd_complete_expires.py`,
+`tests/integration/test_meta_expand_inject.py`, plus
+`tests/unit/test_research.py` re-scoped — the v1.5.5
+`detect_prd_complete([x]+[~])==True` case is flipped and split into
+two tests reflecting the new TILDE-IS-OPEN semantics). 965 →
+**977 tests passing**; same 6 pre-existing `test_promotion.py` real-AI-trade-
+fixture failures unchanged (out-of-scope baseline noise per
+V153/V154/V155 BUILD_DONE). **TILDE-IS-OPEN**:
+`recovery._count_open_backlog` now treats `[~]` as actionable
+alongside `[ ]` and emits a `tilde_demoted_to_open count=N` event
+when encountered. Mirror change in `orchestrator.prompt._read_top_open_tasks`
+(so top-N reminder block surfaces `[~]` tasks too) and
+`orchestrator.research._is_open_task_line` (so `detect_prd_complete`
+refuses to mark complete while `[~]` remain). Closes the AI-trade
+2026-05-12 idle-8h incident where the agent marked two phase-5 tasks
+`[~]` to slip past the resume gate. **PRD-COMPLETE-EXPIRES**:
+`_should_resume_done` adds a `PRD_COMPLETE_TTL_HOURS=4` expiry —
+when `phase=done` + `prd_complete=True` + `last_cycle_ended_at`
+exceeds the TTL, the flag is forced False and a `prd_complete_expired
+idle_hours=X.x ttl_hours=4` event fires. Operator now closes a
+project by removing it from the registry; engine alone never treats
+"done" as terminal for an active project. **IDLE-INJECT-EXPAND-
+BACKLOG**: when post-expiry the backlog drains to 0 open, a
+`meta_expand_backlog_<ts>` task is appended to the top of backlog.md
+instructing the agent to read knowledge.md + findings_index.md and
+generate 20-30 NEW `[ ]` tasks. Template hardcodes the four operator-
+defined constraints (no live/paper/shadow deploy, no operator-
+authorization gates, no `[~]` blocking, no `prd_complete=True`
+self-set). Throttled to one inject per `META_EXPAND_THROTTLE_HOURS=4`
+via new `state.last_meta_expand_at` field so a defiant agent can't
+trigger a spam loop. **Operator action**:
+`systemctl restart cc-autopipe.service`. On the next sweep tick
+(≤30 min) any project sitting in `phase=done` with stale
+`prd_complete=True` will expire, inject the meta-task if drained,
+and flip to active. AI-trade's idle phase-5 wakes up automatically.
+See V156_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.5 COMPLETE — CANONICAL_MAP fix + orphan
 rescan corrections + leaderboard replay.** Three groups, 6 logical
 commits (+ docs), +15 new tests across three files
 (`tests/unit/test_canonical_map.py`,
