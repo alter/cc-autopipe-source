@@ -18,6 +18,7 @@ Also exposes a small CLI used by the bash hooks:
     python3 state.py reset-malformed <project>
     python3 state.py update-verify <project> --passed BOOL --score FLOAT --prd-complete BOOL
     python3 state.py set-paused <project> <resume_at_iso> <reason>
+    python3 state.py clear-paused <project>
 """
 
 from __future__ import annotations
@@ -649,6 +650,25 @@ def set_paused(
     write(project_path, s)
 
 
+def clear_paused(project_path: str | os.PathLike[str]) -> tuple[bool, str]:
+    """v1.5.2 STATE-CLI-CLEAR-PAUSED: symmetric inverse of set_paused.
+
+    Clears the `paused` block and routes phase to `done` when
+    `prd_complete=True`, else `active`. Returns (changed, new_phase).
+    Idempotent — a project that is already not paused returns
+    (False, current_phase) and writes nothing.
+    """
+    s = read(project_path)
+    if s.paused is None:
+        return False, s.phase
+    s.paused = None
+    s.phase = "done" if s.prd_complete else "active"
+    s.last_progress_at = _now_iso()
+    write(project_path, s)
+    log_event(project_path, "paused_cleared", new_phase=s.phase)
+    return True, s.phase
+
+
 def set_detached(
     project_path: str | os.PathLike[str],
     *,
@@ -795,6 +815,12 @@ def main(argv: list[str]) -> int:
     p_paused.add_argument("resume_at")
     p_paused.add_argument("reason")
 
+    p_clear_paused = sub.add_parser(
+        "clear-paused",
+        help="Clear paused state. Phase → done if prd_complete else active.",
+    )
+    p_clear_paused.add_argument("project")
+
     p_detached = sub.add_parser("set-detached")
     p_detached.add_argument("project")
     p_detached.add_argument("--reason", required=True)
@@ -865,6 +891,14 @@ def main(argv: list[str]) -> int:
 
     if args.cmd == "set-paused":
         set_paused(args.project, args.resume_at, args.reason)
+        return 0
+
+    if args.cmd == "clear-paused":
+        changed, new_phase = clear_paused(args.project)
+        if not changed:
+            print(f"already not paused (phase={new_phase})")
+        else:
+            print(f"unpaused, phase={new_phase}")
         return 0
 
     if args.cmd == "set-detached":
