@@ -366,6 +366,33 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             _log(f"orphan rescan startup sweep error: {exc!r}")
 
+        # v1.5.7 BACKLOG-WRITE-GATE: at startup, scan every project for
+        # `[x]` closures that lack a verify_completed event OR a
+        # CAND_*_PROMOTION.md on disk. Reverts unverified rows back to
+        # `[ ]` and emits `unverified_close_blocked` events. First run
+        # treats existing `[x]` as pre-v1.5.7 legacy amnesty; only NEW
+        # transitions (against the per-project snapshot) trigger the
+        # revert.
+        try:
+            from orchestrator.backlog_gate import audit_and_revert as _gate
+            for _gate_proj in _read_projects_list(user_home):
+                try:
+                    gc = _gate(_gate_proj, user_home)
+                    if gc["reverted"]:
+                        _log(
+                            f"{_gate_proj.name}: backlog gate reverted "
+                            f"{gc['reverted']} unverified [x] on startup "
+                            f"(scanned={gc['scanned']}, "
+                            f"verified={gc['ok_verified']}, "
+                            f"legacy={gc['ok_orphan_pre_v157']})"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    _log(
+                        f"{_gate_proj.name}: backlog gate failed: {exc!r}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"backlog gate startup sweep error: {exc!r}")
+
         loops = 0
         last_recovery_sweep_at = 0.0
         last_daily_report_at = 0.0
