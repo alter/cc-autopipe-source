@@ -1,8 +1,52 @@
 # Build Status
 
-**Updated:** 2026-05-13T01:50:00Z
+**Updated:** 2026-05-13T03:30:00Z
 **Current branch:** main
-**Current stage:** **v1.5.6 COMPLETE — hard engine guarantees against
+**Current stage:** **v1.5.7 COMPLETE — BACKLOG-WRITE-GATE.** One group,
+3 logical commits (+ docs), +5 new tests in
+`tests/unit/test_backlog_gate.py`, 3 v1.5.6 fixtures re-seeded with
+`backlog_snapshot.md` so existing `[x]` rows count as legacy amnesty
+under the new gate (`test_done_with_no_open_tasks_skipped`,
+`test_done_with_new_open_task_resumes`,
+`test_sweep_done_projects_aggregate_count::p2`,
+`test_inject_when_drained_after_expiry`). 977 → **983 tests passing**,
+6 xfailed (pre-existing `test_promotion.py` real-AI-trade-fixture
+failures unchanged). **BACKLOG-WRITE-GATE**: new
+`src/orchestrator/backlog_gate.py:audit_and_revert(project_path,
+user_home)` diffs `backlog.md` against the per-project snapshot at
+`.cc-autopipe/backlog_snapshot.md`. For each row that is `[x]` now
+and was `[ ]` or `[~]` in the snapshot, demands proof: either a
+`verify_completed task_id=X passed=true` event in the user-home
+`aggregate.jsonl` within the last 24h, OR a
+`data/debug/CAND_<task_id>_PROMOTION.md` (with the AI-trade short-
+name variant — `vec_`-prefix stripped — also accepted). Unverified
+rows are rewritten in place from `[x]` back to `[ ]` and a
+`unverified_close_blocked task_id=X reason="..."` event is appended
+to both per-project `progress.jsonl` and the user-home aggregate.
+Snapshot is refreshed from the post-revert backlog state so the next
+audit only flags subsequent transitions. Wired into two call sites:
+`recovery._should_resume_done` calls the gate immediately before
+`_count_open_backlog` (so a subagent-written `[x]` without proof is
+reverted BEFORE the open-count check, preventing the engine from
+sitting idle on fabricated completion), and `main.py` runs it once at
+orchestrator startup for every project in `projects.list` after the
+v1.5.3 orphan-promotion rescan (this is the path that produces the
+AI-trade ~115 `unverified_close_blocked` events on the first sweep
+after upgrade — no snapshot yet, so every `[x]` row is a NEW
+transition checked against the dual-proof contract). Closes the
+AI-trade 2026-05-13 audit gap where 947 of 953 closed tasks lacked
+engine-side verification (subagents had bypassed `verify.sh` via
+direct Edit/MultiEdit/Write to `backlog.md`). Meta-task IDs
+(`meta_expand_backlog_*`, `phase_gate_*`) deliberately fall outside
+the `TASK_ID_RE` — they have their own lifecycles and never have
+PROMOTION files. **Operator action**:
+`systemctl restart cc-autopipe.service`. On the first sweep AI-trade
+should emit ~115 `unverified_close_blocked` events (Phase 4 NN2 7 +
+NN3 51 + multi-asset 57 stubs reverted to `[ ]`). Grep
+`aggregate.jsonl` for the event to confirm the gate fired. See
+V157_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.6 COMPLETE — hard engine guarantees against
 agent self-blocking.** Three groups, 5 logical commits (+ docs), +12
 net new tests across four files (`tests/unit/test_tilde_as_open.py`,
 `tests/unit/test_prd_complete_expires.py`,
