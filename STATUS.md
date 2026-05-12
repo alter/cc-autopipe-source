@@ -1,8 +1,30 @@
 # Build Status
 
-**Updated:** 2026-05-11T21:00:00Z
+**Updated:** 2026-05-12T03:50:00Z
 **Current branch:** main
-**Current stage:** **v1.5.0 COMPLETE — reactive rate-limit policy.** Three
+**Current stage:** **v1.5.1 COMPLETE — ablation spawn verdict gate.**
+One group, 4 commits, +6 unit tests, +1 smoke (`run-ablation-gate-smoke.sh`).
+`promotion.on_promotion_success` now skips ablation spawn unless
+`metrics["verdict"] == "PROMOTED"`. NEUTRAL / CONDITIONAL / unknown
+verdicts emit `ablation_skipped_non_promoted` (event payload carries
+the verdict string for grep-able audit) instead of mutating backlog.md.
+Leaderboard hook unchanged — appends for all verdicts. `parse_metrics`
+gains a `"verdict"` key sourced from the labelled `## Metrics for
+leaderboard` block's `**verdict**:` field (authoritative), with
+`parse_verdict()` cascade as fallback for legacy reports without a
+labelled block. Two-pass design closes the AI-trade Phase 4 regression
+where the cycle.py cascade-based gate captured "PROMOTED" from body
+prose on labelled-NEUTRAL files → ablation children grew the backlog
+from ~600 done / 11K open to ~38K orphan `_ab_` entries → engine
+burned --max-turns reopening stale work. Defense-in-depth inside
+`on_promotion_success`: labelled-block verdict wins on any
+cascade-vs-block disagreement. **Operator action required**: none —
+restart `cc-autopipe.service` to pick up the new policy. Existing
+orphan `_ab_*` backlog entries from pre-v1.5.1 runs remain (engine
+does NOT auto-clean historical ablation; that's project-side hygiene).
+See V151_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.0 COMPLETE — reactive rate-limit policy.** Three
 groups landed in 8 commits, +30 unit/integration tests, +1 smoke. 904 →
 **923 tests passing**; 36/44 → **37/45 smokes** (+1 new
 `run-reactive-rate-limit-smoke.sh`; the 8 failing v0.5-era stages
