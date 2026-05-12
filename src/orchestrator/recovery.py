@@ -418,6 +418,23 @@ def _is_in_leaderboard(project_path: Path, task_id: str) -> bool:
 
 
 _ORPHAN_PROMOTION_RE = re.compile(r"^CAND_(.+)_PROMOTION\.md$")
+_PROMOTION_TASK_FIELD_RE = re.compile(
+    r"^\*\*Task:\*\*\s*([A-Za-z0-9_]+)", re.MULTILINE
+)
+
+
+def _extract_task_id_from_body(text: str, fallback_from_filename: str) -> str:
+    """v1.5.5 ORPHAN-RESCAN-FIX: derive the canonical task_id from the
+    PROMOTION body's `**Task:** <id>` line. AI-trade convention writes
+    filenames as `CAND_<short>_PROMOTION.md` but real backlog task IDs
+    include the `vec_<phase>_<track>_<descr>` prefix; the filename is a
+    stripped display alias only. Returns the body value when present,
+    otherwise the filename fallback (e.g. for legacy fixtures that omit
+    the field entirely)."""
+    m = _PROMOTION_TASK_FIELD_RE.search(text)
+    if m:
+        return m.group(1)
+    return fallback_from_filename
 
 
 def _backfill_cutoff_from_aggregate(project_path: Path) -> float | None:
@@ -520,27 +537,28 @@ def rescan_orphan_promotions(project_path: Path | str) -> int:
         m = _ORPHAN_PROMOTION_RE.match(p.name)
         if not m:
             continue
-        task_id = m.group(1)
+        fname_task_id = m.group(1)
+
+        # v1.5.5 ORPHAN-RESCAN-FIX: read task_id from the PROMOTION
+        # body's `**Task:** <id>` line. Filename derivation strips the
+        # `vec_` prefix that real AI-trade backlog IDs carry, producing
+        # leaderboard rows under the wrong key.
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        task_id = _extract_task_id_from_body(text, fname_task_id)
 
         if _is_in_leaderboard(project_path, task_id):
             continue
 
-        verdict = promotion_lib.parse_verdict(p)
-        # Only PROMOTED reports get the validate→on_promotion_success
-        # path. NEUTRAL / CONDITIONAL / REJECTED were never destined
-        # for the leaderboard regardless of the SIGTERM interruption,
-        # so we log a single event and move on. This mirrors the
-        # branch structure of _post_cycle_delta_scan in cycle.py.
-        if verdict != "PROMOTED":
-            state.log_event(
-                project_path,
-                "orphan_promotion_skipped",
-                task_id=task_id,
-                verdict=str(verdict or ""),
-                origin="orphan_rescan",
-            )
-            continue
-
+        # v1.5.5 ORPHAN-RESCAN-FIX: no verdict skip gate here.
+        # `on_promotion_success` (v1.5.1 ABLATION-VERDICT-GATE) already
+        # gates ablation spawn on PROMOTED while running the leaderboard
+        # append for ALL verdicts. The pre-v1.5.5 orphan-rescue gate
+        # contradicted that design, leaving NEUTRAL / CONDITIONAL /
+        # REJECTED orphans out of the leaderboard while the standard
+        # post-cycle-delta path included them.
         ok, missing = promotion_lib.validate_v2_sections(p, task_id=task_id)
         state.log_event(
             project_path,

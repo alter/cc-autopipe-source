@@ -162,12 +162,17 @@ def test_already_leaderboarded_promotion_skipped_idempotently(
     )
 
 
-def test_neutral_orphan_skipped_with_event_no_leaderboard(
+def test_neutral_orphan_rescued_just_like_promoted(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """NEUTRAL/CONDITIONAL/REJECTED PROMOTIONs were never destined for
-    the leaderboard. The rescan logs `orphan_promotion_skipped` for
-    observability but does NOT append."""
+    """v1.5.5 ORPHAN-RESCAN-FIX: NEUTRAL (and CONDITIONAL / REJECTED)
+    orphans now go through the same rescue path as PROMOTED — the
+    pre-v1.5.5 verdict gate that filtered them out contradicted the
+    v1.5.1 ABLATION-VERDICT-GATE design, where the leaderboard hook
+    runs for ALL verdicts and only ablation spawn is PROMOTED-only.
+
+    Asserts: rescued == 1, LEADERBOARD.md gains the row, and the
+    pre-v1.5.5 `orphan_promotion_skipped` event is NOT emitted."""
     project = _seed_project(tmp_path, monkeypatch)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     _set_cutoff(project, cutoff)
@@ -175,15 +180,23 @@ def test_neutral_orphan_skipped_with_event_no_leaderboard(
 
     rescued = rescan_orphan_promotions(project)
 
-    assert rescued == 0
+    assert rescued == 1
     lb_path = project / "data" / "debug" / "LEADERBOARD.md"
-    assert not lb_path.exists()
+    assert lb_path.exists()
+    assert "| neutral_test |" in lb_path.read_text(encoding="utf-8")
     events = _read_aggregate(tmp_path / "uhome")
     skipped = [
         e for e in events if e.get("event") == "orphan_promotion_skipped"
     ]
-    assert len(skipped) == 1
-    assert skipped[0]["task_id"] == "neutral_test"
+    assert skipped == [], (
+        "v1.5.5: orphan_promotion_skipped is no longer emitted on "
+        "non-PROMOTED verdicts"
+    )
+    validated = [
+        e for e in events if e.get("event") == "promotion_validated"
+    ]
+    assert len(validated) == 1
+    assert validated[-1]["task_id"] == "neutral_test"
 
 
 def test_missing_cutoff_and_no_promotion_files_returns_zero(
