@@ -1,11 +1,64 @@
 # Build Status
 
-**Updated:** 2026-05-12T16:00:00Z
+**Updated:** 2026-05-12T20:30:00Z
 **Current branch:** main
-**Current stage:** **v1.5.4 COMPLETE — orphan rescan migration guard.**
+**Current stage:** **v1.5.5 COMPLETE — CANONICAL_MAP fix + orphan
+rescan corrections + leaderboard replay.** Three groups, 6 logical
+commits (+ docs), +15 new tests across three files
+(`tests/unit/test_canonical_map.py`,
+`tests/integration/test_orphan_rescan_v155.py`,
+`tests/integration/test_leaderboard_rebuild.py`), 4 pre-v1.5.5 tests
+re-scoped where they encoded the pre-fix collapse, 1 v1.5.3 orphan
+test renamed + flipped. 950 → **965 tests passing**; same 6
+pre-existing `test_promotion.py` real-AI-trade-fixture failures
+unchanged (out-of-scope baseline noise per V153/V154 BUILD_DONE).
+**CANONICAL-MAP-FIX**: `src/lib/promotion.py:CANONICAL_MAP` rewritten
+as identity for the four canonical PRD verdicts
+(PROMOTED | REJECTED | CONDITIONAL | NEUTRAL) plus explicit aliases.
+Pre-v1.5.5 silently mapped `NEUTRAL → CONDITIONAL`, corrupting
+108/520 AI-trade Phase 4 PROMOTION files where the file body said
+NEUTRAL but the parsed verdict landed as CONDITIONAL — composite
+score and ELO for those rows computed off the wrong canonical state.
+NEUTRAL aliases NO_IMPROVEMENT / INCONCLUSIVE etc. land at canonical
+NEUTRAL (not CONDITIONAL). DEGENERATE added as REJECTED alias.
+Unknown verdicts (e.g. `CLEAN`) return None from `CANONICAL_MAP.get`;
+caller falls through to the `parse_verdict` cascade, and
+`parse_metrics` surfaces the raw value as `out["_unmapped_verdict"]`
+for operator audit via aggregate.jsonl. **ORPHAN-RESCAN-FIX**: two
+corrections to v1.5.3 `recovery.rescan_orphan_promotions`. (1)
+Verdict skip gate removed — `on_promotion_success` (v1.5.1 ABLATION-
+VERDICT-GATE) already gates ablation spawn on PROMOTED while running
+the leaderboard hook for ALL verdicts; the pre-v1.5.5 orphan gate
+contradicted that and left NEUTRAL/CONDITIONAL/REJECTED orphans out
+of the leaderboard. (2) task_id derived from PROMOTION body's
+`**Task:** <id>` line via new `_extract_task_id_from_body` helper,
+with filename regex as fallback. AI-trade convention writes filenames
+as `CAND_<short>_PROMOTION.md` but real backlog IDs include the
+`vec_<phase>_<track>_<descr>` prefix; pre-v1.5.5 leaderboard rows
+landed under the stripped key. **LEADERBOARD-REPLAY**: new
+`leaderboard.rebuild_from_files(project)` walks
+`data/debug/CAND_*_PROMOTION.md`, truncates LEADERBOARD.md, and
+re-appends from current parser semantics. Wired as
+`python3 state.py rebuild-leaderboard <project>` operator CLI;
+prints `{scanned, appended, failed}` as JSON for `jq` piping; no
+interactive prompt so scripted post-deploy contexts don't hang.
+The pre-existing uncommitted DM-significance gate WIP in
+`src/lib/leaderboard.py` (touched lines: `_composite` docstring +
+Phase-2/3 raw-then-gate restructure + `_fmt_pct → _fmt_float`) is
+deliberately left in the working tree — v1.5.5 staged hunks were
+patched selectively (only the `import re` + new-functions hunks) so
+the WIP is not pulled forward. **Operator action**:
+`systemctl stop cc-autopipe.service`, run `state.py
+rebuild-leaderboard <project>` once per project, restart. Mismatch
+scan should report zero `file=NEUTRAL parsed=CONDITIONAL` rows.
+`vec_p5_la_champion_full_backtest` retained with canonical
+verdict=NEUTRAL + corrected composite. See V155_BUILD_DONE.md for
+full per-commit details.
+
+**Earlier stage:** **v1.5.4 COMPLETE — orphan rescan migration guard.**
 One group, 2 commits, +3 integration tests
 (`tests/integration/test_rescan_migration.py`), 1 v1.5.3 test
-re-scoped. 947 → **950 tests passing**; 6 pre-existing
+re-scoped. 947 → 950 tests passing; same 6 pre-existing
 `test_promotion.py` real-AI-trade-fixture failures unchanged
 (out-of-scope baseline noise per V153_BUILD_DONE.md).
 **RESCAN-MIGRATION-GUARD**: `recovery.rescan_orphan_promotions` cutoff
