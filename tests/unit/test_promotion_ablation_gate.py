@@ -188,8 +188,12 @@ def test_parse_metrics_populates_verdict_from_labelled_block(
     tmp_path: Path,
 ) -> None:
     """`## Metrics for leaderboard` block `**verdict**: NEUTRAL` →
-    parse_metrics output has metrics["verdict"] == "CONDITIONAL"
-    (NEUTRAL canonicalises to CONDITIONAL per CANONICAL_MAP)."""
+    parse_metrics output has metrics["verdict"] == "NEUTRAL".
+
+    v1.5.5 CANONICAL-MAP-FIX: NEUTRAL is now a distinct fourth
+    canonical verdict (identity), not silently folded into CONDITIONAL.
+    Pre-v1.5.5 this asserted "CONDITIONAL" — the bug that corrupted
+    108/520 AI-trade Phase 4 leaderboard rows."""
     body = (
         "# Report\n\n"
         "## Metrics for leaderboard\n"
@@ -199,7 +203,7 @@ def test_parse_metrics_populates_verdict_from_labelled_block(
     p = tmp_path / "CAND_test_PROMOTION.md"
     p.write_text(body, encoding="utf-8")
     metrics = promotion.parse_metrics(p)
-    assert metrics["verdict"] == "CONDITIONAL"
+    assert metrics["verdict"] == "NEUTRAL"
     assert metrics["sum_fixed"] == 0.0
 
 

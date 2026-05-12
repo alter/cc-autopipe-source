@@ -45,9 +45,9 @@ def test_status_pass_then_result_rejected_returns_rejected(tmp_path: Path) -> No
 def test_status_only_neutral_falls_back_to_status_pass(tmp_path: Path) -> None:
     """File with only `**Status**: NEUTRAL` (no Result/Verdict/Outcome
     field) — primary pass finds nothing, status fallback fires and
-    canonicalises to CONDITIONAL via NEUTRAL → CONDITIONAL."""
+    canonicalises to NEUTRAL (v1.5.5 CANONICAL-MAP-FIX identity)."""
     body = "# Phase 3 DA report\n\n**Status**: NEUTRAL\n"
-    assert promotion.parse_verdict(_write(tmp_path, body)) == "CONDITIONAL"
+    assert promotion.parse_verdict(_write(tmp_path, body)) == "NEUTRAL"
 
 
 def test_status_only_pass_falls_back_to_status_promoted(tmp_path: Path) -> None:

@@ -96,7 +96,8 @@ def test_metrics_block_na_coerces_to_none(tmp_path: Path) -> None:
     metrics = promotion.parse_metrics(p)
     assert metrics["sharpe"] is None
     assert metrics["auc"] == 0.5
-    assert promotion.parse_verdict(p) == "CONDITIONAL"
+    # v1.5.5 CANONICAL-MAP-FIX: labelled block NEUTRAL → NEUTRAL (identity).
+    assert promotion.parse_verdict(p) == "NEUTRAL"
 
 
 def test_no_block_backward_compat(tmp_path: Path) -> None:

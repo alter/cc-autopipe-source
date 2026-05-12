@@ -77,18 +77,21 @@ Heading patterns recognized for the Verdict tier (Tier 1):
     ### Verdict
 
 Verdict keywords (in heading or body) for Tier 1:
-    PROMOTED, ACCEPT, ACCEPTED, PASS, PASSED, STABLE → PROMOTED
-    REJECTED, REJECT, FAIL, FAILED, LONG_LOSES_MONEY → REJECTED
-    CONDITIONAL, PARTIAL, NEUTRAL                     → CONDITIONAL
+    PROMOTED, ACCEPT, ACCEPTED, PASS, PASSED, STABLE  → PROMOTED
+    REJECTED, REJECT, FAIL, FAILED, LONG_LOSES_MONEY,
+    DEGENERATE                                         → REJECTED
+    CONDITIONAL, PARTIAL                               → CONDITIONAL
+    NEUTRAL, NO_IMPROVEMENT, INCONCLUSIVE              → NEUTRAL
 
-v1.3.13: NEUTRAL added across tiers 1, 3, and 4. AI-trade Phase 3
-DA-track experiments (information-ceiling probes that close with no
-exploitable edge, no clear bug) report `**Status**: NEUTRAL`. Without
-NEUTRAL in `CANONICAL_MAP` / `VERDICT_KEYWORD_RE` /
-`BOLD_METADATA_VERDICT_RE` / `ACCEPTANCE_KEYWORD_RE`, `parse_verdict`
-returned None and `promotion_verdict_unrecognized` was logged — 12
-DA-track tasks silently dropped on first deploy. NEUTRAL → CONDITIONAL
-keeps the backlog door open for re-probes in different regimes.
+v1.5.5 CANONICAL-MAP-FIX: NEUTRAL is now a distinct fourth canonical
+verdict, NOT silently folded into CONDITIONAL. Pre-v1.5.5 the map
+collapsed `NEUTRAL → CONDITIONAL` to "keep the backlog door open",
+but the cost was 108/520 AI-trade Phase 4 PROMOTION files landing in
+the leaderboard with the wrong canonical verdict (composite + ELO
+computed off CONDITIONAL semantics for inputs that said NEUTRAL).
+The four-state distinction is load-bearing for downstream ranking;
+NEUTRAL means "no exploitable edge, not a failure", CONDITIONAL means
+"partial pass with reservations". They are not synonyms.
 
 Public surface:
     - promotion_path(project, task_id)        -> Path
@@ -252,21 +255,42 @@ def _next_heading_re(verdict_level: int) -> re.Pattern[str]:
     level = max(1, min(verdict_level, 4))
     return re.compile(rf"^#{{1,{level}}}\s+", re.MULTILINE)
 
+# v1.5.5 CANONICAL-MAP-FIX. Pre-v1.5.5 collapsed NEUTRAL → CONDITIONAL,
+# corrupting 108/520 leaderboard entries on AI-trade (file body said
+# NEUTRAL, parsed verdict landed as CONDITIONAL → composite scoring and
+# ELO computed off the wrong canonical state). PRD verdict template is
+# explicit four-state — PROMOTED | REJECTED | CONDITIONAL | NEUTRAL —
+# and these are distinct outcomes with distinct semantics. Identity for
+# the four canonical states; historical aliases preserved so AI-trade
+# legacy reports that pre-date the four-state convention still parse.
+# Unknown values return None; callers fall through to parse_verdict()'s
+# cascade rather than silently defaulting to CONDITIONAL.
 CANONICAL_MAP = {
+    # Canonical four-state identity
     "PROMOTED": "PROMOTED",
+    "REJECTED": "REJECTED",
+    "CONDITIONAL": "CONDITIONAL",
+    "NEUTRAL": "NEUTRAL",
+    # PROMOTED aliases (historical synonyms)
     "ACCEPT": "PROMOTED",
     "ACCEPTED": "PROMOTED",
     "PASS": "PROMOTED",
     "PASSED": "PROMOTED",
     "STABLE": "PROMOTED",
-    "REJECTED": "REJECTED",
+    # REJECTED aliases
     "REJECT": "REJECTED",
     "FAIL": "REJECTED",
     "FAILED": "REJECTED",
     "LONG_LOSES_MONEY": "REJECTED",
-    "CONDITIONAL": "CONDITIONAL",
+    "DEGENERATE": "REJECTED",
+    # CONDITIONAL aliases
     "PARTIAL": "CONDITIONAL",
-    "NEUTRAL": "CONDITIONAL",  # v1.3.13: inconclusive outcome, no exploitable edge
+    # NEUTRAL aliases — inconclusive outcomes, no exploitable edge but
+    # not a failure either. AI-trade Phase 3 DA-track + Phase 4 typical.
+    "NO_IMPROVEMENT": "NEUTRAL",
+    "NO-IMPROVEMENT": "NEUTRAL",
+    "NOIMPROVEMENT": "NEUTRAL",
+    "INCONCLUSIVE": "NEUTRAL",
 }
 
 # v1.3.7 ACCEPTANCE-FALLBACK: tier 3 vocabulary. Headings recognised
@@ -896,7 +920,13 @@ def parse_metrics(path: Path) -> dict[str, Any]:
     # legacy reports (no labelled block) still produce a verdict.
     raw_v = block.get("verdict")
     if raw_v:
-        out["verdict"] = CANONICAL_MAP.get(raw_v.strip().upper())
+        canonical = CANONICAL_MAP.get(raw_v.strip().upper())
+        if canonical is None and raw_v.strip():
+            # v1.5.5: surface unmapped verdicts so an operator can spot
+            # new conventions. Caller layer logs — avoid importing state
+            # here to keep promotion.py free of orchestrator cycles.
+            out["_unmapped_verdict"] = raw_v.strip()
+        out["verdict"] = canonical
     if out["verdict"] is None:
         out["verdict"] = parse_verdict(path)
 
