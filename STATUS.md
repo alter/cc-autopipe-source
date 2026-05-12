@@ -1,8 +1,38 @@
 # Build Status
 
-**Updated:** 2026-05-12T14:30:00Z
+**Updated:** 2026-05-12T16:00:00Z
 **Current branch:** main
-**Current stage:** **v1.5.3 COMPLETE — orphan PROMOTION rescan +
+**Current stage:** **v1.5.4 COMPLETE — orphan rescan migration guard.**
+One group, 2 commits, +3 integration tests
+(`tests/integration/test_rescan_migration.py`), 1 v1.5.3 test
+re-scoped. 947 → **950 tests passing**; 6 pre-existing
+`test_promotion.py` real-AI-trade-fixture failures unchanged
+(out-of-scope baseline noise per V153_BUILD_DONE.md).
+**RESCAN-MIGRATION-GUARD**: `recovery.rescan_orphan_promotions` cutoff
+resolution becomes a three-tier ladder. (1) `state.last_cycle_ended_at`
+when set (v1.5.3+ healthy path); (2) when missing — pre-v1.5.3
+state.json — backfill from the most recent `cycle_end` event in
+`aggregate.jsonl` matching this project's name (forward scan,
+substring pre-filter + JSON decode, honors `CC_AUTOPIPE_USER_HOME` via
+`state._user_home()`); (3) aggregate also unavailable → `cutoff=0` and
+the `_is_in_leaderboard` membership grep keeps the scan-everything
+fallback idempotent. Backfill emits a single
+`orphan_rescan_cutoff_backfilled cutoff_ts=<ISO> source=aggregate.jsonl`
+event per project per upgrade so the migration is observable. Backfilled
+cutoff is NOT persisted — once a real cycle closes, v1.5.3's
+`_emit_cycle_end` persistence path takes over naturally. Closes the
+AI-trade 2026-05-12 production gap: with v1.5.3 deployed,
+`vec_p5_la_champion_full_backtest` from SIGTERM-interrupted iter 174
+stayed unvalidated because the pre-v1.5.3 state.json had no
+`last_cycle_ended_at` and v1.5.3's rescan silently bailed at the
+`if not cutoff_str: return 0` guard; v1.5.4 picks up the cutoff from
+aggregate.jsonl's iter-173 `cycle_end` and rescues the orphan on next
+restart with no operator surgery. **Operator action**: restart
+`cc-autopipe.service` (revert any manual `last_cycle_ended_at`
+backfill if applied as the v1.5.3 workaround). See V154_BUILD_DONE.md
+for full per-commit details.
+
+**Earlier stage:** **v1.5.3 COMPLETE — orphan PROMOTION rescan +
 leaderboard timestamp + cycle_end signal annotation.** Three groups,
 5 commits, +14 tests (8 unit + 6 integration). 933 → **947 tests
 passing**; 37/46 smokes (38/46 v1.5.2 baseline — the 1-stage delta
