@@ -43,9 +43,21 @@ def test_prd_complete_with_open_returns_false(tmp_path: Path) -> None:
     assert research.detect_prd_complete(p) is False
 
 
-def test_prd_complete_all_done_returns_true(tmp_path: Path) -> None:
+def test_prd_complete_tilde_blocks_completion(tmp_path: Path) -> None:
+    """v1.5.6 TILDE-IS-OPEN flip: a `[~]` line is now actionable, so
+    `detect_prd_complete` must return False while any remain.
+    Pre-v1.5.6 the same backlog (1 `[x]` + 1 `[~]`) was treated as
+    complete, which let agents self-block by marking tasks `[~]`."""
     p = _project(tmp_path)
     (p / "backlog.md").write_text("- [x] done\n- [~] in-progress\n")
+    assert research.detect_prd_complete(p) is False
+
+
+def test_prd_complete_all_done_returns_true(tmp_path: Path) -> None:
+    """Pure `[x]` backlog still counts as complete — this is the
+    `[~]`-free case the v1.5.5 test used to cover."""
+    p = _project(tmp_path)
+    (p / "backlog.md").write_text("- [x] done\n- [x] another\n")
     assert research.detect_prd_complete(p) is True
 
 

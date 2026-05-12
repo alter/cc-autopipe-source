@@ -23,8 +23,12 @@ export CC_AUTOPIPE_USER_HOME="$UHOME"
 
 cat > "$PROJ/backlog.md" <<'EOF'
 - [x] [P0] vec_meta — done
-- [~] [P1] vec_tbm — in progress
+- [x] [P1] vec_tbm — done
 EOF
+# v1.5.6 TILDE-IS-OPEN: `[~]` is now actionable, so a `[x] + [~]`
+# backlog no longer counts as PRD-complete. Use `[x] + [x]` here so
+# the Test 1 assertion stays focused on its real subject (no open
+# `- [ ]` lines).
 
 # Test 1: PRD complete detection.
 log "PRD complete detection"
