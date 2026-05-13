@@ -1,8 +1,72 @@
 # Build Status
 
-**Updated:** 2026-05-13T03:30:00Z
+**Updated:** 2026-05-13T08:00:00Z
 **Current branch:** main
-**Current stage:** **v1.5.7 COMPLETE — BACKLOG-WRITE-GATE.** One group,
+**Current stage:** **v1.5.8 COMPLETE — gate freshness + active-phase
+coverage + May-13 recovery.** Three groups, 4 logical commits (+ docs),
++6 new tests across three files (`tests/unit/test_gate_freshness.py`,
+`tests/integration/test_gate_phase_coverage.py`,
+`tests/integration/test_recovery_revert_fake_closures.py`).
+**+6 passing tests vs v1.5.7 HEAD**, 0 regressions (the 17 pre-existing
+baseline failures from uncommitted preflight WIP + AI-trade real-
+fixture `test_promotion.py` noise reproduce identically on
+v1.5.7 HEAD with the v1.5.8 changes stashed, so they are not v1.5.8
+work — see V155/V156/V157 BUILD_DONE for the baseline context).
+
+**GATE-ALWAYS-RUNS**: new `orchestrator.main._gate_sweep_all_projects`
+invoked from the top of the outer main loop on every tick. Calls
+`backlog_gate.audit_and_revert` for every project in `projects.list`
+regardless of phase. The corresponding call inside
+`recovery._should_resume_done` is removed (was redundant once the
+per-tick sweep landed; keeping both would split snapshot ownership).
+Closes the v1.5.7 phase-coverage gap where the gate only ran from the
+phase-done resume path — AI-trade sat in `phase=active` for ~3h after
+v1.5.7 restart and closed 363 tasks the gate never saw.
+
+**STALE-PROMOTION-REJECTED**: `backlog_gate.audit_and_revert` now
+compares each PROMOTION file's mtime against the snapshot file's
+mtime. A PROMOTION counts as evidence only when
+`pfile.st_mtime >= snap.st_mtime - PROMOTION_FRESHNESS_GRACE_SEC`
+(60s race-condition tolerance). New helper `_is_fresh_promotion`;
+`_has_promotion_file` renamed to `_find_promotion_file` and returns
+`Path | None` so the freshness check can stat the same path without a
+second walk. Reverted-row event gains `pfile_mtime`, `snap_mtime`,
+and `stale` fields plus a distinct reason string when a stale
+PROMOTION existed. Closes the AI-trade case where ~520 pre-existing
+fabrication-run PROMOTION stubs in `data/debug/` satisfied the v1.5.7
+`Path.exists()` check on re-closure.
+
+**MAY-13-RECOVERY-SCRIPT**: new
+`src/lib/recovery_revert_fake_closures.py` exposes
+`revert_fake_closures(project_path, since_iso, apply=False)` and an
+argparse `main()`. Wired into `state.py` CLI as the
+`revert-fake-closures <project> <since_iso> [--apply]` subcommand.
+Dry-run lists candidate `[x]` rows whose PROMOTION file is missing or
+older than `since_ts`; `--apply` rewrites `backlog.md` atomically and
+emits one `revert_fake_closures_applied` event into the per-project +
+aggregate logs. Operator-driven on purpose — auto-running on first
+startup would risk discarding legitimate May-13 closures.
+
+**Operator action on AI-trade**:
+
+```bash
+sudo systemctl stop cc-autopipe.service
+python3 src/lib/state.py revert-fake-closures \
+    /mnt/c/claude/artifacts/repos/AI-trade \
+    2026-05-13T00:00:00Z              # dry-run (expect ~350 candidates)
+python3 src/lib/state.py revert-fake-closures \
+    /mnt/c/claude/artifacts/repos/AI-trade \
+    2026-05-13T00:00:00Z --apply
+sudo systemctl start cc-autopipe.service
+```
+
+Within 30 min of restart: per-tick `gate sweep` log messages confirm
+phase-active coverage. Any new fake closure attempt triggers
+`unverified_close_blocked stale=True/False` depending on whether a
+stub PROMOTION exists from a prior fabrication run. See
+V158_BUILD_DONE.md for full per-commit details.
+
+**Earlier stage:** **v1.5.7 COMPLETE — BACKLOG-WRITE-GATE.** One group,
 3 logical commits (+ docs), +5 new tests in
 `tests/unit/test_backlog_gate.py`, 3 v1.5.6 fixtures re-seeded with
 `backlog_snapshot.md` so existing `[x]` rows count as legacy amnesty
