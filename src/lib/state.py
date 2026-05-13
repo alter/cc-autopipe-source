@@ -866,6 +866,31 @@ def main(argv: list[str]) -> int:
     )
     p_rebuild.add_argument("project")
 
+    # v1.5.8 MAY-13-RECOVERY-SCRIPT: operator-driven rollback for the
+    # v1.5.7 gate gap. See src/lib/recovery_revert_fake_closures.py for
+    # the actual logic; this subparser delegates so the CLI surface
+    # stays in one place.
+    p_rfc = sub.add_parser(
+        "revert-fake-closures",
+        help=(
+            "v1.5.8: revert backlog [x] rows whose PROMOTION file is "
+            "missing or older than --since. Dry-run by default; pass "
+            "--apply to mutate. Used once on AI-trade to clean up the "
+            "~351 May-13 fake closures the pre-v1.5.8 gate missed."
+        ),
+    )
+    p_rfc.add_argument("project")
+    p_rfc.add_argument(
+        "since_iso",
+        help="ISO timestamp; closures with no fresh PROMOTION after "
+             "this point are reverted",
+    )
+    p_rfc.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually rewrite backlog.md (omit for dry-run)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.cmd == "read":
@@ -952,6 +977,16 @@ def main(argv: list[str]) -> int:
         counts = _lb.rebuild_from_files(Path(args.project))
         print(json.dumps(counts))
         return 0
+
+    if args.cmd == "revert-fake-closures":
+        # v1.5.8 MAY-13-RECOVERY-SCRIPT: delegate to the dedicated
+        # module so the logic stays testable in isolation.
+        import recovery_revert_fake_closures as _rfc  # noqa: PLC0415
+
+        return _rfc.main(
+            [args.project, args.since_iso]
+            + (["--apply"] if args.apply else [])
+        )
 
     return 2
 
