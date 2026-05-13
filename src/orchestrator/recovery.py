@@ -22,7 +22,6 @@ from typing import Iterable
 
 from orchestrator._runtime import _log, _now_iso, _parse_iso_utc, is_shutdown
 from orchestrator.alerts import _notify_tg
-from orchestrator.backlog_gate import audit_and_revert
 import failures as failures_lib  # noqa: E402
 import human_needed as human_needed_lib  # noqa: E402
 import locking  # noqa: E402
@@ -819,15 +818,12 @@ def _should_resume_done(s: state.State, project_path: Path) -> tuple[bool, str]:
                 state.write(project_path, s)
                 expired = True
 
-    # v1.5.7 BACKLOG-WRITE-GATE: revert any `[x]` lacking a verify
-    # stamp or PROMOTION file BEFORE counting actionable rows. Otherwise
-    # a subagent's direct-edit closure would deflate open_count, the
-    # gate would skip with `prd_still_complete`, and the engine would
-    # stay idle on fabricated completion.
-    try:
-        audit_and_revert(project_path, state._user_home())
-    except Exception as exc:  # noqa: BLE001 — gate must not crash sweep
-        _log(f"{project_path.name}: backlog gate error: {exc!r}")
+    # v1.5.8 GATE-ALWAYS-RUNS: gate now runs from main.py on every
+    # tick (see `_gate_sweep_all_projects`). The previous v1.5.7 call
+    # here was redundant once the per-tick sweep landed — keeping both
+    # would double-process and split snapshot ownership between two
+    # call sites that don't coordinate. `_count_open_backlog` therefore
+    # reads whatever the most-recent gate tick wrote.
 
     open_count = _count_open_backlog(project_path)
     if open_count == 0:

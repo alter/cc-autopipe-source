@@ -47,6 +47,7 @@ from orchestrator.alerts import _notify_tg
 from orchestrator.cycle import process_project
 from orchestrator.prompt import _read_config_in_progress
 from orchestrator.daily_report import maybe_write_for_all
+from orchestrator.backlog_gate import audit_and_revert
 from orchestrator.recovery import (
     RECOVERY_INTERVAL_SEC,
     auto_recover_failed_projects,
@@ -141,6 +142,37 @@ def _redirect_streams_for_daemon(user_home: Path) -> None:
     # writes into the same log files instead of the original console.
     os.dup2(stderr_f.fileno(), 2)
     os.dup2(stdout_f.fileno(), 1)
+
+
+def _gate_sweep_all_projects(user_home: Path, projects: list[Path]) -> None:
+    """v1.5.8 GATE-ALWAYS-RUNS: invoke audit_and_revert for every project,
+    every main-loop tick — independent of phase.
+
+    v1.5.7 only ran the gate at startup (every project) and from the
+    phase-done resume path (`recovery._should_resume_done`). AI-trade
+    deployment 2026-05-13 showed agents close ~hundreds of tasks per
+    hour during phase=active, where neither call site fires. The gate
+    must catch fabricated closures in the same phase agents do most of
+    their work — not only on done→active transitions.
+
+    Per-project errors are logged and swallowed so a corrupt backlog
+    on one project never kills the main loop.
+    """
+    for project_path in projects:
+        if is_shutdown():
+            break
+        try:
+            counts = audit_and_revert(project_path, user_home)
+            if counts.get("reverted", 0) > 0:
+                _log(
+                    f"{project_path.name}: backlog gate reverted "
+                    f"{counts['reverted']} unverified closure(s) "
+                    f"(scanned={counts['scanned']}, "
+                    f"verified={counts['ok_verified']}, "
+                    f"legacy={counts['ok_orphan_pre_v157']})"
+                )
+        except Exception as exc:  # noqa: BLE001 — sweep must continue
+            _log(f"{project_path.name}: gate sweep error: {exc!r}")
 
 
 def _read_projects_list(user_home: Path) -> list[Path]:
@@ -398,6 +430,16 @@ def main(argv: list[str] | None = None) -> int:
         last_daily_report_at = 0.0
         while not is_shutdown():
             projects = _read_projects_list(user_home)
+            # v1.5.8 GATE-ALWAYS-RUNS: physical closure audit on EVERY
+            # tick, independent of phase. v1.5.7 only ran the gate at
+            # startup + during phase-done resume; agents close tasks
+            # during phase=active where neither fires. Best-effort; a
+            # per-project gate error is logged and swallowed so the
+            # tick continues.
+            try:
+                _gate_sweep_all_projects(user_home, projects)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"gate sweep tick error: {exc!r}")
             # v1.3 B3: periodic auto-recovery sweep — revive any
             # project that has been `phase=failed` for >1h with no
             # activity. Bounded by RECOVERY_INTERVAL_SEC across the
